@@ -1,24 +1,25 @@
 # requestbaby
 
-> CLI 中的 Postman —— curl 为引擎、文件目录为集合、AI 原生 JSON 配置、面向项目级接口自动化测试。
+> CLI 侧的 Postman —— curl 为引擎、文件目录为集合、AI 原生 JSON 配置、面向项目级接口自动化测试。
 
 ```
-      _                    _____
-     / \   __ _  ___ _ __ |  ___|__  _ __ __ _  ___
-    / _ \ / _` |/ _ \ '_ \| |_ / _ \| '__/ _` |/ _ \
-   / ___ \ (_| |  __/ | | |  _| (_) | | | (_| |  __/
-  /_/   \_\__, |\___|_| |_|_|  \___/|_|  \__, |\___|
-          |___/                          |___/
+ ____                             _         _         ____
+|  _ \ ___  ___ _ __     _ __ ___| |_ _   _| | ___   / ___|__ _ _ __ ___   ___
+| |_) / _ \/ __| '_ \   | '__/ _ \ __| | | | |/ _ \ | |   / _` | '_ ` _ \ / _ \
+|  _ <  __/\__ \ |_) |  | | |  __/ |_| |_| | |  __/ | |__| (_| | | | | | |  __/
+|_| \_\___||___/ .__/   |_|  \___|\__|\__,_|_|\___|  \____\__,_|_| |_| |_|\___|
+               |_|
 ```
 
 ## 为什么
 
 | 痛点 | requestbaby 的答案 |
-|------|----------------|
+|------|-------------------|
 | Postman 集合是闭源 JSON 黑盒，无法 review | 纯 JSON 配置 + 目录树即集合，Git 原生管理 |
 | 接口测试框架要写代码、搭工程 | 一个 JSON 一个用例，`pre/post/tests` 脚本内嵌 |
-| 配置靠人手写易错 | **AI 原生**：`requestbaby schema` 导出 JSON Schema 约束生成，`validate` + `--dry-run` 程序化校验闭环 |
+| 配置靠人手写易错 | **AI 原生**：`requestbaby schema` 导出 Schema 约束生成，`validate` + `--dry-run` 程序化校验闭环 |
 | HTTP 客户端轮子重 | curl 子进程执行，`-v` 打印完整 curl 命令可直接复现 |
+| 存量资产迁移难 | `import`：OpenAPI 3 / Swagger 2 / Postman v2.1 一键导入 |
 
 ## 安装
 
@@ -30,100 +31,171 @@ cargo install --path .
 ## 快速开始
 
 ```bash
-requestbaby init myapi && cd myapi     # 生成脚手架
-requestbaby validate collections       # 校验配置（结构/变量/脚本语法）
-requestbaby run collections            # 跑整个集合
-requestbaby run collections --tag smoke    # 标签过滤
-requestbaby run collections -e prod        # 切换环境
-requestbaby run collections --dry-run      # 打印编译出的 curl 命令，不执行
-requestbaby run collections --json         # CI 报告，失败 exit 1
-requestbaby list collections               # 列出用例
-requestbaby schema                         # 导出用例 JSON Schema（喂给 AI）
+requestbaby init myapi && cd myapi   # 生成脚手架
+requestbaby import openapi.json -o api/   # 从 spec 生成用例（OpenAPI3/Swagger2/Postman）
+requestbaby validate collections     # 结构 + 变量引用 + 脚本语法校验
+requestbaby run collections          # 跑整个集合
+requestbaby send collections/01-login.json   # 单用例调试面板（状态/响应头/美化响应体/断言）
+requestbaby watch collections        # 监听变更自动重跑
 ```
 
-## 用例长什么样
+## 命令全景
 
-```json
-{
-  "name": "create-order",
-  "tags": ["smoke", "order"],
-  "request": {
-    "method": "POST",
-    "url": "{{baseUrl}}/orders",
-    "headers": { "Authorization": "Bearer {{token}}" },
-    "body": { "json": { "sku": "{{sku}}" } },
-    "timeoutMs": 5000
-  },
-  "pre":  "req.headers['X-Ts'] = String(Math.floor(Date.now()/1000))",
-  "post": "vars.orderId = res.json().data.id",
-  "tests": [
-    "res.status === 201",
-    "res.json().data.sku === env.sku",
-    "res.timeMs < 1000"
-  ]
-}
+```bash
+requestbaby run <paths> [--tag smoke] [--name login] [-e prod]
+                [--fail-fast] [--dry-run] [--json] [-v]
+                [-o outdir]           # 响应落盘（AI 自修复素材）
+                [--parallel 4]        # 独立用例并发
+                [--report term|json|junit|html]
+requestbaby send <case> [-e env]      # 交互式单发
+requestbaby watch <paths> [...]       # 变更自动重跑
+requestbaby import <spec> [-o dir]    # OpenAPI3/Swagger2/Postman 导入
+requestbaby validate <paths> [-e env]
+requestbaby list <paths>
+requestbaby schema                    # 导出用例 JSON Schema（喂给 AI）
+requestbaby init [dir]
 ```
-
-- `{{var}}`：变量替换（四层作用域：项目 < 环境 < 集合 < 运行时）
-- `{{var:number}}` / `{{var:bool}}`：类型标注——JSON body 数字/布尔字段写 `"{{taskId:number}}"`，渲染后连引号替换为裸值，解决 int64 binding 拒绝字符串的问题
-- `expectStatus`：状态码语法糖（`200` 或 `[200,409]`），免去每个用例写 `res.status === 200`
-- 集合级 `headers`：collection.json 定义默认 headers 逐级继承，用例级同名覆盖——鉴权 API 只需配一次
-- `pre`：请求前脚本，可改写 `req`（动态签名/时间戳）
-- `post`：响应后脚本，`vars.x = ...` 捕获变量传给后续用例（登录→下单）
-- `tests`：JS 表达式数组，逐条求值逐条报错；断言为 false 是正常失败，表达式抛错（如 null 链式取值）会指出具体字段名与修复提示
-
-脚本沙箱可见：`req` / `res`（`status/headers/timeMs/json()/json(path)/text()`）/ `data`（= `res.json()` 快照，推荐 `data.a.b.c` 短写）/ `vars` / `env` / `log()` / `crypto.{md5,sha256,hmacSha256,base64Encode,base64Decode}`
-
-> 脚本异常全透传：pre/post/tests 的运行时错误带 `name/message/stack`，stack 行号已修正为脚本内相对行号。
 
 ## 项目结构
 
 ```
 myapi/
-├── requestbaby.json               # 项目配置：全局变量/默认环境/默认超时
+├── requestbaby.json            # 项目配置：全局变量/默认环境/默认超时
 ├── envs/
-│   ├── dev.json               # { "vars": { "baseUrl": "..." } }
+│   ├── dev.json                # { "vars": {...} }
 │   └── prod.json
 └── collections/
-    └── orders/                # 目录即集合（可无限嵌套）
-        ├── collection.json    # 集合变量/标签，逐级继承
-        ├── 01-login.json      # 文件名序 = 执行序
-        └── 90-refund/
-            └── 01-refund.json
+    └── orders/                 # 目录即集合（无限嵌套，逐级继承）
+        ├── collection.json     # vars + headers + tags + setup/teardown
+        ├── 01-login.json       # 用例（文件名序 = 执行序）
+        ├── 02-create.json      #   支持 cases 数据驱动
+        └── data/users.csv
 ```
+
+## 用例配置
+
+```json
+{
+  "name": "create-order",
+  "tags": ["smoke", "order"],
+  "skip": false,
+  "expectStatus": [200, 201],
+  "request": {
+    "method": "POST",
+    "url": "{{baseUrl}}/orders",
+    "headers": { "Authorization": "Bearer {{token}}" },
+    "body": { "json": { "sku": "{{sku}}", "qty": "{{qty:number}}" } },
+    "timeoutMs": 5000
+  },
+  "pre":  "req.headers['X-Ts'] = String(Math.floor(Date.now()/1000))",
+  "post": "vars.orderId = res.json('data.id')",
+  "tests": [
+    "data.code === 0",
+    "data.data.sku === env.sku",
+    "res.timeMs < 1000"
+  ],
+  "cases": [
+    { "label": "A1", "sku": "A1" },
+    { "label": "B2", "sku": "B2" }
+  ]
+}
+```
+
+### 变量体系（四层，高覆盖低）
+
+```
+requestbaby.json vars  <  envs/<env>.json vars  <  collection.json vars  <  运行时 vars（脚本写入）
+```
+
+| 语法 | 说明 |
+|------|------|
+| `{{name}}` | 字符串替换 |
+| `{{name:number}}` / `{{name:bool}}` | 类型标注：JSON body 值位置连引号替换为裸值（int64 binding 场景） |
+| `{{%ENV_NAME}}` | 进程环境变量（CI 密钥不落盘） |
+
+### 变量定义（对象形态）
+
+```json
+{
+  "token":   { "value": "eyJ...", "secret": true },
+  "apiKey":  { "from": "env", "name": "MY_KEY" }
+}
+```
+
+- `secret: true`：所有输出（curl 命令/报告/日志/快照）自动脱敏为 `****`
+- `from: "env"`：运行时读进程环境变量，缺失报错；默认视为 secret
+
+### 脚本能力（QuickJS 沙箱，100% ES2020）
+
+| 对象 | 能力 |
+|------|------|
+| `req` | pre 中改写 method/url/headers/body，`req.setJson(obj)` |
+| `res` | `status/headers/timeMs/size/text()/json()/json('a.b.c')` 安全取值 |
+| `data` | `res.json()` 快照，`data.a.b.c` 代替长链 |
+| `vars` / `env` | 运行时变量读写 / 只读视图 |
+| `http.request/get/post` | 同步发任意请求（setup 造数/清数、脚本内联调用） |
+| `crypto` | md5 / sha256 / hmacSha256 / base64Encode / base64Decode |
+| `log()` | 调试输出 |
+
+脚本异常全透传：`name/message/stack`，stack 行号修正为脚本内相对行号；tests 区分「断言 false」（正常失败）与「表达式抛错」（配置问题，指出具体字段名与修复提示）。
+
+### 集合级配置（collection.json，逐级继承）
+
+```json
+{
+  "name": "orders",
+  "tags": ["order"],
+  "vars": { "sku": "A1" },
+  "headers": { "authorization": "Bearer {{token}}" },
+  "setup": "const r = http.post(env.baseUrl + '/tasks', {...}); vars.taskId = r.json().id",
+  "teardown": "http.delete(env.baseUrl + '/tasks/' + vars.taskId)"
+}
+```
+
+- headers/vars/tags：向下继承，用例级同名覆盖
+- setup：进入集合执行（造数，可发请求）；teardown：离开执行（清数，无论成败）
+
+### 数据驱动
+
+`"cases"` 内联行数组或 `{"file": "data.csv"}`（首行表头）；用例 × 每行 = 一个实例（`[label]` 标注），行变量优先级最高。
+
+### 断言语法糖
+
+- `expectStatus: 200` 或 `[200,409]`（幂等容忍）
+- `data.a.b.c`（隐式 res.json() 根）
+- `res.json('a.b.c')`（缺路径返回 undefined 不抛错）
 
 ## AI 原生工作流
 
 ```
-1. requestbaby schema > case.schema.json          # 导出配置契约
-2. 把 schema + 接口文档（OpenAPI/curl 示例/PRD）喂给 AI 生成用例 JSON
-3. requestbaby validate collections               # 结构 + 变量引用 + 脚本语法
-4. requestbaby run collections --dry-run          # 审阅编译出的 curl 命令
-5. requestbaby run collections                    # 执行
-   ↳ 报错结构化输出 → 回给 AI 自修复 → 循环
+1. requestbaby schema > case.schema.json        # 配置契约
+2. AI 依 schema + 接口文档/OpenAPI 生成用例 JSON
+3. requestbaby validate collections             # 结构 + 变量 + 脚本语法
+4. requestbaby run collections --dry-run -v     # 审阅 curl 命令与最终 body
+5. requestbaby run collections -o out/          # 执行 + 响应落盘
+   ↳ 失败快照/脱敏报告/响应文件 → 喂回 AI 自修复 → 循环
 ```
 
 ## CI 集成
 
 ```yaml
-# GitHub Actions
-- run: requestbaby run collections --fail-fast
-# 失败 exit 1；--json 输出机器可读报告
+- run: requestbaby run collections --fail-fast --report junit
+# 或 --report html（artifact 挂载）；失败 exit 1
 ```
 
-## 更多
+## 测试与示例
 
-- 架构设计：[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)
-- 配置 Schema：[docs/schema/case.schema.json](docs/schema/case.schema.json)
-- 可运行示例：[examples/demo-api](examples/demo-api)（基于 httpbin.org）
+- 单元 + 集成测试：`cargo test`（内置 mini HTTP server 端到端）
+- 可运行示例：[examples/demo-api](examples/demo-api)（httpbin）
+- 用户项目：`projects/`（gitignore，明文密钥属用户资产）
 
 ## Roadmap
 
-- [ ] 数据驱动（`cases` 参数表）
-- [ ] `--parallel` 并发执行
-- [ ] JUnit XML / HTML 报告
-- [ ] cookie jar 会话保持
-- [ ] `requestbaby send` 交互式单请求调试
+- [ ] native 引擎 feature（hyper 连接复用，大批量/压测档位）
+- [ ] TUI 集合浏览器
+- [ ] HAR / curl 命令导入
+- [ ] 响应 schema 契约校验
+- [ ] 执行历史与 `--compare last` 回归对比
 
 ## License
 
