@@ -31,6 +31,8 @@ pub struct CaseResult {
     pub tests: Vec<TestOutcome>,
     /// 编译出的 curl 命令（dry-run / -v 展示）
     pub curl_cmd: Option<String>,
+    /// body 内容预览（dry-run 展示用，截断）
+    pub body_preview: Option<String>,
 }
 
 impl CaseResult {
@@ -75,7 +77,8 @@ impl Runner {
         v
     }
 
-    fn matches_filter(tags: &[String], name: &str, opts: &RunOptions) -> bool {
+    /// name 过滤同时匹配用例名与文件名 stem（--name enable 能命中 03-enable.json）
+    fn matches_filter(tags: &[String], name: &str, file_stem: &str, opts: &RunOptions) -> bool {
         if opts.tags.is_empty() && opts.name_filter.is_empty() {
             return true;
         }
@@ -87,12 +90,11 @@ impl Runner {
         {
             return false;
         }
-        if !opts.name_filter.is_empty()
-            && !name
-                .to_lowercase()
-                .contains(&opts.name_filter.to_lowercase())
-        {
-            return false;
+        if !opts.name_filter.is_empty() {
+            let kw = opts.name_filter.to_lowercase();
+            if !name.to_lowercase().contains(&kw) && !file_stem.to_lowercase().contains(&kw) {
+                return false;
+            }
         }
         true
     }
@@ -126,6 +128,7 @@ impl Runner {
                         error: Some(format!("{e:#}")),
                         tests: vec![],
                         curl_cmd: None,
+                        body_preview: None,
                     };
                     sink(&r);
                     results.push(r);
@@ -149,7 +152,14 @@ impl Runner {
                 case.name.clone()
             };
 
-            if !Self::matches_filter(&all_tags, &name, opts) {
+            let file_stem = dc
+                .path
+                .file_stem()
+                .unwrap_or_default()
+                .to_string_lossy()
+                .into_owned();
+
+            if !Self::matches_filter(&all_tags, &name, &file_stem, opts) {
                 continue;
             }
 
@@ -185,6 +195,7 @@ impl Runner {
             error: None,
             tests: vec![],
             curl_cmd: None,
+            body_preview: None,
         };
         if case.skip {
             return result;
@@ -279,6 +290,16 @@ impl Runner {
         result.curl_cmd = Some(inv.argv.join(" "));
 
         if opts.dry_run {
+            // 展示最终 body（含 {{var:number}} 类型标注替换结果）；TempPath 尚存活
+            if let Some(tp) = &inv.body {
+                if let Ok(content) = std::fs::read_to_string(tp) {
+                    let mut preview: String = content.chars().take(800).collect();
+                    if content.len() > 800 {
+                        preview.push('…');
+                    }
+                    result.body_preview = Some(preview);
+                }
+            }
             return result;
         }
 

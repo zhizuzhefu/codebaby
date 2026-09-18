@@ -40,6 +40,9 @@ pub fn print_case(r: &CaseResult, verbose: bool) {
         if let Some(cmd) = &r.curl_cmd {
             println!("    {CYAN}$ {cmd}{RESET}");
         }
+        if let Some(b) = &r.body_preview {
+            println!("    {DIM}body: {b}{RESET}");
+        }
     }
     if let Some(e) = &r.error {
         println!("    {RED}↳ {e}{RESET}");

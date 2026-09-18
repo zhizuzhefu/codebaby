@@ -159,9 +159,13 @@ fn inject_resp(ctx: &Ctx<'_>, resp: &RespData) -> Result<()> {
         "__body": resp.body,
     }))?;
     ctx.eval::<(), _>(format!(
-        "globalThis.res = {literal};
-         globalThis.res.text = function() {{ return this.__body; }};
-         globalThis.res.json = function() {{ return JSON.parse(this.__body); }};"
+        r#"globalThis.res = {literal};
+           globalThis.res.text = function() {{ return this.__body; }};
+           globalThis.res.json = function(p) {{
+             const v = JSON.parse(this.__body);
+             if (p === undefined) return v;
+             return String(p).split('.').reduce((acc, k) => (acc == null ? undefined : acc[k]), v);
+           }};"#
     ))
     .map_err(|e| anyhow!("注入 res 失败: {e}"))?;
     Ok(())
@@ -297,11 +301,18 @@ impl ScriptHost for QuickJsHost {
                             ))
                         },
                     }),
-                    Err(e) => results.push(TestOutcome {
-                        expr: expr.clone(),
-                        pass: false,
-                        detail: Some(format!("执行错误: {e}")),
-                    }),
+                    Err(e) => {
+                        // 链式取值遇 undefined/null 抛 TypeError 是最常见翻车点，
+                        // 统一附上安全取值 API 的修复提示
+                        let es = format!("{e}");
+                        results.push(TestOutcome {
+                            expr: expr.clone(),
+                            pass: false,
+                            detail: Some(format!(
+                                "执行错误: {es}｜提示: 可用 res.json('a.b.c') 安全取值，或 (x || '') 兜底"
+                            )),
+                        });
+                    }
                 }
             }
             Ok(results)
@@ -385,6 +396,25 @@ mod tests {
         assert!(!out[1].pass);
         assert!(!out[2].pass);
         assert!(out[2].detail.as_deref().unwrap().contains("执行错误"));
+        assert!(out[2].detail.as_deref().unwrap().contains("安全取值"));
+    }
+
+    #[test]
+    fn res_json_path_safe_access() {
+        let host = QuickJsHost::new();
+        let out = host
+            .eval_tests(
+                &resp(),
+                &BTreeMap::new(),
+                &BTreeMap::new(),
+                &[
+                    "res.json('data.sku') === 'A1'".into(),
+                    "res.json('data.nope.deeper') === undefined".into(),
+                ],
+            )
+            .unwrap();
+        assert!(out[0].pass);
+        assert!(out[1].pass);
     }
 
     #[test]

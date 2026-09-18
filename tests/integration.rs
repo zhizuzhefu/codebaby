@@ -82,6 +82,10 @@ fn route(method: &str, path: &str, body: &str, head: &str) -> (&'static str, Str
             }
         }
         ("POST", "/orders") => ("201 Created", r#"{"data":{"id":42,"sku":"A1"}}"#.into()),
+        ("POST", "/echo") => {
+            let body_json = serde_json::to_string(&body).unwrap_or_default();
+            ("200 OK", format!(r#"{{"body":{body_json}}}"#))
+        }
         ("GET", "/slow") => {
             thread::sleep(Duration::from_millis(150));
             ("200 OK", r#"{"ok":true}"#.into())
@@ -100,7 +104,7 @@ fn write_project(dir: &std::path::Path, port: u16) {
     fs::create_dir_all(dir.join("collections")).unwrap();
     fs::write(
         dir.join("apicase.json"),
-        r#"{"version":1,"defaultEnv":"test","vars":{"user":"admin"},"timeoutMs":5000}"#,
+        r#"{"version":1,"defaultEnv":"test","vars":{"user":"admin","taskId":"738011164633133","flag":"true"},"timeoutMs":5000}"#,
     )
     .unwrap();
     fs::write(
@@ -151,6 +155,21 @@ fn write_project(dir: &std::path::Path, port: u16) {
   "tags": ["slow"],
   "request": { "method": "GET", "url": "{{baseUrl}}/slow" },
   "tests": ["res.timeMs < 10"]
+}"#,
+    )
+    .unwrap();
+    fs::write(
+        dir.join("collections/05-typed-body.json"),
+        r#"{
+  "tags": ["typed"],
+  "request": {
+    "method": "POST",
+    "url": "{{baseUrl}}/echo",
+    "body": { "json": { "taskId": "{{taskId:number}}", "flag": "{{flag:bool}}", "name": "{{user}}" } }
+  },
+  "tests": [
+    "res.json().body === '{\"flag\":true,\"name\":\"admin\",\"taskId\":738011164633133}'"
+  ]
 }"#,
     )
     .unwrap();
@@ -286,6 +305,18 @@ fn strict_parse_unknown_field_fails_at_run() {
 }
 
 #[test]
+fn typed_number_body_end_to_end() {
+    let port = spawn_server();
+    let dir = TempDir::new().unwrap();
+    write_project(dir.path(), port);
+    let out = run_cli(&["run", "collections/05-typed-body.json", "--json"], dir.path());
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(out.status.success(), "{stdout}");
+    let report: serde_json::Value = serde_json::from_str(&stdout).unwrap();
+    assert_eq!(report["passed"], 1, "{stdout}");
+}
+
+#[test]
 fn list_shows_cases() {
     let dir = TempDir::new().unwrap();
     let port = spawn_server();
@@ -294,5 +325,5 @@ fn list_shows_cases() {
     let stdout = strip_ansi(&String::from_utf8_lossy(&out.stdout));
     assert!(out.status.success());
     assert!(stdout.contains("01-health.json"), "{stdout}");
-    assert!(stdout.contains("4 个用例"), "{stdout}");
+    assert!(stdout.contains("5 个用例"), "{stdout}");
 }

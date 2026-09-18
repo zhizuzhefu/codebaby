@@ -32,53 +32,98 @@ impl Vars {
         merged
     }
 
-    /// 替换文本中的 {{var}}（未定义变量原样保留，validate 阶段告警）
+    /// 替换文本中的变量占位符（未定义变量原样保留，validate 阶段告警）：
+    /// - `{{name}}`        → 字符串替换
+    /// - `{{name:number}}` → 数字标注：JSON 值位置 `"{{name:number}}"` 连引号替换为裸数字；
+    ///                      裸位置（URL/header）同样替换；值非数字则保留原占位符
+    /// - `{{name:bool}}`   → 同上，输出 true/false
     pub fn render(&self, input: &str) -> String {
         let mut out = String::with_capacity(input.len());
         let mut rest = input;
         while let Some(start) = rest.find("{{") {
             out.push_str(&rest[..start]);
             let after = &rest[start + 2..];
-            match after.find("}}") {
-                Some(end) => {
-                    let name = after[..end].trim();
-                    match self.get(name) {
-                        Some(v) => out.push_str(v),
-                        None => {
+            let Some(end) = after.find("}}") else {
+                out.push_str("{{");
+                rest = after;
+                break;
+            };
+            let inner = after[..end].trim();
+            let closing = &after[end + 2..];
+            let (name, type_tag) = split_type_tag(inner);
+            match self.get(name) {
+                Some(v) => match type_tag {
+                    Some(tag @ ("number" | "bool")) => {
+                        let valid = match tag {
+                            "number" => Self::is_number(v),
+                            _ => Self::is_bool(v),
+                        };
+                        if valid {
+                            let quoted = out.ends_with('"') && closing.starts_with('"');
+                            if quoted {
+                                out.pop(); // 去左引号
+                            }
+                            out.push_str(v);
+                            rest = if quoted { &closing[1..] } else { closing }; // 跳右引号
+                        } else {
                             out.push_str("{{");
-                            out.push_str(name);
+                            out.push_str(inner);
                             out.push_str("}}");
+                            rest = closing;
                         }
                     }
-                    rest = &after[end + 2..];
-                }
+                    _ => {
+                        out.push_str(v);
+                        rest = closing;
+                    }
+                },
                 None => {
                     out.push_str("{{");
-                    rest = after;
+                    out.push_str(inner);
+                    out.push_str("}}");
+                    rest = closing;
                 }
             }
         }
         out.push_str(rest);
         out
     }
+
+    fn is_number(s: &str) -> bool {
+        s.parse::<f64>().map(|f| f.is_finite()).unwrap_or(false)
+    }
+
+    fn is_bool(s: &str) -> bool {
+        s == "true" || s == "false"
+    }
 }
 
-/// 校验文本中出现的 {{var}} 是否全部有定义
-pub fn find_undefined(input: &str, vars: &Vars) -> Vec<String> {    let mut undefined = vec![];
+/// 拆分 `name:type` → (name, Some(type))；无 `:` 则 (name, None)
+fn split_type_tag(inner: &str) -> (&str, Option<&str>) {
+    match inner.find(':') {
+        Some(i) => (&inner[..i], Some(inner[i + 1..].trim())),
+        None => (inner, None),
+    }
+}
+
+/// 校验文本中出现的变量占位符是否全部有定义（识别 {{name}} 与 {{name:type}}）
+pub fn find_undefined(input: &str, vars: &Vars) -> Vec<String> {
+    let mut undefined = vec![];
     let mut rest = input;
     while let Some(start) = rest.find("{{") {
         let after = &rest[start + 2..];
         if let Some(end) = after.find("}}") {
-            let name = after[..end].trim().to_string();
-            if !name.is_empty() && vars.get(&name).is_none() && !undefined.contains(&name) {
-                undefined.push(name);
+            let inner = after[..end].trim();
+            let (name, _) = split_type_tag(inner);
+            if !name.is_empty() && vars.get(name).is_none() && !undefined.contains(&name.to_string()) {
+                undefined.push(name.to_string());
             }
             rest = &after[end + 2..];
         } else {
             break;
-         }
-     }
-     undefined
+        }
+    }
+    undefined
 }
 
 #[cfg(test)]
@@ -109,5 +154,56 @@ mod tests {
     fn render_trims_name() {
         let v = vars();
         assert_eq!(v.render("{{ a }}"), "2");
+    }
+
+    fn num_vars() -> Vars {
+        let mut v = Vars::new();
+        v.push_layer(BTreeMap::from([
+            ("taskId".into(), "738011164633133".into()),
+            ("flag".into(), "true".into()),
+            ("notNum".into(), "abc".into()),
+        ]));
+        v
+    }
+
+    #[test]
+    fn number_tag_replaces_json_string_position() {
+        let v = num_vars();
+        // JSON body 序列化后：值带引号 → 连引号替换为裸数字
+        assert_eq!(
+            v.render(r#"{"taskId":"{{taskId:number}}"}"#),
+            r#"{"taskId":738011164633133}"#
+        );
+    }
+
+    #[test]
+    fn number_tag_in_bare_position() {
+        let v = num_vars();
+        assert_eq!(v.render("x={{taskId:number}}"), "x=738011164633133");
+    }
+
+    #[test]
+    fn bool_tag_works() {
+        let v = num_vars();
+        assert_eq!(
+            v.render(r#"{"ok":"{{flag:bool}}"}"#),
+            r#"{"ok":true}"#
+        );
+    }
+
+    #[test]
+    fn invalid_typed_value_kept_as_is() {
+        let v = num_vars();
+        // 值非数字：保留占位符（validate/运行报告可见）
+        assert_eq!(
+            v.render(r#"{"x":"{{notNum:number}}"}"#),
+            r#"{"x":"{{notNum:number}}"}"#
+        );
+    }
+
+    #[test]
+    fn undefined_detection_ignores_type_tag() {
+        let v = num_vars();
+        assert_eq!(find_undefined("{{taskId:number}} {{nope}}", &v), vec!["nope".to_string()]);
     }
 }

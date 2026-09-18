@@ -28,12 +28,12 @@
     },
     "post": {
       "type": "string",
-      "description": "后置 JS 脚本：响应返回后、断言前执行。读 res.status/headers/timeMs/json()/text()，写 vars.* 捕获传递给后续用例"
+      "description": "后置 JS 脚本：响应返回后、断言前执行。读 res.status/headers/timeMs/json()/json(path)/text()，写 vars.* 捕获传递给后续用例"
     },
     "tests": {
       "type": "array",
       "items": { "type": "string" },
-      "description": "断言：JS 表达式数组，逐条求值，真值为通过。可见 res/vars/env/crypto"
+      "description": "断言：JS 表达式数组，逐条求值，真值为通过。可见 res/vars/env/crypto。推荐 res.json('a.b.c') 安全取值（路径缺失返回 undefined 不抛错）"
     }
   },
   "definitions": {
@@ -57,7 +57,7 @@
           "description": "请求头，值支持 {{var}}"
         },
         "body": {
-          "description": "请求体：{\"json\": <对象/数组>} 序列化为 JSON 并自动 Content-Type；{\"text\": \"字符串\"} 原样发送。JSON 内 {{var}} 在引号内按字符串替换，需数值时写在引号外",
+          "description": "请求体：{\"json\": <对象/数组>} 序列化为 JSON 并自动 Content-Type；{\"text\": \"字符串\"} 原样发送。变量语法：{{var}} 字符串替换；{{var:number}} / {{var:bool}} 类型标注——写在 JSON 值位置如 \"taskId\": \"{{taskId:number}}\"，渲染后连引号替换为裸数字/布尔（服务端 int64 binding 场景必需）",
           "oneOf": [
             {
               "type": "object",
