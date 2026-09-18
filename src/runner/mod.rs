@@ -15,6 +15,17 @@ pub struct RunOptions {
     pub fail_fast: bool,
     pub dry_run: bool,
     pub verbose: bool,
+    /// 响应落盘目录（-o）：每用例一个 JSON（meta + body）
+    pub output_dir: Option<std::path::PathBuf>,
+}
+
+/// 失败时的响应快照（进 --json 报告，辅助 AI 自修复）
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct ResponseSnapshot {
+    pub status: u16,
+    pub headers: Vec<(String, String)>,
+    pub body: String,
+    pub duration_ms: u64,
 }
 
 /// 单用例执行结果
@@ -33,6 +44,8 @@ pub struct CaseResult {
     pub curl_cmd: Option<String>,
     /// body 内容预览（dry-run 展示用，截断）
     pub body_preview: Option<String>,
+    /// 失败时的响应快照
+    pub response_snapshot: Option<ResponseSnapshot>,
 }
 
 impl CaseResult {
@@ -45,6 +58,8 @@ impl CaseResult {
 pub struct ProjectCtx {
     pub project: Project,
     pub env_vars: BTreeMap<String, String>,
+    /// 敏感变量值清单（输出层脱敏用）
+    pub secret_values: Vec<String>,
 }
 
 /// 编排器：discover → filter → execute（顺序）→ results
@@ -68,10 +83,10 @@ impl Runner {
     /// 构建某个用例的变量作用域：project < env < 集合链 < runtime
     fn vars_for(&self, chain: &[Collection]) -> Vars {
         let mut v = Vars::new();
-        v.push_layer(self.ctx.project.vars.0.clone());
+        v.push_layer(self.ctx.project.vars.plain());
         v.push_layer(self.ctx.env_vars.clone());
         for c in chain {
-            v.push_layer(c.vars.0.clone());
+            v.push_layer(c.vars.plain());
         }
         v.push_layer(self.runtime_vars.clone());
         v
@@ -129,6 +144,7 @@ impl Runner {
                         tests: vec![],
                         curl_cmd: None,
                         body_preview: None,
+                        response_snapshot: None,
                     };
                     sink(&r);
                     results.push(r);
@@ -196,6 +212,7 @@ impl Runner {
             tests: vec![],
             curl_cmd: None,
             body_preview: None,
+            response_snapshot: None,
         };
         if case.skip {
             return result;
@@ -306,6 +323,7 @@ impl Runner {
                     result.body_preview = Some(preview);
                 }
             }
+            self.redact_result(&mut result);
             return result;
         }
 
@@ -322,6 +340,7 @@ impl Runner {
 
         if let Some(e) = &resp.transport_error {
             result.error = Some(format!("传输错误: {e}"));
+            self.redact_result(&mut result);
             return result;
         }
 
@@ -378,7 +397,67 @@ impl Runner {
                 Err(e) => result.error = Some(format!("tests 宿主错误: {e:#}")),
             }
         }
+
+        // ---- 失败响应快照 + 响应落盘（-o）+ 输出脱敏 ----
+        if !result.passed() {
+            result.response_snapshot = Some(ResponseSnapshot {
+                status: resp_data.status,
+                headers: resp_data.headers.clone(),
+                body: {
+                    let b = &resp_data.body;
+                    b.chars().take(4000).collect::<String>()
+                },
+                duration_ms: resp_data.time_ms,
+            });
+        }
+        if let Some(dir) = &opts.output_dir {
+            let file = dir.join(format!("{}.resp.json", dc.rel.trim_end_matches(".json")));
+            if let Some(parent) = file.parent() {
+                let _ = std::fs::create_dir_all(parent);
+            }
+            let payload = serde_json::json!({
+                "case": dc.rel,
+                "name": &result.name,
+                "status": resp_data.status,
+                "durationMs": resp_data.time_ms,
+                "headers": resp_data.headers,
+                "body": resp_data.body,
+            });
+            let _ = std::fs::write(&file, serde_json::to_vec_pretty(&payload).unwrap_or_default());
+        }
+        self.redact_result(&mut result);
         result
+    }
+
+    /// 输出层脱敏：secret 变量值在 curl 命令/URL/错误/预览/快照中一律替换为 ****
+    fn redact_result(&self, result: &mut CaseResult) {
+        let secrets: &[String] = &self.ctx.secret_values;
+        if secrets.is_empty() {
+            return;
+        }
+        let redact = |s: &mut String| {
+            for sv in secrets {
+                if !sv.is_empty() && s.contains(sv.as_str()) {
+                    *s = s.replace(sv.as_str(), "****");
+                }
+            }
+        };
+        redact(&mut result.url);
+        if let Some(c) = &mut result.curl_cmd {
+            redact(c);
+        }
+        if let Some(b) = &mut result.body_preview {
+            redact(b);
+        }
+        if let Some(e) = &mut result.error {
+            redact(e);
+        }
+        if let Some(snap) = &mut result.response_snapshot {
+            redact(&mut snap.body);
+            for (k, v) in &mut snap.headers {
+                redact(v);
+            }
+        }
     }
 }
 
@@ -395,15 +474,29 @@ pub fn load_project_ctx(start: &Path, env_name: &str) -> Result<ProjectCtx> {
             if env_path.exists() {
                 let f = load_strict::<crate::config::EnvFile>(&env_path)
                     .with_context(|| format!("环境文件 {env_name} 加载失败"))?;
-                f.vars.0
+                f.vars.plain()
             } else {
                 BTreeMap::new()
             }
         }
         None => BTreeMap::new(),
     };
+    let secret_values = match &root {
+        Some(r) => {
+            let mut s = load_strict::<Project>(&r.join(discover::PROJECT_FILE))
+                .map(|p| p.vars.secret_values())
+                .unwrap_or_default();
+            let env_path = r.join("envs").join(format!("{env_name}.json"));
+            if let Ok(f) = load_strict::<crate::config::EnvFile>(&env_path) {
+                s.extend(f.vars.secret_values());
+            }
+            s
+        }
+        None => vec![],
+    };
     Ok(ProjectCtx {
         project,
         env_vars,
+        secret_values,
     })
 }

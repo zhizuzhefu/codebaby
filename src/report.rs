@@ -149,6 +149,8 @@ struct JsonResult {
     error: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     curl: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    response: Option<crate::runner::ResponseSnapshot>,
     tests: Vec<JsonTest>,
 }
 
@@ -181,6 +183,7 @@ pub fn render_json(results: &[CaseResult], include_curl: bool) -> String {
                 passed: r.passed(),
                 error: r.error.clone(),
                 curl: if include_curl { r.curl_cmd.clone() } else { None },
+                response: r.response_snapshot.clone(),
                 tests: r
                     .tests
                     .iter()

@@ -14,12 +14,13 @@ pub struct DiscoveredCase {
 
 const IGNORED_DIRS: &[&str] = &["envs", "node_modules", ".git", "target", ".idea", ".vscode"];
 
-/// 项目根配置文件名（新名优先，旧名 apicase.json 兼容读取）
-pub const PROJECT_FILES: &[&str] = &["requestbaby.json", "apicase.json"];
+/// 项目根配置文件名
+pub const PROJECT_FILE: &str = "requestbaby.json";
 
 /// 目录下存在的项目配置文件路径
 pub fn project_file(dir: &Path) -> Option<PathBuf> {
-    PROJECT_FILES.iter().map(|f| dir.join(f)).find(|p| p.exists())
+    let p = dir.join(PROJECT_FILE);
+    p.exists().then_some(p)
 }
 
 /// 从 start（文件取父目录）向上查找项目根

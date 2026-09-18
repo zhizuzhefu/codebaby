@@ -26,7 +26,7 @@ pub fn validate_paths(paths: &[std::path::PathBuf], env_name: &str) -> Result<Ve
     if let Some(root) = &root0 {
         if let Some(pf) = discover::project_file(root) {
             match load_strict::<Project>(&pf) {
-                Ok(p) => base_vars.push_layer(p.vars.0.clone()),
+                Ok(p) => base_vars.push_layer(p.vars.plain()),
                 Err(e) => issues.push(ValidationIssue {
                     file: pf.display().to_string(),
                     level: "error",
@@ -37,7 +37,7 @@ pub fn validate_paths(paths: &[std::path::PathBuf], env_name: &str) -> Result<Ve
         let env_path = root.join("envs").join(format!("{env_name}.json"));
         if env_path.exists() {
             match load_strict::<EnvFile>(&env_path) {
-                Ok(f) => base_vars.push_layer(f.vars.0.clone()),
+                Ok(f) => base_vars.push_layer(f.vars.plain()),
                 Err(e) => issues.push(ValidationIssue {
                     file: env_path.display().to_string(),
                     level: "error",
@@ -106,7 +106,7 @@ fn validate_case(
     // 已知变量：base + 集合链 + 全部用例脚本写入的 vars（跨用例传递）
     let mut vars = base.clone();
     for c in &dc.chain {
-        vars.push_layer(c.vars.0.clone());
+        vars.push_layer(c.vars.plain());
     }
     let mut known = vars.env_snapshot();
     for k in global_written {

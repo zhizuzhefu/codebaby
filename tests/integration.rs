@@ -38,7 +38,8 @@ fn handle(mut stream: TcpStream) {
     let req_line = lines.next().unwrap_or_default().to_string();
     let mut parts = req_line.split_whitespace();
     let method = parts.next().unwrap_or("").to_string();
-    let path = parts.next().unwrap_or("").to_string();
+    let raw_path = parts.next().unwrap_or("").to_string();
+    let path = raw_path.split('?').next().unwrap_or("").to_string();
     let mut content_length = 0usize;
     for l in lines {
         if let Some(v) = l.to_ascii_lowercase().strip_prefix("content-length:") {
@@ -118,7 +119,7 @@ fn write_project(dir: &std::path::Path, port: u16) {
     fs::create_dir_all(dir.join("collections")).unwrap();
     fs::write(
         dir.join("requestbaby.json"),
-        r#"{"version":1,"defaultEnv":"test","vars":{"user":"admin","taskId":"738011164633133","flag":"true"},"timeoutMs":5000}"#,
+        r#"{"version":1,"defaultEnv":"test","vars":{"user":"admin","taskId":"738011164633133","flag":"true","secretKey":{"value":"rb-secret-42","secret":true}},"timeoutMs":5000}"#,
     )
     .unwrap();
     fs::write(
@@ -184,6 +185,31 @@ fn write_project(dir: &std::path::Path, port: u16) {
   "tests": [
     "res.json().body === '{\"flag\":true,\"name\":\"admin\",\"taskId\":738011164633133}'"
   ]
+}"#,
+    )
+    .unwrap();
+    fs::write(
+        dir.join("collections/07-secret.json"),
+        r#"{
+  "tags": ["secret"],
+  "request": {
+    "method": "GET",
+    "url": "{{baseUrl}}/health",
+    "headers": { "x-secret-key": "{{secretKey}}" }
+  },
+  "tests": ["res.status === 200"]
+}"#,
+    )
+    .unwrap();
+    fs::write(
+        dir.join("collections/08-envvar.json"),
+        r#"{
+  "tags": ["envvar"],
+  "request": {
+    "method": "GET",
+    "url": "{{baseUrl}}/health?trace={{%RB_TRACE_ID}}"
+  },
+  "tests": ["res.status === 200"]
 }"#,
     )
     .unwrap();
@@ -368,6 +394,60 @@ fn collection_headers_and_sugar_end_to_end() {
 }
 
 #[test]
+fn secret_vars_redacted_in_output() {
+    let port = spawn_server();
+    let dir = TempDir::new().unwrap();
+    write_project(dir.path(), port);
+    let out = run_cli(&["run", "collections/07-secret.json", "--dry-run"], dir.path());
+    let stdout = strip_ansi(&String::from_utf8_lossy(&out.stdout));
+    assert!(out.status.success());
+    assert!(!stdout.contains("rb-secret-42"), "secret 明文不得出现在输出: {stdout}");
+    assert!(stdout.contains("****"), "应脱敏: {stdout}");
+}
+
+#[test]
+fn env_var_inline_syntax() {
+    let port = spawn_server();
+    let dir = TempDir::new().unwrap();
+    write_project(dir.path(), port);
+    let out = Command::new(BIN)
+        .args(["run", "collections/08-envvar.json", "--json"])
+        .current_dir(dir.path())
+        .env("RB_TRACE_ID", "tr-9527")
+        .output()
+        .unwrap();
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(out.status.success(), "{stdout}");
+    assert!(stdout.contains("tr-9527"), "%%ENV%% 应被替换: {stdout}");
+}
+
+#[test]
+fn output_dir_persists_responses() {
+    let port = spawn_server();
+    let dir = TempDir::new().unwrap();
+    write_project(dir.path(), port);
+    let outdir = dir.path().join("out");
+    let out = run_cli(&["run", "collections/01-health.json", "-o", "out"], dir.path());
+    assert!(out.status.success());
+    let saved = std::fs::read_to_string(outdir.join("collections/01-health.resp.json")).unwrap();
+    assert!(saved.contains("\"status\": 200"), "{saved}");
+}
+
+#[test]
+fn failed_case_has_response_snapshot() {
+    let port = spawn_server();
+    let dir = TempDir::new().unwrap();
+    write_project(dir.path(), port);
+    let out = run_cli(&["run", "collections/04-slow-fail.json", "--json"], dir.path());
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let report: serde_json::Value = serde_json::from_str(&stdout).unwrap();
+    assert!(report["results"][0]["response"]["body"]
+        .as_str()
+        .unwrap()
+        .contains("ok"), "失败快照应含响应体: {stdout}");
+}
+
+#[test]
 fn list_shows_cases() {
     let dir = TempDir::new().unwrap();
     let port = spawn_server();
@@ -376,5 +456,5 @@ fn list_shows_cases() {
     let stdout = strip_ansi(&String::from_utf8_lossy(&out.stdout));
     assert!(out.status.success());
     assert!(stdout.contains("01-health.json"), "{stdout}");
-    assert!(stdout.contains("6 个用例"), "{stdout}");
+    assert!(stdout.contains("8 个用例"), "{stdout}");
 }

@@ -72,6 +72,9 @@ enum Cmd {
         /// 详细输出：curl 命令 / 全部断言 / 脚本日志
         #[arg(short, long)]
         verbose: bool,
+        /// 响应落盘目录（每用例一个 JSON：meta + body）
+        #[arg(short, long)]
+        output: Option<String>,
     },
 }
 
@@ -85,8 +88,8 @@ fn main() -> ExitCode {
         }
         Cmd::Validate { paths, env } => cmd_validate(&paths, env.as_deref()),
         Cmd::List { paths } => cmd_list(&paths),
-        Cmd::Run { paths, env, tag, name, fail_fast, dry_run, json, verbose } => {
-            cmd_run(&paths, env.as_deref(), tag, name.as_deref(), fail_fast, dry_run, json, verbose)
+        Cmd::Run { paths, env, tag, name, fail_fast, dry_run, json, verbose, output } => {
+            cmd_run(&paths, env.as_deref(), tag, name.as_deref(), fail_fast, dry_run, json, verbose, output.as_deref())
         }
     };
     ExitCode::from(code)
@@ -204,6 +207,7 @@ fn cmd_run(
     dry_run: bool,
     json: bool,
     verbose: bool,
+    output: Option<&str>,
 ) -> u8 {
     let pb: Vec<PathBuf> = paths.iter().map(PathBuf::from).collect();
     let result = (|| -> Result<u8> {
@@ -223,6 +227,7 @@ fn cmd_run(
             fail_fast,
             dry_run,
             verbose,
+            output_dir: output.map(std::path::PathBuf::from),
         };
 
         if !json {

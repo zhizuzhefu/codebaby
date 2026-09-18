@@ -34,6 +34,7 @@ impl Vars {
 
     /// 替换文本中的变量占位符（未定义变量原样保留，validate 阶段告警）：
     /// - `{{name}}`        → 字符串替换
+    /// - `{{%NAME}}`       → 读进程环境变量 NAME（CI 密钥不落盘）
     /// - `{{name:number}}` → 数字标注：JSON 值位置 `"{{name:number}}"` 连引号替换为裸数字；
     ///                      裸位置（URL/header）同样替换；值非数字则保留原占位符
     /// - `{{name:bool}}`   → 同上，输出 true/false
@@ -50,6 +51,27 @@ impl Vars {
             };
             let inner = after[..end].trim();
             let closing = &after[end + 2..];
+
+            // {{%ENV_NAME}}：进程环境变量
+            if let Some(env_name) = inner.strip_prefix('%') {
+                if !env_name.is_empty() {
+                    match std::env::var(env_name) {
+                        Ok(v) => {
+                            out.push_str(&v);
+                            rest = closing;
+                            continue;
+                        }
+                        Err(_) => {
+                            out.push_str("{{");
+                            out.push_str(inner);
+                            out.push_str("}}");
+                            rest = closing;
+                            continue;
+                        }
+                    }
+                }
+            }
+
             let (name, type_tag) = split_type_tag(inner);
             match self.get(name) {
                 Some(v) => match type_tag {
@@ -106,7 +128,8 @@ fn split_type_tag(inner: &str) -> (&str, Option<&str>) {
     }
 }
 
-/// 校验文本中出现的变量占位符是否全部有定义（识别 {{name}} 与 {{name:type}}）
+/// 校验文本中出现的变量占位符是否全部有定义
+/// （{{%ENV}} 跳过：进程环境变量无法静态校验；{{name:type}} 取 name 部分检查）
 pub fn find_undefined(input: &str, vars: &Vars) -> Vec<String> {
     let mut undefined = vec![];
     let mut rest = input;
@@ -114,6 +137,10 @@ pub fn find_undefined(input: &str, vars: &Vars) -> Vec<String> {
         let after = &rest[start + 2..];
         if let Some(end) = after.find("}}") {
             let inner = after[..end].trim();
+            if inner.starts_with('%') {
+                rest = &after[end + 2..];
+                continue;
+            }
             let (name, _) = split_type_tag(inner);
             if !name.is_empty() && vars.get(name).is_none() && !undefined.contains(&name.to_string()) {
                 undefined.push(name.to_string());
