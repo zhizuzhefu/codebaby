@@ -235,20 +235,15 @@ fn cmd_run(
         }
 
         let mut r = runner::Runner::new(ctx);
-        let results = r.run(&cases, &opts, |res| {
-            if !json {
-                report::print_case(res, verbose || dry_run);
-                if dry_run {
-                    println!();
-                }
-            }
-        })?;
+        let results = r.run(&cases, &opts, |_| {})?;
 
         if json {
             println!("{}", report::render_json(&results, verbose));
             let failed = results.iter().filter(|x| !x.passed() && !x.skipped).count();
             return Ok(if failed > 0 { 1 } else { 0 });
         }
+        // 收集后统一渲染，保证各列对齐（URL 完整显示，超长仅剥 query）
+        report::print_results(&results, verbose || dry_run);
         report::print_summary(&results);
         let failed = results.iter().filter(|x| !x.passed() && !x.skipped).count();
         Ok(if failed > 0 { 1 } else { 0 })
