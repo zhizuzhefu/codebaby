@@ -1,0 +1,9 @@
+{
+  "version": 1,
+  "defaultEnv": "dev",
+  "vars": {
+    "user": "admin",
+    "pass": "secret"
+  },
+  "timeoutMs": 10000
+}

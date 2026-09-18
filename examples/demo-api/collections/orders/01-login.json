@@ -1,0 +1,16 @@
+{
+  "name": "login",
+  "tags": ["smoke", "auth"],
+  "request": {
+    "method": "POST",
+    "url": "{{baseUrl}}/post",
+    "body": { "json": { "username": "{{user}}", "password": "{{pass}}" } }
+  },
+  "pre": "req.headers['X-Timestamp'] = String(Math.floor(Date.now() / 1000))",
+  "post": "vars.echoUser = res.json().json.username",
+  "tests": [
+    "res.status === 200",
+    "res.json().json.username === env.user",
+    "res.timeMs < 5000"
+  ]
+}
