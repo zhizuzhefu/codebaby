@@ -26,4 +26,10 @@ pub struct Collection {
     /// 集合级标签（附加到该集合下所有用例）
     #[serde(default)]
     pub tags: Vec<String>,
+    /// 进入集合（首个用例前）执行：可写 vars、可 http.request 造数
+    #[serde(default)]
+    pub setup: String,
+    /// 离开集合（最后用例后，无论成败）执行：清理数据
+    #[serde(default)]
+    pub teardown: String,
 }

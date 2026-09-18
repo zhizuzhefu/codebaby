@@ -92,6 +92,46 @@ impl Runner {
         v
     }
 
+    /// cur 相对 prev 新进入的目录层级（浅 → 深，含 cur 自身）
+    fn entering_levels(prev: Option<&Path>, cur: &Path) -> Vec<std::path::PathBuf> {
+        // 计算双方祖先链，取 cur 链中 prev 链前缀之后的部分
+        let chain_of = |p: &Path| -> Vec<std::path::PathBuf> {
+            let mut out = vec![];
+            let mut acc = std::path::PathBuf::new();
+            for seg in p.components() {
+                use std::path::Component;
+                match seg {
+                    Component::RootDir | Component::Prefix(_) => {
+                        acc.push(seg.as_os_str());
+                    }
+                    Component::Normal(n) => {
+                        acc.push(n);
+                        out.push(acc.clone());
+                    }
+                    _ => {}
+                }
+            }
+            out
+        };
+        let cur_chain = chain_of(cur);
+        let prev_len = prev
+            .map(|p| {
+                let pc = chain_of(p);
+                // prev 是 cur 的祖先时：取其链长度；否则公共祖先长度
+                let mut common = 0;
+                for (a, b) in pc.iter().zip(cur_chain.iter()) {
+                    if a == b {
+                        common += 1;
+                    } else {
+                        break;
+                    }
+                }
+                common
+            })
+            .unwrap_or(0);
+        cur_chain[prev_len.min(cur_chain.len())..].to_vec()
+    }
+
     /// name 过滤同时匹配用例名与文件名 stem（--name enable 能命中 03-enable.json）
     fn matches_filter(tags: &[String], name: &str, file_stem: &str, opts: &RunOptions) -> bool {
         if opts.tags.is_empty() && opts.name_filter.is_empty() {
@@ -114,7 +154,7 @@ impl Runner {
         true
     }
 
-    /// 执行全部发现用例（按 rel 路径序）
+    /// 执行全部发现用例（按 rel 路径序；目录进出触发集合 setup/teardown）
     pub fn run(
         &mut self,
         cases: &[discover::DiscoveredCase],
@@ -122,7 +162,34 @@ impl Runner {
         mut sink: impl FnMut(&CaseResult),
     ) -> Result<Vec<CaseResult>> {
         let mut results = vec![];
+        let mut prev_dir: Option<std::path::PathBuf> = None;
+        let mut active_dirs: Vec<std::path::PathBuf> = vec![]; // 当前进入的目录层级（浅→深）
+
         for dc in cases {
+            let case_dir = dc
+                .path
+                .parent()
+                .map(|p| p.to_path_buf())
+                .unwrap_or_default();
+
+            // ---- 进入新目录层级：执行新增层级的 setup（浅 → 深）----
+            if prev_dir.as_deref() != Some(case_dir.as_path()) {
+                let new_levels = Self::entering_levels(prev_dir.as_deref(), &case_dir);
+                for lvl in &new_levels {
+                    active_dirs.push(lvl.clone());
+                    if !opts.dry_run {
+                        if let Some(r) = self.run_collection_script(lvl, "setup") {
+                            sink(&r);
+                            results.push(r);
+                            if opts.fail_fast {
+                                return self.finish_teardown(opts, active_dirs, results);
+                            }
+                        }
+                    }
+                }
+                prev_dir = Some(case_dir);
+            }
+
             let case = match load_strict::<TestCase>(&dc.path) {
                 Ok(c) => c,
                 Err(e) => {
@@ -149,7 +216,7 @@ impl Runner {
                     sink(&r);
                     results.push(r);
                     if opts.fail_fast {
-                        return Ok(results);
+                        break;
                     }
                     continue;
                 }
@@ -167,7 +234,6 @@ impl Runner {
             } else {
                 case.name.clone()
             };
-
             let file_stem = dc
                 .path
                 .file_stem()
@@ -179,15 +245,158 @@ impl Runner {
                 continue;
             }
 
-            let r = self.execute_case(dc, &case, &all_tags, &name, opts);
-            let stop = opts.fail_fast && !r.passed();
-            sink(&r);
-            results.push(r);
+            // ---- 数据驱动展开（用例 × 行）----
+            let rows: Vec<Option<BTreeMap<String, String>>> = match &case.cases {
+                None => vec![None],
+                Some(spec) => {
+                    let base = dc.path.parent().unwrap_or(std::path::Path::new("."));
+                    match spec.resolve(base) {
+                        Ok(rs) if !rs.is_empty() => rs.into_iter().map(Some).collect(),
+                        Ok(_) => vec![None],
+                        Err(e) => {
+                            let r = self.error_result(dc, &name, &all_tags, format!("数据文件加载失败: {e}"));
+                            sink(&r);
+                            results.push(r);
+                            if opts.fail_fast {
+                                break;
+                            }
+                            continue;
+                        }
+                    }
+                }
+            };
+
+            let mut stop = false;
+            for (i, row) in rows.iter().enumerate() {
+                let inst_name = match (&case.cases, row) {
+                    (Some(_), Some(r)) => {
+                        let label = r.get("label").cloned().unwrap_or_else(|| format!("#{}", i));
+                        format!("{name} [{label}]")
+                    }
+                    _ => name.clone(),
+                };
+                let r = self.execute_case(dc, &case, &all_tags, &inst_name, row.as_ref(), opts);
+                let bad = !r.passed();
+                sink(&r);
+                results.push(r);
+                if opts.fail_fast && bad {
+                    stop = true;
+                    break;
+                }
+            }
             if stop {
-                return Ok(results);
+                break;
+            }
+        }
+
+        self.finish_teardown(opts, active_dirs, results)
+    }
+
+    /// teardown：活跃层级深 → 浅，无论成败执行（失败仅 stderr 提示）
+    fn finish_teardown(
+        &mut self,
+        opts: &RunOptions,
+        active_dirs: Vec<std::path::PathBuf>,
+        results: Vec<CaseResult>,
+    ) -> Result<Vec<CaseResult>> {
+        if !opts.dry_run {
+            for lvl in active_dirs.iter().rev() {
+                if let Some(r) = self.run_collection_script(lvl, "teardown") {
+                    eprintln!(
+                        "\x1b[33m[teardown] {} {}\x1b[0m",
+                        lvl.display(),
+                        r.error.as_deref().unwrap_or("")
+                    );
+                }
             }
         }
         Ok(results)
+    }
+
+    /// 执行某目录 collection.json 的 setup/teardown；失败返回合成结果
+    fn run_collection_script(&mut self, dir: &Path, kind: &str) -> Option<CaseResult> {
+        let cfg_path = dir.join("collection.json");
+        let Ok(col) = load_strict::<Collection>(&cfg_path) else {
+            return None;
+        };
+        let script = match kind {
+            "setup" => &col.setup,
+            _ => &col.teardown,
+        };
+        if script.is_empty() {
+            return None;
+        }
+        let display_name = if col.name.is_empty() {
+            dir.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default()
+        } else {
+            col.name.clone()
+        };
+        let env = {
+            let mut v = Vars::new();
+            v.push_layer(self.ctx.project.vars.plain());
+            v.push_layer(self.ctx.env_vars.clone());
+            v.push_layer(col.vars.plain());
+            v.push_layer(self.runtime_vars.clone());
+            v.env_snapshot()
+        };
+        match self.script.run_scoped(&self.runtime_vars, &env, script) {
+            Ok(out) => {
+                if let Some(e) = out.error {
+                    return Some(CaseResult {
+                        rel: format!("({kind}) {}", dir.display()),
+                        name: format!("({kind}) {display_name}"),
+                        tags: vec![],
+                        method: "-".into(),
+                        url: "-".into(),
+                        status: 0,
+                        duration_ms: 0,
+                        skipped: false,
+                        error: Some(format!("{kind} 脚本失败: {e}")),
+                        tests: vec![],
+                        curl_cmd: None,
+                        body_preview: None,
+                        response_snapshot: None,
+                    });
+                }
+                self.runtime_vars.extend(out.vars);
+            }
+            Err(e) => {
+                return Some(CaseResult {
+                    rel: format!("({kind}) {}", dir.display()),
+                    name: format!("({kind}) {display_name}"),
+                    tags: vec![],
+                    method: "-".into(),
+                    url: "-".into(),
+                    status: 0,
+                    duration_ms: 0,
+                    skipped: false,
+                    error: Some(format!("{kind} 宿主错误: {e:#}")),
+                    tests: vec![],
+                    curl_cmd: None,
+                    body_preview: None,
+                    response_snapshot: None,
+                });
+            }
+        }
+        None
+    }
+
+    fn error_result(&self, dc: &discover::DiscoveredCase, name: &str, tags: &[String], msg: String) -> CaseResult {
+        CaseResult {
+            rel: dc.rel.clone(),
+            name: name.to_string(),
+            tags: tags.to_vec(),
+            method: "-".into(),
+            url: "-".into(),
+            status: 0,
+            duration_ms: 0,
+            skipped: false,
+            error: Some(msg),
+            tests: vec![],
+            curl_cmd: None,
+            body_preview: None,
+            response_snapshot: None,
+        }
     }
 
     fn execute_case(
@@ -196,9 +405,14 @@ impl Runner {
         case: &TestCase,
         tags: &[String],
         name: &str,
+        row: Option<&BTreeMap<String, String>>,
         opts: &RunOptions,
     ) -> CaseResult {
-        let vars = self.vars_for(&dc.chain);
+        let mut vars = self.vars_for(&dc.chain);
+        // 数据驱动行变量：优先级最高
+        if let Some(row) = row {
+            vars.push_layer(row.clone());
+        }
         let mut result = CaseResult {
             rel: dc.rel.clone(),
             name: name.to_string(),
@@ -388,7 +602,11 @@ impl Runner {
         }
         exprs.extend(case.tests.iter().cloned());
         if !exprs.is_empty() {
-            let env_now = self.vars_for(&dc.chain).env_snapshot();
+            let mut env_vars = self.vars_for(&dc.chain);
+            if let Some(row) = row {
+                env_vars.push_layer(row.clone());
+            }
+            let env_now = env_vars.env_snapshot();
             match self
                 .script
                 .eval_tests(&resp_data, &self.runtime_vars, &env_now, &exprs)
@@ -454,7 +672,7 @@ impl Runner {
         }
         if let Some(snap) = &mut result.response_snapshot {
             redact(&mut snap.body);
-            for (k, v) in &mut snap.headers {
+            for (_k, v) in &mut snap.headers {
                 redact(v);
             }
         }

@@ -50,6 +50,9 @@ pub trait ScriptHost {
     /// 后置脚本：注入 res/vars/env，返回变量回写
     fn run_post(&self, resp: &RespData, vars: &BTreeMap<String, String>, env: &BTreeMap<String, String>, script: &str) -> Result<ScriptOutcome>;
 
+    /// 集合级脚本（setup/teardown）：注入 vars/env/http（可发请求造数/清数）
+    fn run_scoped(&self, vars: &BTreeMap<String, String>, env: &BTreeMap<String, String>, script: &str) -> Result<ScriptOutcome>;
+
     /// 断言求值：注入 res/vars/env，逐条 eval
     fn eval_tests(&self, resp: &RespData, vars: &BTreeMap<String, String>, env: &BTreeMap<String, String>, tests: &[String]) -> Result<Vec<TestOutcome>>;
 

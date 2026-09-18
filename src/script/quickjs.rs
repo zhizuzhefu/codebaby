@@ -99,8 +99,8 @@ fn fix_stack_lines(stack: &str, offset: usize) -> String {
         .unwrap_or_default()
 }
 
-/// 安装公共设施：__logs / log / crypto
-fn install_common<'js>(ctx: &Ctx<'js>) -> Result<()> {
+/// 安装公共设施：__logs / log / crypto / http
+fn install_common(ctx: &Ctx<'_>) -> Result<()> {
     ctx.eval::<(), _>(
         r#"globalThis.__logs = [];
             globalThis.log = (...a) => __logs.push(a.map(x => { try { return typeof x === 'object' ? JSON.stringify(x) : String(x) } catch(e) { return String(x) } }).join(' '));"#,
@@ -109,7 +109,69 @@ fn install_common<'js>(ctx: &Ctx<'js>) -> Result<()> {
     let g = ctx.globals();
     g.set("crypto", crypto_module(ctx)?)
         .map_err(|e| anyhow!("安装 crypto 失败: {e}"))?;
+
+    // http.request：同步 curl（参数/返回均 JSON 字符串，规避 host 绑定复杂度）
+    let http_fn = Function::new(ctx.clone(), |opts_json: String| -> String {
+        do_curl(&opts_json)
+    })
+    .map_err(|e| anyhow!("注册 __httpRequest 失败: {e}"))?;
+    g.set("__httpRequest", http_fn)
+        .map_err(|e| anyhow!("安装 __httpRequest 失败: {e}"))?;
+    ctx.eval::<(), _>(
+        r#"globalThis.http = {
+             request(o) {
+               const r = JSON.parse(__httpRequest(JSON.stringify(o || {})));
+               if (r.error) throw new Error('http: ' + r.error);
+               return r;
+             },
+             get(url, o)   { return http.request({ ...(o || {}), method: 'GET',  url }); },
+             post(url, o)  { return http.request({ ...(o || {}), method: 'POST', url }); },
+           };"#,
+    )
+    .map_err(|e| anyhow!("安装 http 失败: {e}"))?;
     Ok(())
+}
+
+/// Rust 侧同步执行一次 curl（脚本级 http.request 后端）
+fn do_curl(opts_json: &str) -> String {
+    use crate::engine::{CurlTransport, ResolvedRequest, Transport};
+    let Ok(v) = serde_json::from_str::<serde_json::Value>(opts_json) else {
+        return r#"{"error":"bad opts"}"#.into();
+    };
+    let req = ResolvedRequest {
+        method: v["method"].as_str().unwrap_or("GET").to_uppercase(),
+        url: v["url"].as_str().unwrap_or_default().to_string(),
+        headers: v["headers"]
+            .as_object()
+            .map(|m| m.iter().map(|(k, x)| (k.clone(), x.as_str().unwrap_or_default().to_string())).collect())
+            .unwrap_or_default(),
+        body: v["body"].as_str().filter(|s| !s.is_empty()).map(String::from),
+        timeout_ms: v["timeoutMs"].as_u64().unwrap_or(10_000),
+        retry: v["retry"].as_u64().unwrap_or(0) as u32,
+        insecure: v["insecure"].as_bool().unwrap_or(false),
+        follow_redirects: v["followRedirects"].as_bool().unwrap_or(false),
+    };
+    let transport = CurlTransport::new();
+    let resp = match transport.compile(&req).and_then(|inv| transport.run(&inv)) {
+        Ok(r) => r,
+        Err(e) => return serde_json::json!({ "error": format!("{e:#}") }).to_string(),
+    };
+    if let Some(e) = &resp.transport_error {
+        return serde_json::json!({ "error": e }).to_string();
+    }
+    let headers: BTreeMap<String, String> = resp
+        .headers
+        .iter()
+        .map(|(k, v)| (k.to_lowercase(), v.clone()))
+        .collect();
+    let body: String = resp.body_text().chars().take(200_000).collect();
+    serde_json::json!({
+        "status": resp.status,
+        "timeMs": resp.time_ms,
+        "headers": headers,
+        "body": body,
+    })
+    .to_string()
 }
 
 fn crypto_module<'js>(ctx: &Ctx<'js>) -> Result<rquickjs::Object<'js>> {
@@ -325,6 +387,22 @@ impl ScriptHost for QuickJsHost {
             install_common(ctx)?;
             inject_scope(ctx, vars, env)?;
             inject_resp(ctx, resp)?;
+            let err = Self::eval_user(ctx, script);
+            let mut out = extract(ctx, false)?;
+            out.error = err;
+            Ok(out)
+        })
+    }
+
+    fn run_scoped(
+        &self,
+        vars: &BTreeMap<String, String>,
+        env: &BTreeMap<String, String>,
+        script: &str,
+    ) -> Result<ScriptOutcome> {
+        self.with_ctx(|ctx| {
+            install_common(ctx)?;
+            inject_scope(ctx, vars, env)?;
             let err = Self::eval_user(ctx, script);
             let mut out = extract(ctx, false)?;
             out.error = err;

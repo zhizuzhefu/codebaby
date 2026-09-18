@@ -33,8 +33,8 @@ fn handle(mut stream: TcpStream) {
             break;
         }
     }
-    let head = String::from_utf8_lossy(&buf[..n]).into_owned();
-    let mut lines = head.split("\r\n");
+    let raw_head = String::from_utf8_lossy(&buf[..n]).into_owned();
+    let mut lines = raw_head.split("\r\n");
     let req_line = lines.next().unwrap_or_default().to_string();
     let mut parts = req_line.split_whitespace();
     let method = parts.next().unwrap_or("").to_string();
@@ -47,6 +47,8 @@ fn handle(mut stream: TcpStream) {
         }
     }
     let header_end = find_sub(&buf[..n], b"\r\n\r\n").unwrap() + 4;
+    // 只把 header 区传给路由（避免 body 行被当 header 解析）
+    let head = String::from_utf8_lossy(&buf[..header_end]).into_owned();
     let mut body = buf[header_end..n].to_vec();
     while body.len() < content_length {
         let read = stream.read(&mut buf).unwrap_or(0);
@@ -210,6 +212,45 @@ fn write_project(dir: &std::path::Path, port: u16) {
     "url": "{{baseUrl}}/health?trace={{%RB_TRACE_ID}}"
   },
   "tests": ["res.status === 200"]
+}"#,
+    )
+    .unwrap();
+    // 集合 setup/teardown（setup 内 http 造数）
+    std::fs::create_dir_all(dir.join("collections/suite")).unwrap();
+    fs::write(
+        dir.join("collections/suite/collection.json"),
+        r#"{
+  "name": "suite",
+  "setup": "vars.prepared = 'yes'; const r = http.get(env.baseUrl + '/health'); vars.probeStatus = r.status",
+  "teardown": "log('teardown done')"
+}"#,
+    )
+    .unwrap();
+    fs::write(
+        dir.join("collections/suite/01-probe.json"),
+        r#"{
+  "tags": ["suite2"],
+  "expectStatus": 200,
+  "request": { "method": "GET", "url": "{{baseUrl}}/health" },
+  "tests": ["env.prepared === 'yes'", "env.probeStatus === '200'"]
+}"#,
+    )
+    .unwrap();
+    // 数据驱动
+    fs::write(
+        dir.join("collections/09-data-driven.json"),
+        r#"{
+  "tags": ["dd"],
+  "request": {
+    "method": "POST",
+    "url": "{{baseUrl}}/echo",
+    "body": { "json": { "sku": "{{sku}}" } }
+  },
+  "cases": [
+    { "label": "A1", "sku": "A1" },
+    { "label": "B2", "sku": "B2" }
+  ],
+  "tests": ["data.body.indexOf(env.sku) >= 0", "res.status === 200"]
 }"#,
     )
     .unwrap();
@@ -448,6 +489,30 @@ fn failed_case_has_response_snapshot() {
 }
 
 #[test]
+fn collection_setup_teardown_with_http() {
+    let port = spawn_server();
+    let dir = TempDir::new().unwrap();
+    write_project(dir.path(), port);
+    let out = run_cli(&["run", "collections/suite", "--json"], dir.path());
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(out.status.success(), "setup 造数 + 用例应全过: {stdout}");
+}
+
+#[test]
+fn data_driven_expands_rows() {
+    let port = spawn_server();
+    let dir = TempDir::new().unwrap();
+    write_project(dir.path(), port);
+    let out = run_cli(&["run", "collections/09-data-driven.json", "--json"], dir.path());
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(out.status.success(), "{stdout}");
+    assert!(stdout.contains("[A1]"), "实例标签: {stdout}");
+    assert!(stdout.contains("[B2]"), "实例标签: {stdout}");
+    let report: serde_json::Value = serde_json::from_str(&stdout).unwrap();
+    assert_eq!(report["total"], 2, "{stdout}");
+}
+
+#[test]
 fn list_shows_cases() {
     let dir = TempDir::new().unwrap();
     let port = spawn_server();
@@ -456,5 +521,5 @@ fn list_shows_cases() {
     let stdout = strip_ansi(&String::from_utf8_lossy(&out.stdout));
     assert!(out.status.success());
     assert!(stdout.contains("01-health.json"), "{stdout}");
-    assert!(stdout.contains("8 个用例"), "{stdout}");
+    assert!(stdout.contains("10 个用例"), "{stdout}");
 }

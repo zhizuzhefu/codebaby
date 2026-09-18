@@ -27,6 +27,103 @@ pub struct TestCase {
     /// 断言：JS 表达式数组，逐条求值
     #[serde(default)]
     pub tests: Vec<String>,
+    /// 数据驱动：内联行数组（每行一个变量 map）或 {"file": "data.csv|.json"}
+    /// 用例 × 每行数据 = 一个实例，行变量优先级最高
+    #[serde(default)]
+    pub cases: Option<CasesSpec>,
+}
+
+/// 数据驱动来源
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(untagged)]
+pub enum CasesSpec {
+    /// 内联：[{"name":"alice","age":"18"}, ...]
+    Inline(Vec<BTreeMap<String, String>>),
+    /// 外部文件：{"file": "./data/users.csv"}（CSV 首行表头）或 JSON 数组文件
+    File { file: String },
+}
+
+impl CasesSpec {
+    /// 解析为行列表（file 相对用例文件目录）
+    pub fn resolve(&self, base_dir: &std::path::Path) -> std::io::Result<Vec<BTreeMap<String, String>>> {
+        match self {
+            CasesSpec::Inline(rows) => Ok(rows.clone()),
+            CasesSpec::File { file } => {
+                let path = base_dir.join(file);
+                let content = std::fs::read_to_string(path)?;
+                if file.ends_with(".csv") {
+                    Ok(parse_csv(&content))
+                } else {
+                    let v: serde_json::Value = serde_json::from_str(&content)
+                        .map_err(|e| std::io::Error::other(format!("JSON 数据文件解析失败: {e}")))?;
+                    let arr = v
+                        .as_array()
+                        .ok_or_else(|| std::io::Error::other("JSON 数据文件必须是对象数组"))?;
+                    Ok(arr
+                        .iter()
+                        .map(|row| {
+                            row.as_object()
+                                .map(|o| {
+                                    o.iter()
+                                        .map(|(k, x)| {
+                                            (k.clone(), match x {
+                                                serde_json::Value::String(s) => s.clone(),
+                                                serde_json::Value::Null => String::new(),
+                                                other => other.to_string(),
+                                            })
+                                        })
+                                        .collect()
+                                })
+                                .unwrap_or_default()
+                        })
+                        .collect())
+                }
+            }
+        }
+    }
+}
+
+/// 简易 CSV：首行表头，支持字段双引号转义
+fn parse_csv(content: &str) -> Vec<BTreeMap<String, String>> {
+    let mut lines = content.lines().filter(|l| !l.trim().is_empty());
+    let Some(header) = lines.next() else { return vec![] };
+    let header: Vec<String> = header.split(',').map(|s| s.trim().to_string()).collect();
+    let mut rows = vec![];
+    for line in lines {
+        let fields = split_csv_line(line);
+        let mut m = BTreeMap::new();
+        for (i, h) in header.iter().enumerate() {
+            m.insert(h.clone(), fields.get(i).cloned().unwrap_or_default());
+        }
+        rows.push(m);
+    }
+    rows
+}
+
+fn split_csv_line(line: &str) -> Vec<String> {
+    let mut out = vec![];
+    let mut cur = String::new();
+    let mut in_quote = false;
+    let mut chars = line.chars().peekable();
+    while let Some(c) = chars.next() {
+        match c {
+            '"' => {
+                if in_quote && chars.peek() == Some(&'"') {
+                    cur.push('"');
+                    chars.next();
+                } else {
+                    in_quote = !in_quote;
+                }
+            }
+            ',' if !in_quote => {
+                out.push(cur.clone());
+                cur.clear();
+            }
+            _ => cur.push(c),
+        }
+    }
+    out.push(cur);
+    out
 }
 
 /// expectStatus: 单值或列表
