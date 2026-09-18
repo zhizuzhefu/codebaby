@@ -17,6 +17,8 @@ pub struct RunOptions {
     pub verbose: bool,
     /// 响应落盘目录（-o）：每用例一个 JSON（meta + body）
     pub output_dir: Option<std::path::PathBuf>,
+    /// send 模式：成功也填充 full_response（交互展示用）
+    pub send_mode: bool,
 }
 
 /// 失败时的响应快照（进 --json 报告，辅助 AI 自修复）
@@ -46,6 +48,8 @@ pub struct CaseResult {
     pub body_preview: Option<String>,
     /// 失败时的响应快照
     pub response_snapshot: Option<ResponseSnapshot>,
+    /// 完整响应（send 模式交互展示用）
+    pub full_response: Option<crate::script::RespData>,
 }
 
 impl CaseResult {
@@ -212,6 +216,7 @@ impl Runner {
                         curl_cmd: None,
                         body_preview: None,
                         response_snapshot: None,
+                        full_response: None,
                     };
                     sink(&r);
                     results.push(r);
@@ -356,6 +361,7 @@ impl Runner {
                         curl_cmd: None,
                         body_preview: None,
                         response_snapshot: None,
+                        full_response: None,
                     });
                 }
                 self.runtime_vars.extend(out.vars);
@@ -375,6 +381,7 @@ impl Runner {
                     curl_cmd: None,
                     body_preview: None,
                     response_snapshot: None,
+                    full_response: None,
                 });
             }
         }
@@ -396,6 +403,7 @@ impl Runner {
             curl_cmd: None,
             body_preview: None,
             response_snapshot: None,
+            full_response: None,
         }
     }
 
@@ -427,6 +435,7 @@ impl Runner {
             curl_cmd: None,
             body_preview: None,
             response_snapshot: None,
+            full_response: None,
         };
         if case.skip {
             return result;
@@ -616,6 +625,9 @@ impl Runner {
             }
         }
 
+        if opts.send_mode {
+            result.full_response = Some(resp_data.clone());
+        }
         // ---- 失败响应快照 + 响应落盘（-o）+ 输出脱敏 ----
         if !result.passed() {
             result.response_snapshot = Some(ResponseSnapshot {

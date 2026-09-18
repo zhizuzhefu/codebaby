@@ -59,6 +59,24 @@ enum Cmd {
         #[arg(short, long)]
         env: Option<String>,
     },
+    /// 交互式发送单个用例：展示状态/响应头/美化响应体/断言（调试用）
+    Send {
+        /// 用例文件
+        case: String,
+        /// 环境名
+        #[arg(short, long)]
+        env: Option<String>,
+    },
+    /// 监听配置变更自动重跑（开发时挂终端）
+    Watch {
+        paths: Vec<String>,
+        #[arg(short, long)]
+        env: Option<String>,
+        #[arg(long)]
+        tag: Vec<String>,
+        #[arg(long)]
+        name: Option<String>,
+    },
     /// 运行用例 / 集合
     Run {
         /// 文件 / 目录 / glob
@@ -101,6 +119,8 @@ fn main() -> ExitCode {
         Cmd::Validate { paths, env } => cmd_validate(&paths, env.as_deref()),
         Cmd::List { paths } => cmd_list(&paths),
         Cmd::Import { spec, out, env } => cmd_import(&spec, out.as_deref(), env.as_deref()),
+        Cmd::Send { case, env } => cmd_send(&case, env.as_deref()),
+        Cmd::Watch { paths, env, tag, name } => cmd_watch(&paths, env.as_deref(), tag, name.as_deref()),
         Cmd::Run { paths, env, tag, name, fail_fast, dry_run, json, verbose, output } => {
             cmd_run(&paths, env.as_deref(), tag, name.as_deref(), fail_fast, dry_run, json, verbose, output.as_deref())
         }
@@ -241,6 +261,7 @@ fn cmd_run(
             dry_run,
             verbose,
             output_dir: output.map(std::path::PathBuf::from),
+            send_mode: false,
         };
 
         if !json {
@@ -298,6 +319,223 @@ fn cmd_import(spec: &str, out: Option<&str>, env: Option<&str>) -> u8 {
             1
         }
     }
+}
+
+fn cmd_send(case: &str, env: Option<&str>) -> u8 {
+    let path = PathBuf::from(case);
+    if !path.exists() {
+        eprintln!("\x1b[31m错误: 用例不存在 {case}\x1b[0m");
+        return 1;
+    }
+    let env_name = env
+        .map(String::from)
+        .or_else(|| default_env_of(std::slice::from_ref(&path)))
+        .unwrap_or_else(|| "dev".into());
+    let ctx = match runner::load_project_ctx(&path, &env_name) {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("\x1b[31m错误: {e:#}\x1b[0m");
+            return 1;
+        }
+    };
+    let cases = match runner::discover::discover(std::slice::from_ref(&path)) {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("\x1b[31m错误: {e:#}\x1b[0m");
+            return 1;
+        }
+    };
+    let Some(dc) = cases.first() else {
+        eprintln!("\x1b[31m错误: 未发现用例\x1b[0m");
+        return 1;
+    };
+    let opts = runner::RunOptions {
+        tags: vec![],
+        name_filter: String::new(),
+        fail_fast: false,
+        dry_run: false,
+        verbose: false,
+        output_dir: None,
+        send_mode: true,
+    };
+    let case_cfg = match config::load_strict::<config::TestCase>(&dc.path) {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("\x1b[31m配置错误: {e:#}\x1b[0m");
+            return 1;
+        }
+    };
+    let display_name = if case_cfg.name.is_empty() {
+        dc.path.file_stem().unwrap_or_default().to_string_lossy().into_owned()
+    } else {
+        case_cfg.name.clone()
+    };
+    let mut r = runner::Runner::new(ctx);
+    let results = match r.run(&cases, &opts, |_| {}) {
+        Ok(x) => x,
+        Err(e) => {
+            eprintln!("\x1b[31m错误: {e:#}\x1b[0m");
+            return 1;
+        }
+    };
+    let res = &results[0];
+
+    // ---- 交互式展示 ----
+    let cyan = "\x1b[36m";
+    let green = "\x1b[32m";
+    let yellow = "\x1b[33m";
+    let dim = "\x1b[2m";
+    let bold = "\x1b[1m";
+    let reset = "\x1b[0m";
+    println!("{bold}{cyan}{} {reset}{bold}{}{reset}", res.method, res.url);
+    if let Some(e) = &res.error {
+        println!("\x1b[31m✘ {e}{reset}");
+    }
+    if let Some(resp) = &res.full_response {
+        let code = if resp.status >= 400 { "\x1b[31m" } else { green };
+        println!("{dim}──{reset} 状态 {code}{bold}{}{reset} {dim}· {}ms · {} bytes{reset}", resp.status, resp.time_ms, resp.size);
+        if !resp.headers.is_empty() {
+            println!("{dim}──{reset} 响应头");
+            for (k, v) in &resp.headers {
+                println!("  {cyan}{k}{reset}{dim}:{reset} {v}");
+            }
+        }
+        println!("{dim}──{reset} 响应体");
+        println!("{}", pretty_json_colored(&resp.body));
+    }
+    if !res.tests.is_empty() {
+        let passed = res.tests.iter().filter(|t| t.pass).count();
+        println!("{dim}──{reset} 断言 {green}{passed}{reset}/{dim}{}{reset}", res.tests.len());
+        for t in &res.tests {
+            let sym = if t.pass { format!("{green}✔{reset}") } else { format!("\x1b[31m✘{reset}") };
+            println!("  {sym} {}", t.expr);
+        }
+    }
+    let _ = (yellow, display_name);
+    if res.passed() { 0 } else { 1 }
+}
+
+/// JSON pretty + 轻量着色；非 JSON 原样返回
+fn pretty_json_colored(body: &str) -> String {
+    let Ok(v) = serde_json::from_str::<serde_json::Value>(body) else {
+        return body.to_string();
+    };
+    let pretty = serde_json::to_string_pretty(&v).unwrap_or_default();
+    // 轻量着色：key 青、字符串绿、数字黄
+    let mut out = String::with_capacity(pretty.len() * 2);
+    let mut in_str = false;
+    let chars: Vec<char> = pretty.chars().collect();
+    for (i, &c) in chars.iter().enumerate() {
+        match c {
+            '"' => {
+                in_str = !in_str;
+                if in_str {
+                    // key 判定：向后看下一个非空白字符是否 ':'
+                    let mut j = i + 1;
+                    while j < chars.len() && chars[j] != '"' {
+                        j += 1;
+                    }
+                    // 找配对引号后的第一个非空白
+                    let mut k = j + 1;
+                    while k < chars.len() && chars[k].is_whitespace() {
+                        k += 1;
+                    }
+                    let is_key = k < chars.len() && chars[k] == ':';
+                    out.push_str(if is_key { "\x1b[36m\"" } else { "\x1b[32m\"" });
+                } else {
+                    out.push('"');
+                    out.push_str("\x1b[0m");
+                }
+            }
+            '0'..='9' if !in_str => {
+                out.push_str("\x1b[33m");
+                out.push(c);
+                // 数字结束判断交给下一个非数字字符重置
+                let next = chars.get(i + 1);
+                if !next.map(|n| n.is_ascii_digit()).unwrap_or(false) {
+                    out.push_str("\x1b[0m");
+                }
+            }
+            _ => out.push(c),
+        }
+    }
+    out
+}
+
+fn cmd_watch(paths: &[String], env: Option<&str>, tags: Vec<String>, name: Option<&str>) -> u8 {
+    let pb: Vec<PathBuf> = paths.iter().map(PathBuf::from).collect();
+    if pb.is_empty() {
+        eprintln!("错误: 缺少路径参数");
+        return 1;
+    }
+    // watch 目标 = 用例 + 项目/集合/环境配置
+    let mut watch_files: Vec<PathBuf> = pb.clone();
+    if let Ok(cases) = runner::discover::discover(&pb) {
+        watch_files.extend(cases.iter().map(|c| c.path.clone()));
+    }
+    if let Some(root) = runner::discover::find_project_root(&pb[0]) {
+        watch_files.push(root.join("requestbaby.json"));
+        let envs = root.join("envs");
+        if let Ok(rd) = std::fs::read_dir(&envs) {
+            for e in rd.flatten() {
+                watch_files.push(e.path());
+            }
+        }
+        if let Ok(rd) = std::fs::read_dir(root.join("collections")) {
+            for e in rd.flatten() {
+                if e.path().join("collection.json").exists() {
+                    watch_files.push(e.path().join("collection.json"));
+                }
+            }
+        }
+    }
+
+    let snapshot = || -> BTreeMapAll {
+        let mut m = std::collections::BTreeMap::new();
+        for f in &watch_files {
+            if let Ok(meta) = std::fs::metadata(f) {
+                m.insert(f.display().to_string(), (meta.len(), mtime_of(&meta)));
+            }
+        }
+        m
+    };
+    let mut prev = snapshot();
+    eprintln!("\x1b[2mwatching {} 个文件，变更自动重跑（Ctrl-C 退出）\x1b[0m", watch_files.len());
+
+    let mut args: Vec<String> = vec!["run".into()];
+    args.extend(pb.iter().map(|p| p.display().to_string()));
+    if let Some(e) = env {
+        args.push("-e".into());
+        args.push(e.into());
+    }
+    for t in tags {
+        args.push("--tag".into());
+        args.push(t);
+    }
+    if let Some(n) = name {
+        args.push("--name".into());
+        args.push(n.into());
+    }
+    let exe = std::env::current_exe().unwrap_or_else(|_| PathBuf::from("requestbaby"));
+    loop {
+        print!("\x1b[2J\x1b[H");
+        let _ = std::process::Command::new(&exe).args(&args).status();
+        eprintln!("\n\x1b[2m── 已完成，等待变更…\x1b[0m");
+        loop {
+            std::thread::sleep(std::time::Duration::from_millis(600));
+            let cur = snapshot();
+            if cur != prev {
+                prev = cur;
+                break;
+            }
+        }
+    }
+}
+
+type BTreeMapAll = std::collections::BTreeMap<String, (u64, std::time::SystemTime)>;
+
+fn mtime_of(meta: &std::fs::Metadata) -> std::time::SystemTime {
+    meta.modified().unwrap_or(std::time::SystemTime::UNIX_EPOCH)
 }
 
 /// 从第一个路径定位项目默认环境
