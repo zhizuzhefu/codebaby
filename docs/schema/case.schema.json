@@ -21,6 +21,17 @@
       "default": false,
       "description": "跳过该用例"
     },
+    "expectStatus": {
+      "description": "期望状态码语法糖：200 或 [200,409]，等价于隐式首条断言 [200,409].includes(res.status)",
+      "oneOf": [
+        { "type": "integer", "minimum": 100, "maximum": 599 },
+        {
+          "type": "array",
+          "minItems": 1,
+          "items": { "type": "integer", "minimum": 100, "maximum": 599 }
+        }
+      ]
+    },
     "request": { "$ref": "#/definitions/request" },
     "pre": {
       "type": "string",
@@ -33,7 +44,7 @@
     "tests": {
       "type": "array",
       "items": { "type": "string" },
-      "description": "断言：JS 表达式数组，逐条求值，真值为通过。可见 res/vars/env/crypto。推荐 res.json('a.b.c') 安全取值（路径缺失返回 undefined 不抛错）"
+      "description": "断言：JS 表达式数组，逐条求值，真值为通过。可见 res/vars/env/crypto 与 data（=res.json() 快照，推荐 data.a.b.c 代替 res.json().a.b.c）。断言为 false 是正常失败；表达式抛错属配置问题，会给出具体字段名与修复提示"
     }
   },
   "definitions": {

@@ -66,13 +66,15 @@ apicase schema                         # 导出用例 JSON Schema（喂给 AI）
 
 - `{{var}}`：变量替换（四层作用域：项目 < 环境 < 集合 < 运行时）
 - `{{var:number}}` / `{{var:bool}}`：类型标注——JSON body 数字/布尔字段写 `"{{taskId:number}}"`，渲染后连引号替换为裸值，解决 int64 binding 拒绝字符串的问题
+- `expectStatus`：状态码语法糖（`200` 或 `[200,409]`），免去每个用例写 `res.status === 200`
+- 集合级 `headers`：collection.json 定义默认 headers 逐级继承，用例级同名覆盖——鉴权 API 只需配一次
 - `pre`：请求前脚本，可改写 `req`（动态签名/时间戳）
 - `post`：响应后脚本，`vars.x = ...` 捕获变量传给后续用例（登录→下单）
-- `tests`：JS 表达式数组，逐条求值逐条报错
+- `tests`：JS 表达式数组，逐条求值逐条报错；断言为 false 是正常失败，表达式抛错（如 null 链式取值）会指出具体字段名与修复提示
 
-脚本沙箱可见：`req` / `res`（`status/headers/timeMs/json()/json(path)/text()`）/ `vars` / `env` / `log()` / `crypto.{md5,sha256,hmacSha256,base64Encode,base64Decode}`
+脚本沙箱可见：`req` / `res`（`status/headers/timeMs/json()/json(path)/text()`）/ `data`（= `res.json()` 快照，推荐 `data.a.b.c` 短写）/ `vars` / `env` / `log()` / `crypto.{md5,sha256,hmacSha256,base64Encode,base64Decode}`
 
-> `res.json('a.b.c')` 为安全取值：路径不存在返回 `undefined` 而非抛错，断言推荐优先使用。
+> 脚本异常全透传：pre/post/tests 的运行时错误带 `name/message/stack`，stack 行号已修正为脚本内相对行号。
 
 ## 项目结构
 

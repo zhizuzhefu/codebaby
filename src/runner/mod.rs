@@ -201,20 +201,26 @@ impl Runner {
             return result;
         }
 
-        // ---- 构建请求（变量替换）----
+        // ---- 构建请求（变量替换 + headers 继承合并）----
         let timeout = case.request.timeout_ms.unwrap_or(self.ctx.project.timeout_ms);
-        let mut headers: Vec<(String, String)> = case
-            .request
-            .headers
-            .iter()
+        // 集合链 headers（浅→深）→ 用例 headers 覆盖（key 小写归一防重复发送）
+        let mut merged_headers: BTreeMap<String, (String, String)> = BTreeMap::new();
+        for c in &dc.chain {
+            for (k, v) in &c.headers {
+                merged_headers.insert(k.to_lowercase(), (k.clone(), v.clone()));
+            }
+        }
+        for (k, v) in &case.request.headers {
+            merged_headers.insert(k.to_lowercase(), (k.clone(), v.clone()));
+        }
+        let mut headers: Vec<(String, String)> = merged_headers
+            .values()
             .map(|(k, v)| (k.clone(), vars.render(v)))
             .collect();
         let body_str = case.request.body.as_ref().map(|b| vars.render(&b.render()));
         if body_str.is_some()
             && case.request.body.as_ref().map(|b| b.is_json()).unwrap_or(false)
-            && !headers
-                .iter()
-                .any(|(k, _)| k.eq_ignore_ascii_case("content-type"))
+            && !merged_headers.contains_key("content-type")
         {
             headers.push(("Content-Type".into(), "application/json".into()));
         }
@@ -352,11 +358,21 @@ impl Runner {
         }
 
         // ---- tests ----
-        if !case.tests.is_empty() {
+        // expectStatus 语法糖 → 隐式首条断言（先于业务断言，快速失败）
+        let mut exprs: Vec<String> = vec![];
+        if let Some(es) = &case.expect_status {
+            let list = es.to_list();
+            exprs.push(format!(
+                "[{}].includes(res.status)",
+                list.iter().map(|x| x.to_string()).collect::<Vec<_>>().join(",")
+            ));
+        }
+        exprs.extend(case.tests.iter().cloned());
+        if !exprs.is_empty() {
             let env_now = self.vars_for(&dc.chain).env_snapshot();
             match self
                 .script
-                .eval_tests(&resp_data, &self.runtime_vars, &env_now, &case.tests)
+                .eval_tests(&resp_data, &self.runtime_vars, &env_now, &exprs)
             {
                 Ok(ts) => result.tests = ts,
                 Err(e) => result.error = Some(format!("tests 宿主错误: {e:#}")),

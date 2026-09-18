@@ -14,6 +14,9 @@ pub struct TestCase {
     /// 跳过该用例（计划保留但暂不执行）
     #[serde(default)]
     pub skip: bool,
+    /// 期望状态码语法糖：200 或 [200,409]，等价于隐式首条断言 [200,409].includes(res.status)
+    #[serde(default)]
+    pub expect_status: Option<ExpectStatus>,
     pub request: RequestSpec,
     /// 前置脚本：请求发出前执行，可改写 req
     #[serde(default)]
@@ -24,6 +27,23 @@ pub struct TestCase {
     /// 断言：JS 表达式数组，逐条求值
     #[serde(default)]
     pub tests: Vec<String>,
+}
+
+/// expectStatus: 单值或列表
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(untagged)]
+pub enum ExpectStatus {
+    One(u16),
+    Many(Vec<u16>),
+}
+
+impl ExpectStatus {
+    pub fn to_list(&self) -> Vec<u16> {
+        match self {
+            ExpectStatus::One(c) => vec![*c],
+            ExpectStatus::Many(v) => v.clone(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]

@@ -84,7 +84,21 @@ fn route(method: &str, path: &str, body: &str, head: &str) -> (&'static str, Str
         ("POST", "/orders") => ("201 Created", r#"{"data":{"id":42,"sku":"A1"}}"#.into()),
         ("POST", "/echo") => {
             let body_json = serde_json::to_string(&body).unwrap_or_default();
-            ("200 OK", format!(r#"{{"body":{body_json}}}"#))
+            // 回显关键 headers（小写 key），供集合级 headers 继承断言
+            let mut hdrs = serde_json::Map::new();
+            for line in head.split("\r\n") {
+                if let Some(idx) = line.find(':') {
+                    let (k, v) = line.split_at(idx);
+                    hdrs.insert(
+                        k.trim().to_lowercase(),
+                        serde_json::Value::String(v[1..].trim().to_string()),
+                    );
+                }
+            }
+            (
+                "200 OK",
+                format!(r#"{{"body":{body_json},"headers":{}}}"#, serde_json::Value::Object(hdrs)),
+            )
         }
         ("GET", "/slow") => {
             thread::sleep(Duration::from_millis(150));
@@ -169,6 +183,27 @@ fn write_project(dir: &std::path::Path, port: u16) {
   },
   "tests": [
     "res.json().body === '{\"flag\":true,\"name\":\"admin\",\"taskId\":738011164633133}'"
+  ]
+}"#,
+    )
+    .unwrap();
+    fs::write(dir.join("collections/collection.json").to_str().unwrap(), r#"{
+  "headers": { "x-suite": "inherited", "accept": "application/json" }
+}"#).unwrap();
+    fs::write(
+        dir.join("collections/06-collection-defaults.json"),
+        r#"{
+  "name": "collection-defaults",
+  "tags": ["suite"],
+  "expectStatus": 200,
+  "request": {
+    "method": "POST",
+    "url": "{{baseUrl}}/echo",
+    "body": { "json": { "ping": 1 } }
+  },
+  "tests": [
+    "data.headers['x-suite'] === 'inherited'",
+    "data.headers.accept === 'application/json'"
   ]
 }"#,
     )
@@ -317,6 +352,22 @@ fn typed_number_body_end_to_end() {
 }
 
 #[test]
+fn collection_headers_and_sugar_end_to_end() {
+    let port = spawn_server();
+    let dir = TempDir::new().unwrap();
+    write_project(dir.path(), port);
+    // expectStatus + data 快捷引用 + 集合级 headers 继承
+    let out = run_cli(&["run", "collections/06-collection-defaults.json", "--json"], dir.path());
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(out.status.success(), "{stdout}");
+    let report: serde_json::Value = serde_json::from_str(&stdout).unwrap();
+    assert_eq!(report["passed"], 1, "{stdout}");
+    // expectStatus 生成的隐式断言应为首条
+    let t0 = report["results"][0]["tests"][0]["expr"].as_str().unwrap();
+    assert!(t0.contains("includes(res.status)"), "{stdout}");
+}
+
+#[test]
 fn list_shows_cases() {
     let dir = TempDir::new().unwrap();
     let port = spawn_server();
@@ -325,5 +376,5 @@ fn list_shows_cases() {
     let stdout = strip_ansi(&String::from_utf8_lossy(&out.stdout));
     assert!(out.status.success());
     assert!(stdout.contains("01-health.json"), "{stdout}");
-    assert!(stdout.contains("5 个用例"), "{stdout}");
+    assert!(stdout.contains("6 个用例"), "{stdout}");
 }

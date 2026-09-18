@@ -1,5 +1,6 @@
 use super::StringVars;
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 
 /// 环境文件 envs/<name>.json
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -19,6 +20,9 @@ pub struct Collection {
     /// 集合级变量（覆盖环境变量，被运行时 vars 覆盖）
     #[serde(default)]
     pub vars: StringVars,
+    /// 集合级默认 headers（逐级继承，用例级同名覆盖；值支持 {{var}}）
+    #[serde(default)]
+    pub headers: BTreeMap<String, String>,
     /// 集合级标签（附加到该集合下所有用例）
     #[serde(default)]
     pub tags: Vec<String>,

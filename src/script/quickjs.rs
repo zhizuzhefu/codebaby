@@ -14,6 +14,13 @@ use std::collections::BTreeMap;
 #[derive(Debug, Default, Clone, Copy)]
 pub struct QuickJsHost;
 
+/// wrapper 模板中用户脚本的首行行号（用于 stack 行号修正）：
+/// L1: (function() {
+/// L2: try {
+/// L3:   (function() {
+/// L4:   <user script 第一行>
+const USER_SCRIPT_LINE_OFFSET: usize = 3;
+
 impl QuickJsHost {
     pub fn new() -> Self {
         Self
@@ -25,16 +32,71 @@ impl QuickJsHost {
         ctx.with(|ctx| f(&ctx))
     }
 
-    /// 执行用户脚本，异常转 error 字段
-    fn eval_user(ctx: &Ctx<'_>, script: &str) -> ScriptOutcome {
-        match ctx.eval::<rquickjs::Value, _>(script) {
-            Ok(_) => ScriptOutcome::default(),
-            Err(e) => ScriptOutcome {
-                error: Some(format!("{e}")),
-                ..Default::default()
-            },
+    /// 执行用户脚本（pre/post）：
+    /// JS 侧 try/catch 捕获异常并序列化 {name, message, stack} 带回，
+    /// 彻底透出 QuickJS 异常细节（Rust 侧 rquickjs::Error 对 JS 异常只有一句黑盒描述）
+    fn eval_user(ctx: &Ctx<'_>, script: &str) -> Option<String> {
+        let wrapped = format!(
+            "(function() {{\ntry {{\n(function() {{\n{script}\n}})();\nreturn '';\n}} \
+             catch (e) {{\nreturn JSON.stringify({{name: (e && e.name) || 'Error', \
+             message: (e && e.message) || String(e), \
+             stack: e && e.stack ? String(e.stack) : ''}});\n}}\n}})()"
+        );
+        match ctx.eval::<String, _>(wrapped.as_str()) {
+            Ok(s) if s.is_empty() => None,
+            Ok(s) => Some(pretty_js_error(&s, USER_SCRIPT_LINE_OFFSET)),
+            Err(e) => Some(format!("语法错误: {e}")),
         }
     }
+}
+
+/// 解析 JS 侧带回的异常 JSON → 可读文本；stack 行号修正为用户脚本相对行号
+fn pretty_js_error(raw: &str, line_offset: usize) -> String {
+    let Ok(v) = serde_json::from_str::<serde_json::Value>(raw) else {
+        return format!("未知异常: {raw}");
+    };
+    let name = v["name"].as_str().unwrap_or("Error");
+    let message = v["message"].as_str().unwrap_or_default();
+    let stack = v["stack"].as_str().unwrap_or_default();
+    let fixed_stack = fix_stack_lines(stack, line_offset);
+    let mut out = format!("{name}: {message}");
+    if !fixed_stack.is_empty() {
+        out.push_str(&format!("\n  {fixed_stack}"));
+    }
+    out
+}
+
+/// QuickJS stack 形如 "    at fn (eval_script:5)" / "    at eval_script:5"
+/// 只保留最内层抛错帧（后续帧为 wrapper 噪声），行号减去偏移为用户脚本真实行号
+fn fix_stack_lines(stack: &str, offset: usize) -> String {
+    stack
+        .lines()
+        .find(|l| l.trim_start().starts_with("at "))
+        .map(|l| {
+            let mut out = String::new();
+            let mut rest = l;
+            while let Some(pos) = rest.find(':') {
+                let after = &rest[pos + 1..];
+                let digits_end = after
+                    .find(|c: char| !c.is_ascii_digit())
+                    .unwrap_or(after.len());
+                let (num, tail) = after.split_at(digits_end);
+                out.push_str(&rest[..pos + 1]);
+                if let Ok(n) = num.parse::<usize>() {
+                    if n > offset {
+                        out.push_str(&n.saturating_sub(offset).to_string());
+                    } else {
+                        out.push_str(num);
+                    }
+                } else {
+                    out.push_str(num);
+                }
+                rest = tail;
+            }
+            out.push_str(rest);
+            out
+        })
+        .unwrap_or_default()
 }
 
 /// 安装公共设施：__logs / log / crypto
@@ -165,7 +227,8 @@ fn inject_resp(ctx: &Ctx<'_>, resp: &RespData) -> Result<()> {
              const v = JSON.parse(this.__body);
              if (p === undefined) return v;
              return String(p).split('.').reduce((acc, k) => (acc == null ? undefined : acc[k]), v);
-           }};"#
+           }};
+           try {{ globalThis.data = JSON.parse(res.__body); }} catch (e) {{ globalThis.data = undefined; }}"#
     ))
     .map_err(|e| anyhow!("注入 res 失败: {e}"))?;
     Ok(())
@@ -244,11 +307,9 @@ impl ScriptHost for QuickJsHost {
             install_common(ctx)?;
             inject_scope(ctx, vars, env)?;
             inject_req(ctx, &req)?;
-            let mut err = Self::eval_user(ctx, script);
+            let err = Self::eval_user(ctx, script);
             let mut out = extract(ctx, true)?;
-            if err.error.is_some() {
-                out.error = err.error.take();
-            }
+            out.error = err;
             Ok(out)
         })
     }
@@ -264,11 +325,9 @@ impl ScriptHost for QuickJsHost {
             install_common(ctx)?;
             inject_scope(ctx, vars, env)?;
             inject_resp(ctx, resp)?;
-            let mut err = Self::eval_user(ctx, script);
+            let err = Self::eval_user(ctx, script);
             let mut out = extract(ctx, false)?;
-            if err.error.is_some() {
-                out.error = err.error.take();
-            }
+            out.error = err;
             Ok(out)
         })
     }
@@ -286,12 +345,22 @@ impl ScriptHost for QuickJsHost {
             inject_resp(ctx, resp)?;
             let mut results = vec![];
             for expr in tests {
-                let wrapped = format!("Boolean({expr})");
-                match ctx.eval::<bool, _>(wrapped.as_str()) {
-                    Ok(v) => results.push(TestOutcome {
+                // 单行 try/catch wrapper：'R:<bool>' 正常求值 / 'E:<json>' 执行错误
+                let wrapped = format!(
+                    "(function() {{ try {{ return 'R:' + Boolean({expr}); }} \
+                     catch (e) {{ var m = (e && e.message || '').match(/property '([^']+)' of/); \
+                     return 'E:' + JSON.stringify({{name: (e && e.name) || 'Error', \
+                     message: (e && e.message) || String(e), path: m ? m[1] : ''}}); }} }})()"
+                );
+                let out: String = ctx
+                    .eval(wrapped.as_str())
+                    .map_err(|e| anyhow!("tests 编译失败: {e}"))?;
+                if let Some(v) = out.strip_prefix("R:") {
+                    let pass = v == "true";
+                    results.push(TestOutcome {
                         expr: expr.clone(),
-                        pass: v,
-                        detail: if v {
+                        pass,
+                        detail: if pass {
                             None
                         } else {
                             Some(format!(
@@ -300,19 +369,38 @@ impl ScriptHost for QuickJsHost {
                                 truncate(&resp.body, 200)
                             ))
                         },
-                    }),
-                    Err(e) => {
-                        // 链式取值遇 undefined/null 抛 TypeError 是最常见翻车点，
-                        // 统一附上安全取值 API 的修复提示
-                        let es = format!("{e}");
-                        results.push(TestOutcome {
-                            expr: expr.clone(),
-                            pass: false,
-                            detail: Some(format!(
-                                "执行错误: {es}｜提示: 可用 res.json('a.b.c') 安全取值，或 (x || '') 兜底"
-                            )),
-                        });
+                    });
+                } else if let Some(errj) = out.strip_prefix("E:") {
+                    // 执行错误 ≠ 断言失败：表达式本身抛异常（多为 null/undefined 链式取值），
+                    // 属配置问题，给出精确定位与修复提示
+                    let name = serde_json::from_str::<serde_json::Value>(errj)
+                        .ok()
+                        .and_then(|v| v["name"].as_str().map(String::from))
+                        .unwrap_or_else(|| "Error".into());
+                    let msg = serde_json::from_str::<serde_json::Value>(errj)
+                        .ok()
+                        .and_then(|v| v["message"].as_str().map(String::from))
+                        .unwrap_or_default();
+                    let path = serde_json::from_str::<serde_json::Value>(errj)
+                        .ok()
+                        .and_then(|v| v["path"].as_str().map(String::from))
+                        .unwrap_or_default();
+                    let mut detail = format!("执行错误: {name}: {msg}");
+                    if !path.is_empty() {
+                        detail.push_str(&format!("（访问了 null/undefined 的 `{path}` 字段）"));
                     }
+                    detail.push_str("｜提示: 用 data.a.b（=res.json() 快照）逐级判断，或 res.json('a.b.c') 安全取值");
+                    results.push(TestOutcome {
+                        expr: expr.clone(),
+                        pass: false,
+                        detail: Some(detail),
+                    });
+                } else {
+                    results.push(TestOutcome {
+                        expr: expr.clone(),
+                        pass: false,
+                        detail: Some(format!("内部协议异常: {out}")),
+                    });
                 }
             }
             Ok(results)
@@ -442,5 +530,62 @@ mod tests {
         let host = QuickJsHost::new();
         assert!(host.compile_check("vars.a = 1").is_ok());
         assert!(host.compile_check("vars.a = = 1").is_err());
+    }
+
+    #[test]
+    fn pre_error_carries_details_and_line() {
+        let host = QuickJsHost::new();
+        let out = host
+            .run_pre(
+                ReqData { method: "GET".into(), url: "u".into(), headers: BTreeMap::new(), body: None },
+                &BTreeMap::new(),
+                &BTreeMap::new(),
+                "vars.ok = 1\nconst x = null\nx.field = 2",
+            )
+            .unwrap();
+        let err = out.error.expect("应有错误");
+        assert!(err.contains("TypeError"), "{err}");
+        assert!(err.contains("null"), "{err}");
+        // stack 行号修正到用户脚本（第 3 行），不应显示 wrapper 偏移行号 6
+        assert!(err.contains(":3"), "行号应修正为 3: {err}");
+    }
+
+    #[test]
+    fn tests_exec_error_names_field() {
+        let host = QuickJsHost::new();
+        let mut resp = resp();
+        resp.body = r#"{"code":1,"data":null}"#.into();
+        let out = host
+            .eval_tests(
+                &resp,
+                &BTreeMap::new(),
+                &BTreeMap::new(),
+                &["data.results.length > 0".into()],
+            )
+            .unwrap();
+        assert!(!out[0].pass);
+        let d = out[0].detail.as_deref().unwrap();
+        assert!(d.contains("执行错误"), "{d}");
+        assert!(d.contains("`length`"), "应指出抛错字段名: {d}");
+    }
+
+    #[test]
+    fn data_snapshot_available() {
+        let host = QuickJsHost::new();
+        let out = host
+            .eval_tests(
+                &resp(),
+                &BTreeMap::new(),
+                &BTreeMap::new(),
+                &[
+                    "data.data.sku === 'A1'".into(),
+                    "data.nope === undefined".into(),
+                    "res.json('data.nope.deeper') === undefined".into(),
+                ],
+            )
+            .unwrap();
+        assert!(out[0].pass);
+        assert!(out[1].pass);
+        assert!(out[2].pass);
     }
 }
