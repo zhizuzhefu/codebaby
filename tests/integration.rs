@@ -6,7 +6,7 @@ use std::thread;
 use std::time::Duration;
 use tempfile::TempDir;
 
-const BIN: &str = env!("CARGO_BIN_EXE_apicase");
+const BIN: &str = env!("CARGO_BIN_EXE_requestbaby");
 
 fn spawn_server() -> u16 {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
@@ -117,7 +117,7 @@ fn write_project(dir: &std::path::Path, port: u16) {
     fs::create_dir_all(dir.join("envs")).unwrap();
     fs::create_dir_all(dir.join("collections")).unwrap();
     fs::write(
-        dir.join("apicase.json"),
+        dir.join("requestbaby.json"),
         r#"{"version":1,"defaultEnv":"test","vars":{"user":"admin","taskId":"738011164633133","flag":"true"},"timeoutMs":5000}"#,
     )
     .unwrap();
@@ -216,7 +216,7 @@ fn run_cli(args: &[&str], cwd: &std::path::Path) -> std::process::Output {
         .current_dir(cwd)
         .env_remove("NO_COLOR")
         .output()
-        .expect("启动 apicase 失败")
+        .expect("启动 requestbaby 失败")
 }
 
 fn strip_ansi(s: &str) -> String {

@@ -382,11 +382,11 @@ impl Runner {
     }
 }
 
-/// 加载项目上下文：定位 root、加载 apicase.json 与 env 文件
+/// 加载项目上下文：定位 root、加载 requestbaby.json 与 env 文件
 pub fn load_project_ctx(start: &Path, env_name: &str) -> Result<ProjectCtx> {
     let root = discover::find_project_root(start);
     let project = match &root {
-        Some(r) => load_strict::<Project>(&r.join("apicase.json")).unwrap_or_default(),
+        Some(r) => discover::project_file(r).and_then(|p| load_strict::<Project>(&p).ok()).unwrap_or_default(),
         None => Project::default(),
     };
     let env_vars = match &root {

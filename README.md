@@ -1,4 +1,4 @@
-# apicase
+# requestbaby
 
 > CLI 中的 Postman —— curl 为引擎、文件目录为集合、AI 原生 JSON 配置、面向项目级接口自动化测试。
 
@@ -13,11 +13,11 @@
 
 ## 为什么
 
-| 痛点 | apicase 的答案 |
+| 痛点 | requestbaby 的答案 |
 |------|----------------|
 | Postman 集合是闭源 JSON 黑盒，无法 review | 纯 JSON 配置 + 目录树即集合，Git 原生管理 |
 | 接口测试框架要写代码、搭工程 | 一个 JSON 一个用例，`pre/post/tests` 脚本内嵌 |
-| 配置靠人手写易错 | **AI 原生**：`apicase schema` 导出 JSON Schema 约束生成，`validate` + `--dry-run` 程序化校验闭环 |
+| 配置靠人手写易错 | **AI 原生**：`requestbaby schema` 导出 JSON Schema 约束生成，`validate` + `--dry-run` 程序化校验闭环 |
 | HTTP 客户端轮子重 | curl 子进程执行，`-v` 打印完整 curl 命令可直接复现 |
 
 ## 安装
@@ -30,15 +30,15 @@ cargo install --path .
 ## 快速开始
 
 ```bash
-apicase init myapi && cd myapi     # 生成脚手架
-apicase validate collections       # 校验配置（结构/变量/脚本语法）
-apicase run collections            # 跑整个集合
-apicase run collections --tag smoke    # 标签过滤
-apicase run collections -e prod        # 切换环境
-apicase run collections --dry-run      # 打印编译出的 curl 命令，不执行
-apicase run collections --json         # CI 报告，失败 exit 1
-apicase list collections               # 列出用例
-apicase schema                         # 导出用例 JSON Schema（喂给 AI）
+requestbaby init myapi && cd myapi     # 生成脚手架
+requestbaby validate collections       # 校验配置（结构/变量/脚本语法）
+requestbaby run collections            # 跑整个集合
+requestbaby run collections --tag smoke    # 标签过滤
+requestbaby run collections -e prod        # 切换环境
+requestbaby run collections --dry-run      # 打印编译出的 curl 命令，不执行
+requestbaby run collections --json         # CI 报告，失败 exit 1
+requestbaby list collections               # 列出用例
+requestbaby schema                         # 导出用例 JSON Schema（喂给 AI）
 ```
 
 ## 用例长什么样
@@ -80,7 +80,7 @@ apicase schema                         # 导出用例 JSON Schema（喂给 AI）
 
 ```
 myapi/
-├── apicase.json               # 项目配置：全局变量/默认环境/默认超时
+├── requestbaby.json               # 项目配置：全局变量/默认环境/默认超时
 ├── envs/
 │   ├── dev.json               # { "vars": { "baseUrl": "..." } }
 │   └── prod.json
@@ -95,11 +95,11 @@ myapi/
 ## AI 原生工作流
 
 ```
-1. apicase schema > case.schema.json          # 导出配置契约
+1. requestbaby schema > case.schema.json          # 导出配置契约
 2. 把 schema + 接口文档（OpenAPI/curl 示例/PRD）喂给 AI 生成用例 JSON
-3. apicase validate collections               # 结构 + 变量引用 + 脚本语法
-4. apicase run collections --dry-run          # 审阅编译出的 curl 命令
-5. apicase run collections                    # 执行
+3. requestbaby validate collections               # 结构 + 变量引用 + 脚本语法
+4. requestbaby run collections --dry-run          # 审阅编译出的 curl 命令
+5. requestbaby run collections                    # 执行
    ↳ 报错结构化输出 → 回给 AI 自修复 → 循环
 ```
 
@@ -107,7 +107,7 @@ myapi/
 
 ```yaml
 # GitHub Actions
-- run: apicase run collections --fail-fast
+- run: requestbaby run collections --fail-fast
 # 失败 exit 1；--json 输出机器可读报告
 ```
 
@@ -123,7 +123,7 @@ myapi/
 - [ ] `--parallel` 并发执行
 - [ ] JUnit XML / HTML 报告
 - [ ] cookie jar 会话保持
-- [ ] `apicase send` 交互式单请求调试
+- [ ] `requestbaby send` 交互式单请求调试
 
 ## License
 

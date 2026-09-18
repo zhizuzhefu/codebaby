@@ -1,4 +1,4 @@
-# apicase 架构设计
+# requestbaby 架构设计
 
 > CLI 中的 Postman：curl 为引擎、文件目录为集合、AI 原生 JSON 配置、面向项目级接口自动化测试。
 
@@ -34,7 +34,7 @@
 
 ```
 myapi/
-├── apicase.json              # 项目配置：全局变量、默认环境、默认超时
+├── requestbaby.json              # 项目配置：全局变量、默认环境、默认超时
 ├── envs/
 │   ├── dev.json              # { "vars": {...} }
 │   └── prod.json
@@ -49,7 +49,7 @@ myapi/
 变量作用域（低 → 高，高层覆盖低层）：
 
 ```
-apicase.json vars  <  envs/<env>.json vars  <  各级 collection.json vars  <  运行时 vars（脚本写入）
+requestbaby.json vars  <  envs/<env>.json vars  <  各级 collection.json vars  <  运行时 vars（脚本写入）
 ```
 
 ## 4. 用例配置模型（docs/schema/case.schema.json 为准）
@@ -120,10 +120,10 @@ TestCase ──load──► 合并变量作用域 ──pre 脚本──► Res
 AI 拿 docs/schema/case.schema.json 约束生成配置
         │
         ▼
-apicase validate collections/     # 结构 + lint + 脚本语法
+requestbaby validate collections/     # 结构 + lint + 脚本语法
         │ 报错：文件/路径/规则，结构化输出
         ▼
-apicase run collections/ --dry-run # 编译出 curl 命令打印，不执行
+requestbaby run collections/ --dry-run # 编译出 curl 命令打印，不执行
         │
         ▼
 AI 依据报错自修复 → 循环直到通过

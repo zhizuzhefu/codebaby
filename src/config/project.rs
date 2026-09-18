@@ -1,14 +1,14 @@
 use super::StringVars;
 use serde::{Deserialize, Serialize};
 
-/// 项目根配置 apicase.json
+/// 项目根配置 requestbaby.json
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
 pub struct Project {
     /// 配置格式版本（当前 1）
     #[serde(default = "default_version")]
     pub version: u32,
-    /// 默认环境名（apicase run 未指定 -e 时使用）
+    /// 默认环境名（requestbaby run 未指定 -e 时使用）
     #[serde(default = "default_env")]
     pub default_env: String,
     /// 全局变量（最低优先级）

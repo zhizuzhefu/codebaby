@@ -1,8 +1,8 @@
 {
   "$schema": "http://json-schema.org/draft-07/schema#",
-  "$id": "https://apicase.dev/schema/case.schema.json",
-  "title": "apicase 用例配置",
-  "description": "单个 API 测试用例。由 AI 生成或人工编写，apicase validate 可校验。",
+  "$id": "https://requestbaby.dev/schema/case.schema.json",
+  "title": "requestbaby 用例配置",
+  "description": "单个 API 测试用例。由 AI 生成或人工编写，requestbaby validate 可校验。",
   "type": "object",
   "additionalProperties": false,
   "required": ["request"],
@@ -87,7 +87,7 @@
         "timeoutMs": {
           "type": "integer",
           "minimum": 1,
-          "description": "单请求超时毫秒，缺省用 apicase.json 的 timeoutMs"
+          "description": "单请求超时毫秒，缺省用 requestbaby.json 的 timeoutMs"
         },
         "retry": {
           "type": "integer",

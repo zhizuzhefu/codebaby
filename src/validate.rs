@@ -24,14 +24,15 @@ pub fn validate_paths(paths: &[std::path::PathBuf], env_name: &str) -> Result<Ve
     let root0 = roots.iter().flatten().next().cloned();
     let mut base_vars = Vars::new();
     if let Some(root) = &root0 {
-        if let Ok(p) = load_strict::<Project>(&root.join("apicase.json")) {
-            base_vars.push_layer(p.vars.0.clone());
-        } else if root.join("apicase.json").exists() {
-            issues.push(ValidationIssue {
-                file: root.join("apicase.json").display().to_string(),
-                level: "error",
-                message: "apicase.json 格式非法".into(),
-            });
+        if let Some(pf) = discover::project_file(root) {
+            match load_strict::<Project>(&pf) {
+                Ok(p) => base_vars.push_layer(p.vars.0.clone()),
+                Err(e) => issues.push(ValidationIssue {
+                    file: pf.display().to_string(),
+                    level: "error",
+                    message: format!("{e:#}"),
+                }),
+            }
         }
         let env_path = root.join("envs").join(format!("{env_name}.json"));
         if env_path.exists() {

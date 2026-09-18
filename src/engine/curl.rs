@@ -45,7 +45,7 @@ impl Transport for CurlTransport {
         let mut body_file = None;
         if let Some(body) = &req.body {
             let mut f = tempfile::Builder::new()
-                .prefix("apicase-body-")
+                .prefix("requestbaby-body-")
                 .suffix(".bin")
                 .tempfile()
                 .context("创建 body 临时文件失败")?;
@@ -62,11 +62,11 @@ impl Transport for CurlTransport {
         let mut argv = inv.argv.clone();
 
         let hdr_file = tempfile::Builder::new()
-            .prefix("apicase-hdr-")
+            .prefix("requestbaby-hdr-")
             .tempfile()
             .context("创建响应头临时文件失败")?;
         let body_file = tempfile::Builder::new()
-            .prefix("apicase-resp-")
+            .prefix("requestbaby-resp-")
             .tempfile()
             .context("创建响应体临时文件失败")?;
         argv.push("-D".into());

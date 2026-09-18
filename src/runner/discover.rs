@@ -14,7 +14,15 @@ pub struct DiscoveredCase {
 
 const IGNORED_DIRS: &[&str] = &["envs", "node_modules", ".git", "target", ".idea", ".vscode"];
 
-/// 从 start（文件取父目录）向上查找 apicase.json
+/// 项目根配置文件名（新名优先，旧名 apicase.json 兼容读取）
+pub const PROJECT_FILES: &[&str] = &["requestbaby.json", "apicase.json"];
+
+/// 目录下存在的项目配置文件路径
+pub fn project_file(dir: &Path) -> Option<PathBuf> {
+    PROJECT_FILES.iter().map(|f| dir.join(f)).find(|p| p.exists())
+}
+
+/// 从 start（文件取父目录）向上查找项目根
 pub fn find_project_root(start: &Path) -> Option<PathBuf> {
     let mut dir = if start.is_dir() {
         start.to_path_buf()
@@ -22,7 +30,7 @@ pub fn find_project_root(start: &Path) -> Option<PathBuf> {
         start.parent()?.to_path_buf()
     };
     loop {
-        if dir.join("apicase.json").exists() {
+        if project_file(&dir).is_some() {
             return Some(dir);
         }
         if !dir.pop() {
@@ -66,7 +74,7 @@ fn is_case_file(p: &Path) -> bool {
         return false;
     }
     let name = p.file_name().and_then(|n| n.to_str()).unwrap_or_default();
-    name != "apicase.json" && name != "collection.json" && !name.starts_with('.')
+    name != "requestbaby.json" && name != "collection.json" && !name.starts_with('.')
 }
 
 /// 发现 + 构建集合链 + 按 rel 排序

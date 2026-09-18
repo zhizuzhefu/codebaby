@@ -1,5 +1,5 @@
 [package]
-name = "apicase"
+name = "requestbaby"
 version = "0.1.0"
 edition = "2021"
 description = "CLI Postman: curl-powered, file-based, AI-native API testing"

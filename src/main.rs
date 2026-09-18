@@ -15,10 +15,10 @@ pub const CASE_SCHEMA: &str = include_str!("../docs/schema/case.schema.json");
 
 #[derive(Parser)]
 #[command(
-    name = "apicase",
+    name = "requestbaby",
     version,
     about = "CLI Postman: curl-powered, file-based, AI-native API testing",
-    long_about = "apicase — 把 curl 组织成集合，用 JSON 配置做项目级接口自动化测试。\n配置规范见 docs/schema/case.schema.json（apicase schema 导出）。"
+    long_about = "requestbaby — 把 curl 组织成集合，用 JSON 配置做项目级接口自动化测试。\n配置规范见 docs/schema/case.schema.json（requestbaby schema 导出）。"
 )]
 struct Cli {
     #[command(subcommand)]
@@ -51,7 +51,7 @@ enum Cmd {
     Run {
         /// 文件 / 目录 / glob
         paths: Vec<String>,
-        /// 环境名（缺省用 apicase.json 的 defaultEnv，再缺省 dev）
+        /// 环境名（缺省用 requestbaby.json 的 defaultEnv，再缺省 dev）
         #[arg(short, long)]
         env: Option<String>,
         /// 标签过滤（可多次，任一命中即选）
@@ -106,7 +106,7 @@ fn cmd_init(path: Option<&str>) -> u8 {
         println!("创建: {}", p.display());
         Ok(())
     };
-    let _ = mk(dir.join("apicase.json"), "{\n  \"version\": 1,\n  \"defaultEnv\": \"dev\",\n  \"vars\": {},\n  \"timeoutMs\": 30000\n}\n");
+    let _ = mk(dir.join("requestbaby.json"), "{\n  \"version\": 1,\n  \"defaultEnv\": \"dev\",\n  \"vars\": {},\n  \"timeoutMs\": 30000\n}\n");
     let _ = mk(dir.join("envs/dev.json"), "{\n  \"vars\": {\n    \"baseUrl\": \"http://localhost:8080\"\n  }\n}\n");
     let _ = mk(dir.join("envs/prod.json"), "{\n  \"vars\": {\n    \"baseUrl\": \"https://api.example.com\"\n  }\n}\n");
     let _ = mk(dir.join("collections/demo/collection.json"), "{\n  \"name\": \"demo\",\n  \"tags\": [\"smoke\"],\n  \"vars\": {}\n}\n");
@@ -139,7 +139,7 @@ fn cmd_init(path: Option<&str>) -> u8 {
   ]
 }
 "#);
-    println!("\n完成。试试: apicase run {}", dir.join("collections").display());
+    println!("\n完成。试试: requestbaby run {}", dir.join("collections").display());
     0
 }
 
@@ -209,7 +209,7 @@ fn cmd_run(
     let result = (|| -> Result<u8> {
         let cases = runner::discover::discover(&pb)?;
         if cases.is_empty() {
-            eprintln!("未发现用例（*.json，排除 apicase.json/collection.json/envs）");
+            eprintln!("未发现用例（*.json，排除 requestbaby.json/collection.json/envs）");
             return Ok(1);
         }
         let env_name = env
@@ -227,7 +227,7 @@ fn cmd_run(
 
         if !json {
             println!(
-                "\x1b[1mapicase\x1b[0m \x1b[2menv={env_name} cases={} timeout={}ms{}\x1b[0m",
+                "\x1b[1mrequestbaby\x1b[0m \x1b[2menv={env_name} cases={} timeout={}ms{}\x1b[0m",
                 cases.len(),
                 ctx.project.timeout_ms,
                 if dry_run { " [dry-run]" } else { "" }
@@ -260,6 +260,6 @@ fn cmd_run(
 /// 从第一个路径定位项目默认环境
 fn default_env_of(paths: &[PathBuf]) -> Option<String> {
     let root = runner::discover::find_project_root(&paths[0])?;
-    let p = config::load_strict::<config::Project>(&root.join("apicase.json")).ok()?;
+    let p = runner::discover::project_file(&root).and_then(|pf| config::load_strict::<config::Project>(&pf).ok())?;
     Some(p.default_env)
 }
