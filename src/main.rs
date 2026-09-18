@@ -1,5 +1,6 @@
 mod config;
 mod engine;
+mod importer;
 mod report;
 mod runner;
 mod script;
@@ -47,6 +48,17 @@ enum Cmd {
     List {
         paths: Vec<String>,
     },
+    /// 导入外部格式：OpenAPI 3 / Swagger 2 / Postman Collection v2.1（JSON 或 YAML）
+    Import {
+        /// spec 文件路径
+        spec: String,
+        /// 输出目录（生成完整项目脚手架，缺省 ./imported）
+        #[arg(short, long)]
+        out: Option<String>,
+        /// 环境名（缺省 dev）
+        #[arg(short, long)]
+        env: Option<String>,
+    },
     /// 运行用例 / 集合
     Run {
         /// 文件 / 目录 / glob
@@ -88,6 +100,7 @@ fn main() -> ExitCode {
         }
         Cmd::Validate { paths, env } => cmd_validate(&paths, env.as_deref()),
         Cmd::List { paths } => cmd_list(&paths),
+        Cmd::Import { spec, out, env } => cmd_import(&spec, out.as_deref(), env.as_deref()),
         Cmd::Run { paths, env, tag, name, fail_fast, dry_run, json, verbose, output } => {
             cmd_run(&paths, env.as_deref(), tag, name.as_deref(), fail_fast, dry_run, json, verbose, output.as_deref())
         }
@@ -257,6 +270,31 @@ fn cmd_run(
         Ok(code) => code,
         Err(e) => {
             eprintln!("\x1b[31m错误: {e:#}\x1b[0m");
+            1
+        }
+    }
+}
+
+fn cmd_import(spec: &str, out: Option<&str>, env: Option<&str>) -> u8 {
+    let out_dir = std::path::PathBuf::from(out.unwrap_or("imported"));
+    let env_name = env.unwrap_or("dev");
+    match importer::import(std::path::Path::new(spec), &out_dir, env_name) {
+        Ok(sum) => {
+            println!(
+                "\x1b[32m✔\x1b[0m 导入完成: {} 个用例 / {} 个集合 → {}（baseUrl: {}）",
+                sum.cases,
+                sum.collections,
+                sum.out_dir.display(),
+                sum.base_url
+            );
+            for w in &sum.warnings {
+                println!("\x1b[33m⚠\x1b[0m {w}");
+            }
+            println!("\n下一步: cd {} && requestbaby run collections --dry-run", sum.out_dir.display());
+            0
+        }
+        Err(e) => {
+            eprintln!("\x1b[31m导入失败: {e:#}\x1b[0m");
             1
         }
     }

@@ -513,6 +513,123 @@ fn data_driven_expands_rows() {
 }
 
 #[test]
+fn import_openapi3() {
+    let dir = TempDir::new().unwrap();
+    let spec = dir.path().join("openapi.json");
+    std::fs::write(&spec, r##"{
+  "openapi": "3.0.0",
+  "info": { "title": "demo", "version": "1.0" },
+  "servers": [{ "url": "https://api.demo.test/v1" }],
+  "paths": {
+    "/pets": {
+      "post": {
+        "tags": ["pets"],
+        "summary": "create pet",
+        "operationId": "createPet",
+        "requestBody": { "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Pet" } } } },
+        "responses": { "201": { "description": "ok" }, "400": { "description": "bad" } }
+      },
+      "get": {
+        "tags": ["pets"],
+        "operationId": "listPets",
+        "parameters": [{ "name": "limit", "in": "query", "schema": { "type": "integer" }, "example": "20" }],
+        "responses": { "200": { "description": "ok" } }
+      }
+    },
+    "/pets/{petId}": {
+      "get": {
+        "tags": ["pets"],
+        "operationId": "getPet",
+        "parameters": [{ "name": "petId", "in": "path", "schema": { "type": "integer" } }],
+        "responses": { "200": { "description": "ok" } }
+      }
+    }
+  },
+  "components": { "schemas": { "Pet": { "type": "object", "properties": {
+    "name": { "type": "string" }, "age": { "type": "integer" } } } } }
+}"##).unwrap();
+    let out = dir.path().join("imported");
+    let r = run_cli(&["import", spec.to_str().unwrap(), "-o", out.to_str().unwrap()], dir.path());
+    let stdout = String::from_utf8_lossy(&r.stdout);
+    assert!(r.status.success(), "{stdout}\n{}", String::from_utf8_lossy(&r.stderr));
+    assert!(stdout.contains("3 个用例"), "{stdout}");
+    // 生成的用例可 validate
+    let pet_post = std::fs::read_to_string(out.join("collections/pets/post-pets.json")).unwrap();
+    assert!(pet_post.contains("{{name}}"), "schema 占位: {pet_post}");
+    assert!(pet_post.contains("{{age:number}}"), "数字标注: {pet_post}");
+    assert!(pet_post.contains("201"), "expectStatus: {pet_post}");
+    let v = run_cli(&["validate", "imported/collections"], dir.path());
+    assert!(v.status.success(), "{}", String::from_utf8_lossy(&v.stdout));
+}
+
+#[test]
+fn import_swagger2() {
+    let dir = TempDir::new().unwrap();
+    let spec = dir.path().join("swagger.json");
+    std::fs::write(&spec, r##"{
+  "swagger": "2.0",
+  "info": { "title": "sw", "version": "1" },
+  "host": "sw.demo.test",
+  "basePath": "/api",
+  "schemes": ["https"],
+  "paths": {
+    "/orders": {
+      "post": {
+        "tags": ["orders"],
+        "parameters": [{ "name": "body", "in": "body", "schema": { "$ref": "#/definitions/Order" } }],
+        "responses": { "200": { "description": "ok" } }
+      }
+    }
+  },
+  "definitions": { "Order": { "type": "object", "properties": { "id": { "type": "integer" } } } }
+}"##).unwrap();
+    let out = dir.path().join("imported");
+    let r = run_cli(&["import", spec.to_str().unwrap(), "-o", out.to_str().unwrap()], dir.path());
+    assert!(r.status.success(), "{}", String::from_utf8_lossy(&r.stdout));
+    let env = std::fs::read_to_string(out.join("envs/dev.json")).unwrap();
+    assert!(env.contains("https://sw.demo.test/api"), "{env}");
+    let case = std::fs::read_to_string(out.join("collections/orders/post-orders.json")).unwrap();
+    assert!(case.contains("{{id:number}}"), "{case}");
+}
+
+#[test]
+fn import_postman_v21() {
+    let dir = TempDir::new().unwrap();
+    let spec = dir.path().join("postman.json");
+    std::fs::write(&spec, r##"{
+  "info": { "name": "pm-demo", "schema": "v2.1.0" },
+  "variable": [{ "key": "baseUrl", "value": "http://pm.test" }],
+  "item": [
+    {
+      "name": "users",
+      "item": [
+        {
+          "name": "create user",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": { "mode": "raw", "raw": "{\"name\": \"a\"}", "options": { "raw": { "language": "json" } } },
+            "url": { "raw": "{{baseUrl}}/users?page=1", "host": ["x"] }
+          },
+          "event": [{ "listen": "test", "script": { "exec": ["pm.test('x', 1)"] } }]
+        }
+      ]
+    }
+  ]
+}"##).unwrap();
+    let out = dir.path().join("imported");
+    let r = run_cli(&["import", spec.to_str().unwrap(), "-o", out.to_str().unwrap()], dir.path());
+    let stdout = String::from_utf8_lossy(&r.stdout);
+    assert!(r.status.success(), "{stdout}");
+    assert!(stdout.contains("需手工迁移"), "脚本迁移提示: {stdout}");
+    let case = std::fs::read_to_string(out.join("collections/users/01-create-user.json")).unwrap();
+    assert!(case.contains("{{baseUrl}}/users?page=1"), "{case}");
+    assert!(case.contains("\"json\"", ), "{case}");
+    let env = std::fs::read_to_string(out.join("envs/dev.json")).unwrap();
+    assert!(env.contains("http://pm.test"), "{env}");
+}
+
+#[test]
 fn list_shows_cases() {
     let dir = TempDir::new().unwrap();
     let port = spawn_server();
