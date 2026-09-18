@@ -630,6 +630,43 @@ fn import_postman_v21() {
 }
 
 #[test]
+fn parallel_mode_runs_independent_cases() {
+    let port = spawn_server();
+    let dir = TempDir::new().unwrap();
+    write_project(dir.path(), port);
+    // 01-health(独立) 02-login(有 post) 03-me(依赖 token) → 并发档位 2
+    let out = run_cli(&["run", "collections/01-health.json", "collections/02-login.json", "collections/03-me.json", "--parallel", "2", "--json"], dir.path());
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(out.status.success(), "并发模式依赖链应保序执行: {stdout}");
+    let report: serde_json::Value = serde_json::from_str(&stdout).unwrap();
+    assert_eq!(report["total"], 3, "{stdout}");
+}
+
+#[test]
+fn junit_report_format() {
+    let port = spawn_server();
+    let dir = TempDir::new().unwrap();
+    write_project(dir.path(), port);
+    let out = run_cli(&["run", "collections/04-slow-fail.json", "--report", "junit"], dir.path());
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(!out.status.success());
+    assert!(stdout.contains("<testsuites"), "{stdout}");
+    assert!(stdout.contains("<failure"), "{stdout}");
+}
+
+#[test]
+fn html_report_written() {
+    let port = spawn_server();
+    let dir = TempDir::new().unwrap();
+    write_project(dir.path(), port);
+    let out = run_cli(&["run", "collections/01-health.json", "--report", "html"], dir.path());
+    assert!(out.status.success());
+    let html = std::fs::read_to_string(dir.path().join("report.html")).unwrap();
+    assert!(html.contains("requestbaby 报告"), "{html}");
+    assert!(html.contains("01-health"), "{html}");
+}
+
+#[test]
 fn list_shows_cases() {
     let dir = TempDir::new().unwrap();
     let port = spawn_server();

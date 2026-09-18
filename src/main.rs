@@ -105,6 +105,12 @@ enum Cmd {
         /// 响应落盘目录（每用例一个 JSON：meta + body）
         #[arg(short, long)]
         output: Option<String>,
+        /// 独立用例并发档位（依赖捕获链/带脚本的仍串行在前；不支持 setup/teardown）
+        #[arg(long)]
+        parallel: Option<usize>,
+        /// 报告格式：term（默认）/ json / junit / html（写 report.html）
+        #[arg(long)]
+        report: Option<String>,
     },
 }
 
@@ -121,8 +127,8 @@ fn main() -> ExitCode {
         Cmd::Import { spec, out, env } => cmd_import(&spec, out.as_deref(), env.as_deref()),
         Cmd::Send { case, env } => cmd_send(&case, env.as_deref()),
         Cmd::Watch { paths, env, tag, name } => cmd_watch(&paths, env.as_deref(), tag, name.as_deref()),
-        Cmd::Run { paths, env, tag, name, fail_fast, dry_run, json, verbose, output } => {
-            cmd_run(&paths, env.as_deref(), tag, name.as_deref(), fail_fast, dry_run, json, verbose, output.as_deref())
+        Cmd::Run { paths, env, tag, name, fail_fast, dry_run, json, verbose, output, parallel, report } => {
+            cmd_run(&paths, env.as_deref(), tag, name.as_deref(), fail_fast, dry_run, json, verbose, output.as_deref(), parallel, report.as_deref())
         }
     };
     ExitCode::from(code)
@@ -241,6 +247,8 @@ fn cmd_run(
     json: bool,
     verbose: bool,
     output: Option<&str>,
+    parallel: Option<usize>,
+    report: Option<&str>,
 ) -> u8 {
     let pb: Vec<PathBuf> = paths.iter().map(PathBuf::from).collect();
     let result = (|| -> Result<u8> {
@@ -262,6 +270,7 @@ fn cmd_run(
             verbose,
             output_dir: output.map(std::path::PathBuf::from),
             send_mode: false,
+            parallel: parallel,
         };
 
         if !json {
@@ -276,15 +285,26 @@ fn cmd_run(
         let mut r = runner::Runner::new(ctx);
         let results = r.run(&cases, &opts, |_| {})?;
 
-        if json {
-            println!("{}", report::render_json(&results, verbose));
-            let failed = results.iter().filter(|x| !x.passed() && !x.skipped).count();
-            return Ok(if failed > 0 { 1 } else { 0 });
-        }
-        // 收集后统一渲染，保证各列对齐（URL 完整显示，超长仅剥 query）
-        report::print_results(&results, verbose || dry_run);
-        report::print_summary(&results);
+        let fmt = report.unwrap_or(if json { "json" } else { "term" });
         let failed = results.iter().filter(|x| !x.passed() && !x.skipped).count();
+        match fmt {
+            "json" => println!("{}", report::render_json(&results, verbose)),
+            "junit" => {
+                let total_ms: u64 = results.iter().map(|r| r.duration_ms).sum();
+                println!("{}", report::render_junit(&results, total_ms));
+            }
+            "html" => {
+                let path = PathBuf::from("report.html");
+                std::fs::write(&path, report::render_html(&results)).ok();
+                if !json {
+                    eprintln!("\x1b[2mHTML 报告: {}\x1b[0m", path.display());
+                }
+            }
+            _ => {
+                report::print_results(&results, verbose || dry_run);
+                report::print_summary(&results);
+            }
+        }
         Ok(if failed > 0 { 1 } else { 0 })
     })();
     match result {
@@ -357,6 +377,7 @@ fn cmd_send(case: &str, env: Option<&str>) -> u8 {
         verbose: false,
         output_dir: None,
         send_mode: true,
+        parallel: None,
     };
     let case_cfg = match config::load_strict::<config::TestCase>(&dc.path) {
         Ok(c) => c,

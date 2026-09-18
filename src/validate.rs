@@ -157,7 +157,7 @@ fn validate_case(
 }
 
 /// 手工扫描脚本写入的 vars：匹配 vars.NAME = 或 vars["NAME"] =（无 regex 依赖）
-fn scan_var_writes(src: &str) -> Vec<String> {
+pub fn scan_var_writes(src: &str) -> Vec<String> {
     let mut names = vec![];
     let bytes = src.as_bytes();
     let mut i = 0;

@@ -1,5 +1,6 @@
 use crate::runner::CaseResult;
 use serde::Serialize;
+use std::fmt::Write as _;
 
 const GREEN: &str = "\x1b[32m";
 const RED: &str = "\x1b[31m";
@@ -161,6 +162,82 @@ struct JsonReport {
     failed: usize,
     skipped: usize,
     results: Vec<JsonResult>,
+}
+
+/// JUnit XML（CI 平台渲染）
+pub fn render_junit(results: &[CaseResult], total_ms: u64) -> String {
+    let total = results.len();
+    let failures = results.iter().filter(|r| !r.passed() && !r.skipped).count();
+    let skipped = results.iter().filter(|r| r.skipped).count();
+    let mut x = String::new();
+    let _ = write!(
+        x,
+        "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<testsuites tests=\"{total}\" failures=\"{failures}\" skipped=\"{skipped}\" time=\"{:.3}\">\n",
+        total_ms as f64 / 1000.0
+    );
+    for r in results {
+        let _ = write!(
+            x,
+            "  <testcase classname=\"{}\" name=\"{}\" time=\"{:.3}\">",
+            xml_escape(&r.rel),
+            xml_escape(&r.name),
+            r.duration_ms as f64 / 1000.0
+        );
+        if r.skipped {
+            let _ = write!(x, "<skipped/>");
+        } else if let Some(e) = &r.error {
+            let _ = write!(x, "<failure message=\"{}\">{}</failure>", xml_escape(e), xml_escape(e));
+        } else if let Some(t) = r.tests.iter().find(|t| !t.pass) {
+            let _ = write!(
+                x,
+                "<failure message=\"{}\">{}</failure>",
+                xml_escape(&t.expr),
+                xml_escape(t.detail.as_deref().unwrap_or(""))
+            );
+        }
+        let _ = write!(x, "</testcase>\n");
+    }
+    let _ = write!(x, "</testsuites>\n");
+    x
+}
+
+fn xml_escape(s: &str) -> String {
+    s.replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
+        .replace('\'', "&apos;")
+}
+
+/// 单文件 HTML（内嵌数据 + 极简渲染）
+pub fn render_html(results: &[CaseResult]) -> String {
+    let data = render_json(results, false);
+    format!(
+        r#"<!DOCTYPE html><html lang="zh"><head><meta charset="utf-8"><title>requestbaby report</title>
+<style>
+body{{font-family:-apple-system,'PingFang SC',monospace;margin:24px;background:#0f172a;color:#e2e8f0}}
+table{{border-collapse:collapse;width:100%}}
+td,th{{padding:6px 10px;border-bottom:1px solid #1e293b;text-align:left;font-size:13px}}
+.pass{{color:#4ade80}}.fail{{color:#f87171}}.skip{{color:#fbbf24}}.dim{{color:#64748b}}
+details{{margin:4px 0}}pre{{background:#1e293b;padding:8px;border-radius:6px;overflow:auto;font-size:12px}}
+h1{{font-size:18px}}
+</style></head><body>
+<h1>requestbaby 报告</h1>
+<table id="t"></table>
+<script>
+const R = {data};
+const t = document.getElementById('t');
+t.innerHTML = '<tr><th>结果</th><th>用例</th><th>方法</th><th>URL</th><th>状态</th><th>耗时</th></tr>' +
+R.results.map(r => {{
+const cls = r.skipped ? 'skip' : (r.passed ? 'pass' : 'fail');
+const mark = r.skipped ? '⇣' : (r.passed ? '✔' : '✘');
+const detail = (r.error ? `<div class="fail">${{esc(r.error)}}</div>` : '') +
+(r.tests||[]).filter(x=>!x.pass).map(x=>`<div>✘ ${{esc(x.expr)}}<pre>${{esc(x.detail||'')}}</pre></div>`).join('');
+return `<tr><td class="${{cls}}">${{mark}}</td><td>${{esc(r.name)}}${{detail?`<details><summary class="dim">详情</summary>${{detail}}</details>`:''}}</td><td class="dim">${{r.method}}</td><td>${{esc(r.url)}}</td><td class="${{r.status>=400?'fail':'pass'}}">${{r.status||'-'}}</td><td class="dim">${{r.duration_ms}}ms</td></tr>`;
+}}).join('');
+function esc(s){{return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;')}}
+</script></body></html>"#
+    )
 }
 
 pub fn render_json(results: &[CaseResult], include_curl: bool) -> String {

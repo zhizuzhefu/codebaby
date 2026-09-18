@@ -9,6 +9,7 @@ use std::collections::BTreeMap;
 use std::path::Path;
 
 /// 运行选项
+#[derive(Clone)]
 pub struct RunOptions {
     pub tags: Vec<String>,
     pub name_filter: String,
@@ -19,6 +20,8 @@ pub struct RunOptions {
     pub output_dir: Option<std::path::PathBuf>,
     /// send 模式：成功也填充 full_response（交互展示用）
     pub send_mode: bool,
+    /// 并发档位：None 串行；Some(n) 独立用例并发（依赖捕获链/带脚本的仍串行在前）
+    pub parallel: Option<usize>,
 }
 
 /// 失败时的响应快照（进 --json 报告，辅助 AI 自修复）
@@ -31,6 +34,7 @@ pub struct ResponseSnapshot {
 }
 
 /// 单用例执行结果
+#[derive(Clone)]
 pub struct CaseResult {
     pub rel: String,
     pub name: String,
@@ -59,6 +63,7 @@ impl CaseResult {
 }
 
 /// 项目上下文（一次 run 内共享）
+#[derive(Clone)]
 pub struct ProjectCtx {
     pub project: Project,
     pub env_vars: BTreeMap<String, String>,
@@ -66,7 +71,8 @@ pub struct ProjectCtx {
     pub secret_values: Vec<String>,
 }
 
-/// 编排器：discover → filter → execute（顺序）→ results
+/// 编排器：discover → filter → execute（顺序/并行）→ results
+#[derive(Clone)]
 pub struct Runner {
     ctx: ProjectCtx,
     transport: CurlTransport,
@@ -158,12 +164,143 @@ impl Runner {
         true
     }
 
-    /// 执行全部发现用例（按 rel 路径序；目录进出触发集合 setup/teardown）
+    /// 执行全部发现用例：默认串行；--parallel N 时两阶段（依赖串行 → 独立并发）
     pub fn run(
         &mut self,
         cases: &[discover::DiscoveredCase],
         opts: &RunOptions,
         mut sink: impl FnMut(&CaseResult),
+    ) -> Result<Vec<CaseResult>> {
+        if opts.parallel.is_some() && !opts.dry_run {
+            return self.run_parallel(cases, opts, sink);
+        }
+        self.run_serial(cases, opts, &mut sink)
+    }
+
+    /// 两阶段并行：带脚本或消费捕获变量的用例串行在前，其余按 chunk 并发
+    fn run_parallel(
+        &mut self,
+        cases: &[discover::DiscoveredCase],
+        opts: &RunOptions,
+        mut sink: impl FnMut(&CaseResult),
+    ) -> Result<Vec<CaseResult>> {
+        let width = opts.parallel.unwrap().max(1);
+        // 收集全部脚本写入的变量名（跨用例依赖判定）
+        let mut written: Vec<String> = vec![];
+        for dc in cases {
+            if let Ok(c) = load_strict::<TestCase>(&dc.path) {
+                for n in crate::validate::scan_var_writes(&c.pre)
+                    .into_iter()
+                    .chain(crate::validate::scan_var_writes(&c.post))
+                {
+                    if !written.contains(&n) {
+                        written.push(n);
+                    }
+                }
+            }
+        }
+        let consumes_written = |c: &TestCase| -> bool {
+            let mut texts = vec![c.request.url.clone()];
+            texts.extend(c.request.headers.values().cloned());
+            if let Some(b) = &c.request.body {
+                texts.push(b.render());
+            }
+            texts.extend(c.tests.iter().cloned());
+            texts.push(c.pre.clone());
+            texts.push(c.post.clone());
+            let mut found = false;
+            for t in texts {
+                for w in &written {
+                    let ph = format!("{{{{{w}}}}}");
+                    let env_ref = format!("env.{w}");
+                    if t.contains(&ph) || t.contains(&env_ref) {
+                        found = true;
+                    }
+                }
+            }
+            found
+        };
+
+        // 过滤 + 分类（保持原序）
+        let mut serial: Vec<&discover::DiscoveredCase> = vec![];
+        let mut parallel: Vec<&discover::DiscoveredCase> = vec![];
+        for dc in cases {
+            let Ok(case) = load_strict::<TestCase>(&dc.path) else { continue };
+            let mut all_tags: Vec<String> = dc.chain.iter().flat_map(|c| c.tags.clone()).collect();
+            all_tags.extend(case.tags.iter().cloned());
+            let name = if case.name.is_empty() {
+                dc.path.file_stem().unwrap_or_default().to_string_lossy().into_owned()
+            } else {
+                case.name.clone()
+            };
+            let stem = dc.path.file_stem().unwrap_or_default().to_string_lossy().into_owned();
+            if !Self::matches_filter(&all_tags, &name, &stem, opts) {
+                continue;
+            }
+            let depends = !case.pre.is_empty() || !case.post.is_empty() || case.cases.is_some() || consumes_written(&case);
+            if depends {
+                serial.push(dc);
+            } else {
+                parallel.push(dc);
+            }
+        }
+
+        let mut results: Vec<CaseResult> = vec![];
+        // 阶段1：串行（含 setup/teardown 跟踪）
+        if !serial.is_empty() {
+            let ser: Vec<discover::DiscoveredCase> = serial.into_iter().cloned().collect();
+            let mut sub_opts = opts.clone();
+            sub_opts.parallel = None;
+            let rs = self.run_serial(&ser, &sub_opts, &mut |r| sink(r))?;
+            let stop = opts.fail_fast && rs.iter().any(|r| !r.passed());
+            results.extend(rs);
+            if stop {
+                return Ok(results);
+            }
+        }
+        // 阶段2：独立用例并发（跳过 setup/teardown；fail_fast 不中断进行中批次）
+        for chunk in parallel.chunks(width) {
+            let mut handles = vec![];
+            for dc in chunk {
+                let dc: discover::DiscoveredCase = (*dc).clone();
+                let runner = self.clone();
+                let o = RunOptions {
+                    tags: vec![], name_filter: String::new(), fail_fast: false,
+                    dry_run: false, verbose: opts.verbose,
+                    output_dir: opts.output_dir.clone(), send_mode: false, parallel: None,
+                };
+                handles.push(std::thread::spawn(move || {
+                    let mut r = runner;
+                    let mut out: Vec<CaseResult> = vec![];
+                    let _ = r.run_serial(std::slice::from_ref(&dc), &o, &mut |x| out.push(x.clone()));
+                    out
+                }));
+            }
+            let mut chunk_failed = false;
+            for h in handles {
+                if let Ok(rs) = h.join() {
+                    for r in rs {
+                        if !r.passed() {
+                            chunk_failed = true;
+                        }
+                        sink(&r);
+                        results.push(r);
+                    }
+                }
+            }
+            if opts.fail_fast && chunk_failed {
+                break;
+            }
+        }
+        Ok(results)
+    }
+
+    /// 执行全部发现用例（按 rel 路径序；目录进出触发集合 setup/teardown）
+    fn run_serial(
+        &mut self,
+        cases: &[discover::DiscoveredCase],
+        opts: &RunOptions,
+        sink: &mut dyn FnMut(&CaseResult),
     ) -> Result<Vec<CaseResult>> {
         let mut results = vec![];
         let mut prev_dir: Option<std::path::PathBuf> = None;
