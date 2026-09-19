@@ -210,8 +210,15 @@ requestbaby workflow e2e -e test    # 步骤失败即中止；支持 --dry-run/-
 ## 测试与示例
 
 - 单元 + 集成测试：`cargo test`（内置 mini HTTP server 端到端）
+- **全特性示范项目**：[examples/golden](examples/golden)——捕获链/数据驱动/setup/secret/workflow，进 CI 活验证（文档即契约）
 - 可运行示例：[examples/demo-api](examples/demo-api)（httpbin）
 - 用户项目：`projects/`（gitignore，明文密钥属用户资产）
+
+## 文档
+
+- **AI 用例生成指南**：[docs/AI-GUIDE.md](docs/AI-GUIDE.md)——字段全参考、变量系统、脚本沙箱 API、断言模式库、五种组织模式、生成工作流、错误修复对照表、自检清单
+- **AI 调度协议**：[docs/AI-NATIVE.md](docs/AI-NATIVE.md)——闭环、退出码语义、CI 门禁
+- 架构设计：[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)
 
 ## Roadmap
 

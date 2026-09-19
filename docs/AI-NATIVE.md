@@ -1,6 +1,8 @@
 # requestbaby AI 原生调度协议
 
 > requestbaby 定位：AI 编码工作流的**验证层**——大模型写代码/改接口，requestbaby 作为严格校验者，以全面的自动化接口测试保证产出质量。本文档定义 LLM 调度 requestbaby 的标准协议。
+>
+> **用例怎么写**见 [AI-GUIDE.md](AI-GUIDE.md)（生成指南）；本文只讲**怎么调度**。
 
 ## 核心闭环
 
