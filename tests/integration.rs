@@ -667,6 +667,29 @@ fn html_report_written() {
 }
 
 #[test]
+fn leftover_placeholder_clear_error() {
+    let dir = TempDir::new().unwrap();
+    let port = spawn_server();
+    write_project(dir.path(), port);
+    // 未定义环境变量：应清晰报错而非 curl nested brace
+    std::fs::write(
+        dir.path().join("collections/10-leftover.json"),
+        r#"{
+  "tags": ["leftover"],
+  "request": { "method": "GET", "url": "{{baseUrl}}/health?task={{%NOPE_TASK_ID}}" }
+}"#,
+    )
+    .unwrap();
+    let out = run_cli(&["run", "collections/10-leftover.json"], dir.path());
+    let stdout = strip_ansi(&String::from_utf8_lossy(&out.stdout));
+    assert!(!out.status.success());
+    assert!(stdout.contains("环境变量 NOPE_TASK_ID 未设置"), "{stdout}");
+    // dry-run 不拦截（审阅预期）
+    let out2 = run_cli(&["run", "collections/10-leftover.json", "--dry-run"], dir.path());
+    assert!(out2.status.success());
+}
+
+#[test]
 fn list_shows_cases() {
     let dir = TempDir::new().unwrap();
     let port = spawn_server();

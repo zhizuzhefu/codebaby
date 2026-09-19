@@ -122,6 +122,11 @@ fn install_common(ctx: &Ctx<'_>) -> Result<()> {
              request(o) {
                const r = JSON.parse(__httpRequest(JSON.stringify(o || {})));
                if (r.error) throw new Error('http: ' + r.error);
+               r.json = function(p) {
+                 const v = JSON.parse(this.body);
+                 if (p === undefined) return v;
+                 return String(p).split('.').reduce((acc, k) => (acc == null ? undefined : acc[k]), v);
+               };
                return r;
              },
              get(url, o)   { return http.request({ ...(o || {}), method: 'GET',  url }); },

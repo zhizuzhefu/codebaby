@@ -662,6 +662,42 @@ impl Runner {
 
         result.url = req.url.clone();
 
+        // ---- 残留占位符检查：真实执行时未定义变量提前清晰报错 ----
+        // （dry-run 跳过：运行时捕获变量在前序未执行时残留属预期审阅内容）
+        if !opts.dry_run {
+            let mut texts = vec![req.url.clone()];
+            texts.extend(req.headers.iter().map(|(_, v)| v.clone()));
+            if let Some(b) = &req.body {
+                texts.push(b.clone());
+            }
+            let mut leftovers: Vec<String> = vec![];
+            for t in &texts {
+                for lo in scan_leftover_placeholders(t) {
+                    if !leftovers.contains(&lo) {
+                        leftovers.push(lo);
+                    }
+                }
+            }
+            if !leftovers.is_empty() {
+                let detail: Vec<String> = leftovers
+                    .iter()
+                    .map(|lo| {
+                        if let Some(name) = lo.strip_prefix("%") {
+                            format!(
+                                "环境变量 {name} 未设置（{{{{{lo}}}}} 依赖进程环境变量，请 export {name} 或经 run-e2e.sh 运行）"
+                            )
+                        } else {
+                            format!(
+                                "变量 {lo} 未定义（检查 requestbaby.json / envs / collection vars / 前序用例 post 捕获）"
+                            )
+                        }
+                    })
+                    .collect();
+                result.error = Some(format!("占位符未替换: {}", detail.join("; ")));
+                return result;
+            }
+        }
+
         // ---- 编译 curl ----
         let inv = match self.transport.compile(&req) {
             Ok(i) => i,
@@ -826,6 +862,25 @@ impl Runner {
             }
         }
     }
+}
+
+/// 扫描文本中残留的 {{...}} 占位符（返回内部表达式，如 %ENV / name / name:number）
+pub fn scan_leftover_placeholders(text: &str) -> Vec<String> {
+    let mut out = vec![];
+    let mut rest = text;
+    while let Some(start) = rest.find("{{") {
+        let after = &rest[start + 2..];
+        if let Some(end) = after.find("}}") {
+            let inner = after[..end].trim().to_string();
+            if !inner.is_empty() && !out.contains(&inner) {
+                out.push(inner);
+            }
+            rest = &after[end + 2..];
+        } else {
+            break;
+        }
+    }
+    out
 }
 
 /// 加载项目上下文：定位 root、加载 requestbaby.json 与 env 文件
