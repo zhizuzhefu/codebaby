@@ -1,0 +1,9 @@
+{
+  "name": "不存在的接口应404",
+  "tags": ["negative"],
+  "expectStatus": 404,
+  "request": {
+    "method": "GET",
+    "url": "{{baseUrl}}/no-such-api"
+  }
+}

@@ -1,0 +1,12 @@
+{
+  "name": "健康检查",
+  "expectStatus": 200,
+  "request": {
+    "method": "GET",
+    "url": "{{baseUrl}}/health"
+  },
+  "tests": [
+    "data.status === 'ok'",
+    "env.probeStatus === 'ok'"
+  ]
+}

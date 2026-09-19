@@ -1,0 +1,21 @@
+{
+  "name": "创建订单",
+  "expectStatus": 201,
+  "request": {
+    "method": "POST",
+    "url": "{{baseUrl}}/orders",
+    "body": {
+      "json": {
+        "sku": "{{sku}}",
+        "qty": "{{qty:number}}"
+      }
+    }
+  },
+  "pre": "req.headers['X-Timestamp'] = String(Math.floor(Date.now() / 1000))",
+  "post": "vars.orderId = res.json('data.id'); vars.orderSku = res.json('data.sku')",
+  "tests": [
+    "data.data.id !== undefined",
+    "data.data.sku !== undefined",
+    "data.data.sku.length > 0"
+  ]
+}

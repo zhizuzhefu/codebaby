@@ -1,0 +1,33 @@
+{
+  "name": "数据驱动下单",
+  "tags": [
+    "dd"
+  ],
+  "expectStatus": 200,
+  "request": {
+    "method": "POST",
+    "url": "{{baseUrl}}/echo",
+    "body": {
+      "json": {
+        "sku": "{{sku}}",
+        "qty": "{{qty:number}}"
+      }
+    }
+  },
+  "tests": [
+    "data.body.indexOf(env.sku) >= 0",
+    "data.body.indexOf('\"qty\":' + env.qty) >= 0"
+  ],
+  "cases": [
+    {
+      "label": "正常",
+      "sku": "A1",
+      "qty": "2"
+    },
+    {
+      "label": "大数量",
+      "sku": "B2",
+      "qty": "999"
+    }
+  ]
+}

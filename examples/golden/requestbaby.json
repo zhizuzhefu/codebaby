@@ -1,0 +1,18 @@
+{
+  "version": 1,
+  "defaultEnv": "test",
+  "vars": {
+    "username": "admin",
+    "password": "secret"
+  },
+  "timeoutMs": 10000,
+  "workflows": {
+    "full": {
+      "name": "全链路冒烟",
+      "steps": [
+        { "run": "collections/core", "tags": ["smoke"] },
+        { "run": "collections/orders" }
+      ]
+    }
+  }
+}

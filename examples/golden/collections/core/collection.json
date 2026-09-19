@@ -1,0 +1,10 @@
+{
+  "name": "core",
+  "tags": ["smoke"],
+  "headers": {
+    "authorization": "Bearer {{token}}",
+    "accept": "application/json"
+  },
+  "setup": "const r = http.get(env.baseUrl + '/health'); vars.probeStatus = r.json('status'); log('setup probe=' + vars.probeStatus)",
+  "vars": {}
+}

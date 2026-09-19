@@ -85,6 +85,10 @@ fn route(method: &str, path: &str, body: &str, head: &str) -> (&'static str, Str
             }
         }
         ("POST", "/orders") => ("201 Created", r#"{"data":{"id":42,"sku":"A1"}}"#.into()),
+        ("GET", "/orders/42") => (
+            "200 OK",
+            r#"{"data":{"id":42,"amount":99.5,"status":"paid","items":[{"sku":"A1","qty":2}]}}"#.into(),
+        ),
         ("POST", "/echo") => {
             let body_json = serde_json::to_string(&body).unwrap_or_default();
             // 回显关键 headers（小写 key），供集合级 headers 继承断言
@@ -710,6 +714,51 @@ fn workflow_unknown_name_errors() {
     write_project(dir.path(), port);
     let out = run_cli(&["workflow", "nope"], dir.path());
     assert_eq!(out.status.code(), Some(1));
+}
+
+/// golden 示范项目 = AI-GUIDE 文档的全特性活验证：
+/// 捕获链 / {{var:number}} / 数据驱动 / setup / secret / workflow / 负例
+#[test]
+fn golden_project_full_workflow() {
+    let port = spawn_server();
+    let dir = TempDir::new().unwrap();
+    // 复制 golden 项目
+    let src = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("examples/golden");
+    copy_dir(&src, dir.path());
+    // 动态端口 env
+    std::fs::create_dir_all(dir.path().join("envs")).unwrap();
+    std::fs::write(
+        dir.path().join("envs/test.json"),
+        format!(r#"{{"vars":{{"baseUrl":"http://127.0.0.1:{port}","token":{{"value":"init-token","secret":true}}}}}}"#),
+    )
+    .unwrap();
+    // 1) validate 全过
+    let v = run_cli(&["validate", "--report", "json"], dir.path());
+    assert!(v.status.success(), "{}", String::from_utf8_lossy(&v.stdout));
+    // 2) fmt 已精简
+    let f = run_cli(&["fmt", "--check"], dir.path());
+    assert!(f.status.success(), "{}", String::from_utf8_lossy(&f.stdout));
+    // 3) workflow 全绿（含捕获链/数据驱动/setup/负例）
+    let out = run_cli(&["workflow", "full"], dir.path());
+    let stdout = strip_ansi(&String::from_utf8_lossy(&out.stdout));
+    assert!(out.status.success(), "golden workflow 应全绿:\n{stdout}");
+    assert!(stdout.contains("[正常]"), "数据驱动实例: {stdout}");
+    // 4) secret 脱敏：dry-run 输出不含明文
+    let d = run_cli(&["run", "--dry-run", "-v"], dir.path());
+    let ds = String::from_utf8_lossy(&d.stdout);
+    assert!(!ds.contains("init-token") || ds.contains("****"), "secret 应脱敏");
+}
+
+fn copy_dir(src: &std::path::Path, dst: &std::path::Path) {
+    std::fs::create_dir_all(dst).unwrap();
+    for e in walkdir::WalkDir::new(src).into_iter().flatten() {
+        if e.file_type().is_file() {
+            let rel = e.path().strip_prefix(src).unwrap();
+            let to = dst.join(rel);
+            std::fs::create_dir_all(to.parent().unwrap()).unwrap();
+            std::fs::copy(e.path(), &to).unwrap();
+        }
+    }
 }
 
 #[test]

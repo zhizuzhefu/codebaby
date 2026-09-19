@@ -1,0 +1,11 @@
+{
+  "name": "orders",
+  "tags": [],
+  "headers": {
+    "authorization": "Bearer {{token}}"
+  },
+  "vars": {
+    "sku": "GOLDEN-1",
+    "qty": "1"
+  }
+}

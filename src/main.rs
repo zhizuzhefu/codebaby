@@ -49,8 +49,7 @@ enum Cmd {
     },
     /// 校验配置：Schema 结构 + 变量引用 + 脚本语法 + 引用存在性
     Validate {
-        /// 要校验的文件/目录
-        #[arg(required = true)]
+        /// 要校验的文件/目录（缺省 collections）
         paths: Vec<String>,
         /// 环境名（决定参与变量检查的 env 文件）
         #[arg(short, long)]
