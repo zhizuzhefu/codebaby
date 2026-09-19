@@ -47,6 +47,7 @@ requestbaby run <paths> [--tag smoke] [--name login] [-e prod]
                 [-o outdir]           # 响应落盘（AI 自修复素材）
                 [--parallel 4]        # 独立用例并发
                 [--report term|json|junit|html]
+requestbaby workflow <name> [-e env]  # 命名工作流：多阶段编排，变量跨阶段自动传递
 requestbaby send <case> [-e env]      # 交互式单发
 requestbaby watch <paths> [...]       # 变更自动重跑
 requestbaby import <spec> [-o dir]    # OpenAPI3/Swagger2/Postman 导入
@@ -154,6 +155,29 @@ requestbaby.json vars  <  envs/<env>.json vars  <  collection.json vars  <  运�
 
 - headers/vars/tags：向下继承，用例级同名覆盖
 - setup：进入集合执行（造数，可发请求）；teardown：离开执行（清数，无论成败）
+
+### 工作流（多阶段编排）
+
+E2E 链路不再依赖外部脚本串联：`requestbaby.json` 声明步骤，runtime vars 跨阶段自动传递。
+
+```json
+{
+  "workflows": {
+    "e2e": {
+      "steps": [
+        { "run": "collections/10-teacher", "tags": ["login"] },
+        { "run": "collections/10-teacher", "tags": ["create", "verify"] },
+        { "run": "collections/20-student" },
+        { "run": "collections/10-teacher", "tags": ["poll", "send"] }
+      ]
+    }
+  }
+}
+```
+
+```bash
+requestbaby workflow e2e -e test    # 步骤失败即中止；支持 --dry-run/--report
+```
 
 ### 数据驱动
 

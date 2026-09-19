@@ -121,7 +121,8 @@ fn write_project(dir: &std::path::Path, port: u16) {
     fs::create_dir_all(dir.join("collections")).unwrap();
     fs::write(
         dir.join("requestbaby.json"),
-        r#"{"version":1,"defaultEnv":"test","vars":{"user":"admin","taskId":"738011164633133","flag":"true","secretKey":{"value":"rb-secret-42","secret":true}},"timeoutMs":5000}"#,
+        r#"{"version":1,"defaultEnv":"test","vars":{"user":"admin","taskId":"738011164633133","flag":"true","secretKey":{"value":"rb-secret-42","secret":true}},"timeoutMs":5000,
+           "workflows":{"chain":{"steps":[{"run":"collections/02-login.json"},{"run":"collections/03-me.json"}]}}}"#,
     )
     .unwrap();
     fs::write(
@@ -687,6 +688,28 @@ fn leftover_placeholder_clear_error() {
     // dry-run 不拦截（审阅预期）
     let out2 = run_cli(&["run", "collections/10-leftover.json", "--dry-run"], dir.path());
     assert!(out2.status.success());
+}
+
+#[test]
+fn workflow_shares_vars_across_steps() {
+    let port = spawn_server();
+    let dir = TempDir::new().unwrap();
+    write_project(dir.path(), port);
+    // step1: 02-login post 捕获 token；step2: 03-me header 引用 {{token}}（401 则失败）
+    let out = run_cli(&["workflow", "chain"], dir.path());
+    let stdout = strip_ansi(&String::from_utf8_lossy(&out.stdout));
+    assert!(out.status.success(), "跨 step 变量应共享: {stdout}");
+    assert!(stdout.contains("step 2/2"), "{stdout}");
+    assert!(stdout.contains("2 passed"), "{stdout}");
+}
+
+#[test]
+fn workflow_unknown_name_errors() {
+    let port = spawn_server();
+    let dir = TempDir::new().unwrap();
+    write_project(dir.path(), port);
+    let out = run_cli(&["workflow", "nope"], dir.path());
+    assert_eq!(out.status.code(), Some(1));
 }
 
 #[test]

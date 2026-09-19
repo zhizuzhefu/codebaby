@@ -67,6 +67,22 @@ enum Cmd {
         #[arg(short, long)]
         env: Option<String>,
     },
+    /// 运行命名工作流（多阶段编排，变量跨阶段自动传递）
+    /// 定义在 requestbaby.json 的 workflows 字段
+    Workflow {
+        /// 工作流名
+        name: String,
+        #[arg(short, long)]
+        env: Option<String>,
+        /// 编译 curl 不执行
+        #[arg(long)]
+        dry_run: bool,
+        #[arg(short, long)]
+        verbose: bool,
+        /// 报告格式：term/json/junit/html
+        #[arg(long)]
+        report: Option<String>,
+    },
     /// 监听配置变更自动重跑（开发时挂终端）
     Watch {
         paths: Vec<String>,
@@ -126,6 +142,9 @@ fn main() -> ExitCode {
         Cmd::List { paths } => cmd_list(&paths),
         Cmd::Import { spec, out, env } => cmd_import(&spec, out.as_deref(), env.as_deref()),
         Cmd::Send { case, env } => cmd_send(&case, env.as_deref()),
+        Cmd::Workflow { name, env, dry_run, verbose, report } => {
+            cmd_workflow(&name, env.as_deref(), dry_run, verbose, report.as_deref())
+        }
         Cmd::Watch { paths, env, tag, name } => cmd_watch(&paths, env.as_deref(), tag, name.as_deref()),
         Cmd::Run { paths, env, tag, name, fail_fast, dry_run, json, verbose, output, parallel, report } => {
             cmd_run(&paths, env.as_deref(), tag, name.as_deref(), fail_fast, dry_run, json, verbose, output.as_deref(), parallel, report.as_deref())
@@ -557,6 +576,130 @@ type BTreeMapAll = std::collections::BTreeMap<String, (u64, std::time::SystemTim
 
 fn mtime_of(meta: &std::fs::Metadata) -> std::time::SystemTime {
     meta.modified().unwrap_or(std::time::SystemTime::UNIX_EPOCH)
+}
+
+fn cmd_workflow(name: &str, env: Option<&str>, dry_run: bool, verbose: bool, report: Option<&str>) -> u8 {
+    let cwd = std::path::PathBuf::from(".");
+    let Some(root) = runner::discover::find_project_root(&cwd) else {
+        eprintln!("\x1b[31m错误: 未找到项目根（requestbaby.json）\x1b[0m");
+        return 1;
+    };
+    let pf = match runner::discover::project_file(&root) {
+        Some(p) => p,
+        None => {
+            eprintln!("\x1b[31m错误: 缺少 requestbaby.json\x1b[0m");
+            return 1;
+        }
+    };
+    let project = match config::load_strict::<config::Project>(&pf) {
+        Ok(p) => p,
+        Err(e) => {
+            eprintln!("\x1b[31m配置错误: {e:#}\x1b[0m");
+            return 1;
+        }
+    };
+    let Some(wf) = project.workflows.get(name) else {
+        eprintln!(
+            "\x1b[31m错误: 工作流 {name} 不存在。已定义: {}\x1b[0m",
+            project.workflows.keys().cloned().collect::<Vec<_>>().join(", ")
+        );
+        return 1;
+    };
+    let env_name = env
+        .map(String::from)
+        .unwrap_or_else(|| project.default_env.clone());
+    let ctx = match runner::load_project_ctx(&root, &env_name) {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("\x1b[31m错误: {e:#}\x1b[0m");
+            return 1;
+        }
+    };
+
+    println!(
+        "\x1b[1mworkflow\x1b[0m \x1b[1m{name}\x1b[0m \x1b[2menv={env_name} steps={}{}\x1b[0m",
+        wf.steps.len(),
+        if dry_run { " [dry-run]" } else { "" }
+    );
+    let mut r = runner::Runner::new(ctx);
+    let mut all_results: Vec<runner::CaseResult> = vec![];
+    let fmt = report.unwrap_or("term");
+    let is_term = fmt == "term";
+
+    for (i, step) in wf.steps.iter().enumerate() {
+        let target = root.join(&step.run);
+        let cases = match runner::discover::discover(std::slice::from_ref(&target)) {
+            Ok(c) => c,
+            Err(e) => {
+                eprintln!("\x1b[31m步骤 {} 发现用例失败: {e:#}\x1b[0m", step.run);
+                return 1;
+            }
+        };
+        if is_term {
+            let label = if step.name.is_empty() { step.run.clone() } else { step.name.clone() };
+            let mut extra = String::new();
+            if !step.tags.is_empty() {
+                extra.push_str(&format!(" --tag {}", step.tags.join(",")));
+            }
+            if !step.name_filter.is_empty() {
+                extra.push_str(&format!(" --name {}", step.name_filter));
+            }
+            println!(
+                "\x1b[2m── step {}/{}: {}{} ({})\x1b[0m",
+                i + 1,
+                wf.steps.len(),
+                label,
+                extra,
+                cases.len()
+            );
+        }
+        let opts = runner::RunOptions {
+            tags: step.tags.clone(),
+            name_filter: step.name_filter.clone(),
+            fail_fast: true,
+            dry_run,
+            verbose,
+            output_dir: None,
+            send_mode: false,
+            parallel: None,
+        };
+        let results = match r.run(&cases, &opts, |_| {}) {
+            Ok(x) => x,
+            Err(e) => {
+                eprintln!("\x1b[31m步骤执行失败: {e:#}\x1b[0m");
+                return 1;
+            }
+        };
+        let step_failed = results.iter().any(|x| !x.passed() && !x.skipped);
+        if is_term {
+            report::print_results(&results, verbose || dry_run);
+        }
+        all_results.extend(results);
+        if step_failed && !dry_run {
+            if is_term {
+                report::print_summary(&all_results);
+                eprintln!("\x1b[31m工作流在步骤 {}/{} 失败中止\x1b[0m", i + 1, wf.steps.len());
+            }
+            return 1;
+        }
+    }
+
+    match fmt {
+        "json" => println!("{}", report::render_json(&all_results, verbose)),
+        "junit" => {
+            let total_ms: u64 = all_results.iter().map(|r| r.duration_ms).sum();
+            println!("{}", report::render_junit(&all_results, total_ms));
+        }
+        "html" => {
+            let path = PathBuf::from("report.html");
+            std::fs::write(&path, report::render_html(&all_results)).ok();
+            eprintln!("\x1b[2mHTML 报告: {}\x1b[0m", path.display());
+            report::print_summary(&all_results);
+        }
+        _ => report::print_summary(&all_results),
+    }
+    let failed = all_results.iter().filter(|x| !x.passed() && !x.skipped).count();
+    if failed > 0 { 1 } else { 0 }
 }
 
 /// 从第一个路径定位项目默认环境
