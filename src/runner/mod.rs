@@ -60,6 +60,26 @@ impl CaseResult {
     pub fn passed(&self) -> bool {
         !self.skipped && self.error.is_none() && self.tests.iter().all(|t| t.pass)
     }
+
+    /// 错误/占位构造器（统一 5 处样板）
+    pub fn placeholder(rel: &str, name: &str, error: Option<String>) -> Self {
+        Self {
+            rel: rel.to_string(),
+            name: name.to_string(),
+            tags: vec![],
+            method: "-".into(),
+            url: "-".into(),
+            status: 0,
+            duration_ms: 0,
+            skipped: false,
+            error,
+            tests: vec![],
+            curl_cmd: None,
+            body_preview: None,
+            response_snapshot: None,
+            full_response: None,
+        }
+    }
 }
 
 /// 项目上下文（一次 run 内共享）
@@ -296,6 +316,9 @@ impl Runner {
     }
 
     /// 执行全部发现用例（按 rel 路径序；目录进出触发集合 setup/teardown）
+    ///
+    /// 副作用隔离：先按 filters 计划存活用例，setup/teardown 仅为存活用例的目录执行
+    /// —— `--tag smoke` 只读跑法不会触发其他集合的造数脚本
     fn run_serial(
         &mut self,
         cases: &[discover::DiscoveredCase],
@@ -306,7 +329,30 @@ impl Runner {
         let mut prev_dir: Option<std::path::PathBuf> = None;
         let mut active_dirs: Vec<std::path::PathBuf> = vec![]; // 当前进入的目录层级（浅→深）
 
+        // ---- 计划阶段：加载 + 过滤（加载失败保留执行，报告配置错误）----
+        let mut planned: Vec<(&discover::DiscoveredCase, Option<TestCase>)> = vec![];
         for dc in cases {
+            match load_strict::<TestCase>(&dc.path) {
+                Ok(case) => {
+                    let mut all_tags: Vec<String> =
+                        dc.chain.iter().flat_map(|c| c.tags.clone()).collect();
+                    all_tags.extend(case.tags.iter().cloned());
+                    let name = display_name(dc, &case);
+                    let stem = dc
+                        .path
+                        .file_stem()
+                        .unwrap_or_default()
+                        .to_string_lossy()
+                        .into_owned();
+                    if Self::matches_filter(&all_tags, &name, &stem, opts) {
+                        planned.push((dc, Some(case)));
+                    }
+                }
+                Err(_) => planned.push((dc, None)),
+            }
+        }
+
+        for (dc, case_opt) in planned {
             let case_dir = dc
                 .path
                 .parent()
@@ -331,30 +377,20 @@ impl Runner {
                 prev_dir = Some(case_dir);
             }
 
-            let case = match load_strict::<TestCase>(&dc.path) {
-                Ok(c) => c,
-                Err(e) => {
-                    let r = CaseResult {
-                        rel: dc.rel.clone(),
-                        name: dc
-                            .path
-                            .file_stem()
-                            .unwrap_or_default()
-                            .to_string_lossy()
-                            .into_owned(),
-                        tags: vec![],
-                        method: "-".into(),
-                        url: "-".into(),
-                        status: 0,
-                        duration_ms: 0,
-                        skipped: false,
-                        error: Some(format!("{e:#}")),
-                        tests: vec![],
-                        curl_cmd: None,
-                        body_preview: None,
-                        response_snapshot: None,
-                        full_response: None,
-                    };
+            let case = match case_opt {
+                Some(c) => c,
+                None => {
+                    let e = load_strict::<TestCase>(&dc.path)
+                        .err()
+                        .map(|e| format!("{e:#}"))
+                        .unwrap_or_else(|| "配置错误".into());
+                    let name = dc
+                        .path
+                        .file_stem()
+                        .unwrap_or_default()
+                        .to_string_lossy()
+                        .into_owned();
+                    let r = CaseResult::placeholder(&dc.rel, &name, Some(e));
                     sink(&r);
                     results.push(r);
                     if opts.fail_fast {
@@ -367,25 +403,7 @@ impl Runner {
             // 合并集合级 tags，计算展示名
             let mut all_tags: Vec<String> = dc.chain.iter().flat_map(|c| c.tags.clone()).collect();
             all_tags.extend(case.tags.iter().cloned());
-            let name = if case.name.is_empty() {
-                dc.path
-                    .file_stem()
-                    .unwrap_or_default()
-                    .to_string_lossy()
-                    .into_owned()
-            } else {
-                case.name.clone()
-            };
-            let file_stem = dc
-                .path
-                .file_stem()
-                .unwrap_or_default()
-                .to_string_lossy()
-                .into_owned();
-
-            if !Self::matches_filter(&all_tags, &name, &file_stem, opts) {
-                continue;
-            }
+            let name = display_name(dc, &case);
 
             // ---- 数据驱动展开（用例 × 行）----
             let rows: Vec<Option<BTreeMap<String, String>>> = match &case.cases {
@@ -493,7 +511,7 @@ impl Runner {
                         status: 0,
                         duration_ms: 0,
                         skipped: false,
-                        error: Some(format!("{kind} 脚本失败: {e}")),
+                                    error: Some(format!("{kind} 脚本失败: {e}")),
                         tests: vec![],
                         curl_cmd: None,
                         body_preview: None,
@@ -504,22 +522,11 @@ impl Runner {
                 self.runtime_vars.extend(out.vars);
             }
             Err(e) => {
-                return Some(CaseResult {
-                    rel: format!("({kind}) {}", dir.display()),
-                    name: format!("({kind}) {display_name}"),
-                    tags: vec![],
-                    method: "-".into(),
-                    url: "-".into(),
-                    status: 0,
-                    duration_ms: 0,
-                    skipped: false,
-                    error: Some(format!("{kind} 宿主错误: {e:#}")),
-                    tests: vec![],
-                    curl_cmd: None,
-                    body_preview: None,
-                    response_snapshot: None,
-                    full_response: None,
-                });
+                return Some(CaseResult::placeholder(
+                    &format!("({kind}) {}", dir.display()),
+                    &format!("({kind}) {display_name}"),
+                    Some(format!("{kind} 宿主错误: {e:#}")),
+                ));
             }
         }
         None
@@ -639,7 +646,7 @@ impl Runner {
                     }
                     self.runtime_vars.extend(out.vars);
                     if opts.verbose && !out.logs.is_empty() {
-                        eprintln!("  [log] {}", out.logs.join(" | "));
+                        eprintln!("  [log] {}", self.redact_str(&out.logs.join(" | ")));
                     }
                 }
                 Err(e) => {
@@ -763,7 +770,7 @@ impl Runner {
                         self.runtime_vars = runtime;
                     }
                     if opts.verbose && !out.logs.is_empty() {
-                        eprintln!("  [log] {}", out.logs.join(" | "));
+                        eprintln!("  [log] {}", self.redact_str(&out.logs.join(" | ")));
                     }
                 }
                 Err(e) => {
@@ -832,33 +839,42 @@ impl Runner {
         result
     }
 
-    /// 输出层脱敏：secret 变量值在 curl 命令/URL/错误/预览/快照中一律替换为 ****
+    /// 单段文本脱敏
+    pub fn redact_str(&self, s: &str) -> String {
+        let mut out = s.to_string();
+        for sv in &self.ctx.secret_values {
+            if !sv.is_empty() && out.contains(sv.as_str()) {
+                out = out.replace(sv.as_str(), "****");
+            }
+        }
+        out
+    }
+
+    /// 输出层脱敏：secret 变量值在 curl 命令/URL/错误/预览/快照/完整响应中一律替换为 ****
     fn redact_result(&self, result: &mut CaseResult) {
-        let secrets: &[String] = &self.ctx.secret_values;
-        if secrets.is_empty() {
+        if self.ctx.secret_values.is_empty() {
             return;
         }
-        let redact = |s: &mut String| {
-            for sv in secrets {
-                if !sv.is_empty() && s.contains(sv.as_str()) {
-                    *s = s.replace(sv.as_str(), "****");
-                }
-            }
-        };
-        redact(&mut result.url);
+        result.url = self.redact_str(&result.url);
         if let Some(c) = &mut result.curl_cmd {
-            redact(c);
+            *c = self.redact_str(c);
         }
         if let Some(b) = &mut result.body_preview {
-            redact(b);
+            *b = self.redact_str(b);
         }
         if let Some(e) = &mut result.error {
-            redact(e);
+            *e = self.redact_str(e);
         }
         if let Some(snap) = &mut result.response_snapshot {
-            redact(&mut snap.body);
+            snap.body = self.redact_str(&snap.body);
             for (_k, v) in &mut snap.headers {
-                redact(v);
+                *v = self.redact_str(v);
+            }
+        }
+        if let Some(fr) = &mut result.full_response {
+            fr.body = self.redact_str(&fr.body);
+            for (_k, v) in &mut fr.headers {
+                *v = self.redact_str(v);
             }
         }
     }
@@ -881,6 +897,19 @@ pub fn scan_leftover_placeholders(text: &str) -> Vec<String> {
         }
     }
     out
+}
+
+/// 用例展示名：name 字段缺省回落文件名 stem
+fn display_name(dc: &discover::DiscoveredCase, case: &TestCase) -> String {
+    if case.name.is_empty() {
+        dc.path
+            .file_stem()
+            .unwrap_or_default()
+            .to_string_lossy()
+            .into_owned()
+    } else {
+        case.name.clone()
+    }
 }
 
 /// 加载项目上下文：定位 root、加载 requestbaby.json 与 env 文件

@@ -3,7 +3,7 @@ pub mod collection;
 pub mod project;
 pub mod vars_map;
 
-pub use case::TestCase;
+pub use case::{CasesSpec, TestCase};
 pub use collection::{Collection, EnvFile};
 pub use project::Project;
 pub use vars_map::StringVars;

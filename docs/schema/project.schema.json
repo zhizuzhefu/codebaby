@@ -1,0 +1,108 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://requestbaby.dev/schema/project.schema.json",
+  "title": "requestbaby 项目配置",
+  "description": "requestbaby.json：项目根配置——全局变量、默认环境、超时与命名工作流。",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "version": {
+      "type": "integer",
+      "description": "配置格式版本（当前 1）"
+    },
+    "defaultEnv": {
+      "type": "string",
+      "description": "默认环境名（未指定 -e 时使用，对应 envs/<name>.json）"
+    },
+    "vars": {
+      "type": "object",
+      "description": "变量表：标量直接字符串化；对象形态支持 secret 脱敏与外部来源",
+      "additionalProperties": {
+        "oneOf": [
+          {
+            "type": [
+              "string",
+              "number",
+              "boolean"
+            ]
+          },
+          {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "value": {
+                "type": "string"
+              },
+              "secret": {
+                "type": "boolean",
+                "description": "所有输出层自动脱敏为 ****"
+              },
+              "from": {
+                "type": "string",
+                "enum": [
+                  "env"
+                ]
+              },
+              "name": {
+                "type": "string",
+                "description": "from:env 时的环境变量名（缺省用变量名）"
+              }
+            }
+          }
+        ]
+      }
+    },
+    "timeoutMs": {
+      "type": "integer",
+      "minimum": 1,
+      "description": "默认请求超时毫秒"
+    },
+    "workflows": {
+      "type": "object",
+      "description": "命名工作流：多阶段编排，runtime vars 跨阶段自动传递（requestbaby workflow <name>）",
+      "additionalProperties": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "steps"
+        ],
+        "properties": {
+          "name": {
+            "type": "string",
+            "description": "工作流显示名"
+          },
+          "steps": {
+            "type": "array",
+            "minItems": 1,
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "run"
+              ],
+              "properties": {
+                "name": {
+                  "type": "string",
+                  "description": "步骤显示名"
+                },
+                "run": {
+                  "type": "string",
+                  "description": "运行目标（相对项目根的文件/目录）"
+                },
+                "tags": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                },
+                "nameFilter": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}

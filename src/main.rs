@@ -12,8 +12,6 @@ use clap::{Parser, Subcommand};
 use std::path::PathBuf;
 use std::process::ExitCode;
 
-pub const CASE_SCHEMA: &str = include_str!("../docs/schema/case.schema.json");
-
 #[derive(Parser)]
 #[command(
     name = "requestbaby",
@@ -33,9 +31,11 @@ enum Cmd {
         /// 目标目录（缺省当前目录）
         path: Option<String>,
     },
-    /// 导出用例 JSON Schema（喂给 AI 约束生成）
+    /// 导出 JSON Schema（喂给 AI 约束生成；--all 输出四类 bundle）
     Schema,
-    /// 校验配置：结构 + 变量引用 + 脚本语法
+    /// 导出全部 Schema（case/collection/env/project）
+    SchemaAll,
+    /// 校验配置：Schema 结构 + 变量引用 + 脚本语法 + 引用存在性
     Validate {
         /// 要校验的文件/目录
         #[arg(required = true)]
@@ -43,6 +43,9 @@ enum Cmd {
         /// 环境名（决定参与变量检查的 env 文件）
         #[arg(short, long)]
         env: Option<String>,
+        /// 结构化输出（AI 调度：file/level/rule/message）
+        #[arg(long)]
+        json: bool,
     },
     /// 列出可执行的用例
     List {
@@ -135,10 +138,23 @@ fn main() -> ExitCode {
     let code = match cli.cmd {
         Cmd::Init { path } => cmd_init(path.as_deref()),
         Cmd::Schema => {
-            println!("{CASE_SCHEMA}");
+            println!("{}", validate::CASE_SCHEMA);
             0
         }
-        Cmd::Validate { paths, env } => cmd_validate(&paths, env.as_deref()),
+        Cmd::SchemaAll => {
+            println!(
+                "{}",
+                serde_json::json!({
+                    "case": serde_json::from_str::<serde_json::Value>(validate::CASE_SCHEMA).unwrap(),
+                    "collection": serde_json::from_str::<serde_json::Value>(validate::COLLECTION_SCHEMA).unwrap(),
+                    "env": serde_json::from_str::<serde_json::Value>(validate::ENV_SCHEMA).unwrap(),
+                    "project": serde_json::from_str::<serde_json::Value>(validate::PROJECT_SCHEMA).unwrap(),
+                })
+                .to_string()
+            );
+            0
+        }
+        Cmd::Validate { paths, env, json } => cmd_validate(&paths, env.as_deref(), json),
         Cmd::List { paths } => cmd_list(&paths),
         Cmd::Import { spec, out, env } => cmd_import(&spec, out.as_deref(), env.as_deref()),
         Cmd::Send { case, env } => cmd_send(&case, env.as_deref()),
@@ -204,7 +220,7 @@ fn cmd_init(path: Option<&str>) -> u8 {
     0
 }
 
-fn cmd_validate(paths: &[String], env: Option<&str>) -> u8 {
+fn cmd_validate(paths: &[String], env: Option<&str>, json: bool) -> u8 {
     let pb: Vec<PathBuf> = paths.iter().map(PathBuf::from).collect();
     let env = env
         .map(String::from)
@@ -214,21 +230,33 @@ fn cmd_validate(paths: &[String], env: Option<&str>) -> u8 {
         Ok(issues) => {
             let errors = issues.iter().filter(|i| i.level == "error").count();
             let warns = issues.len() - errors;
+            if json {
+                println!(
+                    "{}",
+                    serde_json::json!({
+                        "ok": errors == 0,
+                        "errors": errors,
+                        "warnings": warns,
+                        "issues": issues,
+                    })
+                );
+                return if errors > 0 { 2 } else { 0 };
+            }
             for i in &issues {
                 let (color, sym) = if i.level == "error" { ("\x1b[31m", "✘") } else { ("\x1b[33m", "⚠") };
-                println!("{color}{sym}{reset} {file}: {msg}", sym = sym, color = color, reset = "\x1b[0m", file = i.file, msg = i.message);
+                println!("{color}{sym}{reset} {file} [{rule}]: {msg}", sym = sym, color = color, reset = "\x1b[0m", file = i.file, rule = i.rule, msg = i.message);
             }
             if issues.is_empty() {
                 println!("\x1b[32m✔ 全部通过\x1b[0m");
                 0
             } else {
                 println!("\n{} 错误, {} 警告", errors, warns);
-                if errors > 0 { 1 } else { 0 }
+                if errors > 0 { 2 } else { 0 }
             }
         }
         Err(e) => {
             eprintln!("校验失败: {e:#}");
-            1
+            2
         }
     }
 }

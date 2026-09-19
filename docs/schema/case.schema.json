@@ -33,6 +33,28 @@
       ]
     },
     "request": { "$ref": "#/definitions/request" },
+    "cases": {
+      "description": "数据驱动：用例 × 每行数据 = 一个实例（[label] 标注），行变量优先级最高",
+      "oneOf": [
+        {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "object",
+            "additionalProperties": { "type": ["string", "number", "boolean"] },
+            "description": "label 键可选，用于实例展示名"
+          }
+        },
+        {
+          "type": "object",
+          "required": ["file"],
+          "additionalProperties": false,
+          "properties": {
+            "file": { "type": "string", "description": "CSV（首行表头）或 JSON 对象数组文件，相对用例文件" }
+          }
+        }
+      ]
+    },
     "pre": {
       "type": "string",
       "description": "前置 JS 脚本：请求发出前执行。可改写 req.method/url/headers/body，辅助 req.setJson(obj)。可读 vars/env，写 vars.* 传递变量。可用 crypto.md5/sha256/hmacSha256/base64Encode/base64Decode 与 log()"

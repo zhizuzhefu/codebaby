@@ -1,0 +1,56 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://requestbaby.dev/schema/collection.schema.json",
+  "title": "requestbaby 集合配置",
+  "description": "collection.json：目录级集合配置，逐级继承（vars/headers/tags），setup/teardown 支持造数清数。",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "name": {
+      "type": "string",
+      "description": "集合显示名（缺省用目录名）"
+    },
+    "vars": {
+      "$ref": "#/definitions/vars"
+    },
+    "headers": {
+      "type": "object",
+      "additionalProperties": { "type": "string" },
+      "description": "集合级默认请求头，逐级继承，用例级同名覆盖（key 大小写不敏感归一）；值支持 {{var}}"
+    },
+    "tags": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "集合级标签，附加到该集合下所有用例（run --tag 过滤）"
+    },
+    "setup": {
+      "type": "string",
+      "description": "进入集合（首个存活用例前）执行：可写 vars、可 http.request/get/post 造数。dry-run 跳过；--tag 过滤后无存活用例则不执行"
+    },
+    "teardown": {
+      "type": "string",
+      "description": "离开集合（最后用例后，无论成败）执行：清理数据"
+    }
+  },
+  "definitions": {
+    "vars": {
+      "type": "object",
+      "description": "变量表：标量直接字符串化；对象形态支持 secret 脱敏与外部来源",
+      "additionalProperties": {
+        "oneOf": [
+          { "type": ["string", "number", "boolean"] },
+          {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "value": { "type": "string" },
+              "secret": { "type": "boolean", "description": "所有输出层自动脱敏为 ****" },
+              "from": { "type": "string", "enum": ["env"] },
+              "name": { "type": "string", "description": "from:env 时的环境变量名（缺省用变量名）" }
+            }
+          }
+        ]
+      }
+    }
+  }
+}
