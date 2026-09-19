@@ -31,12 +31,22 @@ enum Cmd {
         /// 目标目录（缺省当前目录）
         path: Option<String>,
     },
+    /// 格式化并精简用例：重复 headers 上提集合级、字段规范排序、清理空字段
+    Fmt {
+        /// 目标目录（缺省 collections）
+        paths: Vec<String>,
+        /// 只检查不修改（CI 用：有可精简项则 exit 1 并列出）
+        #[arg(long)]
+        check: bool,
+    },
     /// 环境自检（AI 调度前置）：curl 版本 / 配置完整性 / 引擎可用性
     Doctor,
-    /// 导出 JSON Schema（喂给 AI 约束生成；--all 输出四类 bundle）
-    Schema,
-    /// 导出全部 Schema（case/collection/env/project）
-    SchemaAll,
+    /// 导出 JSON Schema（--all 输出 case/collection/env/project bundle）
+    Schema {
+        /// 全部四类
+        #[arg(long)]
+        all: bool,
+    },
     /// 校验配置：Schema 结构 + 变量引用 + 脚本语法 + 引用存在性
     Validate {
         /// 要校验的文件/目录
@@ -45,9 +55,9 @@ enum Cmd {
         /// 环境名（决定参与变量检查的 env 文件）
         #[arg(short, long)]
         env: Option<String>,
-        /// 结构化输出（AI 调度：file/level/rule/message）
+        /// 报告格式：term（默认）/ json（file/level/rule/message 四元组）
         #[arg(long)]
-        json: bool,
+        report: Option<String>,
     },
     /// 列出可执行的用例
     List {
@@ -120,9 +130,6 @@ enum Cmd {
         /// 编译出 curl 命令打印，不执行
         #[arg(long)]
         dry_run: bool,
-        /// JSON 报告输出（CI 友好）
-        #[arg(long)]
-        json: bool,
         /// 详细输出：curl 命令 / 全部断言 / 脚本日志
         #[arg(short, long)]
         verbose: bool,
@@ -145,25 +152,25 @@ fn main() -> ExitCode {
     let cli = Cli::parse();
     let code = match cli.cmd {
         Cmd::Init { path } => cmd_init(path.as_deref()),
+        Cmd::Fmt { paths, check } => cmd_fmt(&paths, check),
         Cmd::Doctor => cmd_doctor(),
-        Cmd::Schema => {
-            println!("{}", validate::CASE_SCHEMA);
+        Cmd::Schema { all } => {
+            if all {
+                println!(
+                    "{}",
+                    serde_json::json!({
+                        "case": serde_json::from_str::<serde_json::Value>(validate::CASE_SCHEMA).unwrap(),
+                        "collection": serde_json::from_str::<serde_json::Value>(validate::COLLECTION_SCHEMA).unwrap(),
+                        "env": serde_json::from_str::<serde_json::Value>(validate::ENV_SCHEMA).unwrap(),
+                        "project": serde_json::from_str::<serde_json::Value>(validate::PROJECT_SCHEMA).unwrap(),
+                    })
+                );
+            } else {
+                println!("{}", validate::CASE_SCHEMA);
+            }
             0
         }
-        Cmd::SchemaAll => {
-            println!(
-                "{}",
-                serde_json::json!({
-                    "case": serde_json::from_str::<serde_json::Value>(validate::CASE_SCHEMA).unwrap(),
-                    "collection": serde_json::from_str::<serde_json::Value>(validate::COLLECTION_SCHEMA).unwrap(),
-                    "env": serde_json::from_str::<serde_json::Value>(validate::ENV_SCHEMA).unwrap(),
-                    "project": serde_json::from_str::<serde_json::Value>(validate::PROJECT_SCHEMA).unwrap(),
-                })
-                .to_string()
-            );
-            0
-        }
-        Cmd::Validate { paths, env, json } => cmd_validate(&paths, env.as_deref(), json),
+        Cmd::Validate { paths, env, report } => cmd_validate(&paths, env.as_deref(), report.as_deref()),
         Cmd::List { paths } => cmd_list(&paths),
         Cmd::Import { spec, curl, out, env } => cmd_import(spec.as_deref(), curl.as_deref(), out.as_deref(), env.as_deref()),
         Cmd::Send { case, env } => cmd_send(&case, env.as_deref()),
@@ -171,8 +178,8 @@ fn main() -> ExitCode {
             cmd_workflow(&name, env.as_deref(), dry_run, verbose, report.as_deref())
         }
         Cmd::Watch { paths, env, tag, name } => cmd_watch(&paths, env.as_deref(), tag, name.as_deref()),
-        Cmd::Run { paths, env, tag, name, fail_fast, dry_run, json, verbose, output, parallel, report, engine } => {
-            cmd_run(&paths, env.as_deref(), tag, name.as_deref(), fail_fast, dry_run, json, verbose, output.as_deref(), parallel, report.as_deref(), engine.as_deref())
+        Cmd::Run { paths, env, tag, name, fail_fast, dry_run, verbose, output, parallel, report, engine } => {
+            cmd_run(&paths, env.as_deref(), tag, name.as_deref(), fail_fast, dry_run, verbose, output.as_deref(), parallel, report.as_deref(), engine.as_deref())
         }
     };
     ExitCode::from(code)
@@ -229,7 +236,9 @@ fn cmd_init(path: Option<&str>) -> u8 {
     0
 }
 
-fn cmd_validate(paths: &[String], env: Option<&str>, json: bool) -> u8 {
+fn cmd_validate(paths: &[String], env: Option<&str>, report: Option<&str>) -> u8 {
+    let json = report.map(|r| r == "json").unwrap_or(false);
+    let paths: Vec<String> = if paths.is_empty() { vec!["collections".into()] } else { paths.to_vec() };
     let pb: Vec<PathBuf> = paths.iter().map(PathBuf::from).collect();
     let env = env
         .map(String::from)
@@ -271,6 +280,7 @@ fn cmd_validate(paths: &[String], env: Option<&str>, json: bool) -> u8 {
 }
 
 fn cmd_list(paths: &[String]) -> u8 {
+    let paths: Vec<String> = if paths.is_empty() { vec!["collections".into()] } else { paths.to_vec() };
     let pb: Vec<PathBuf> = paths.iter().map(PathBuf::from).collect();
     match runner::discover::discover(&pb) {
         Ok(cases) => {
@@ -300,13 +310,14 @@ fn cmd_run(
     name: Option<&str>,
     fail_fast: bool,
     dry_run: bool,
-    json: bool,
     verbose: bool,
     output: Option<&str>,
     parallel: Option<usize>,
     report: Option<&str>,
     engine: Option<&str>,
 ) -> u8 {
+    let paths: Vec<String> = if paths.is_empty() { vec!["collections".into()] } else { paths.to_vec() };
+    let json = false; // --report json 经 fmt 参数传递
     let pb: Vec<PathBuf> = paths.iter().map(PathBuf::from).collect();
     let result = (|| -> Result<u8> {
         let cases = runner::discover::discover(&pb)?;
@@ -319,6 +330,7 @@ fn cmd_run(
             .or_else(|| default_env_of(&pb))
             .unwrap_or_else(|| "dev".into());
         let ctx = runner::load_project_ctx(&pb[0], &env_name)?;
+        let tags: Vec<String> = tags.iter().flat_map(|t| t.split(',').map(|x| x.trim().to_string()).filter(|x| !x.is_empty())).collect();
         let opts = runner::RunOptions {
             tags,
             name_filter: name.unwrap_or("").to_string(),
@@ -330,7 +342,8 @@ fn cmd_run(
             parallel: parallel,
         };
 
-        if !json {
+        let fmt_early = report.unwrap_or("term");
+        if fmt_early != "json" && fmt_early != "junit" {
             println!(
                 "\x1b[1mrequestbaby\x1b[0m \x1b[2menv={env_name} cases={} timeout={}ms{}\x1b[0m",
                 cases.len(),
@@ -342,7 +355,7 @@ fn cmd_run(
         let mut r = runner::Runner::new(ctx, engine.unwrap_or("curl"));
         let results = r.run(&cases, &opts, |_| {})?;
 
-        let fmt = report.unwrap_or(if json { "json" } else { "term" });
+        let fmt = report.unwrap_or("term");
         let failed = results.iter().filter(|x| !x.passed() && !x.skipped).count();
         match fmt {
             "json" => println!("{}", report::render_json(&results, verbose)),
@@ -562,11 +575,8 @@ fn pretty_json_colored(body: &str) -> String {
 }
 
 fn cmd_watch(paths: &[String], env: Option<&str>, tags: Vec<String>, name: Option<&str>) -> u8 {
+    let paths: Vec<String> = if paths.is_empty() { vec!["collections".into()] } else { paths.to_vec() };
     let pb: Vec<PathBuf> = paths.iter().map(PathBuf::from).collect();
-    if pb.is_empty() {
-        eprintln!("错误: 缺少路径参数");
-        return 1;
-    }
     // watch 目标 = 用例 + 项目/集合/环境配置
     let mut watch_files: Vec<PathBuf> = pb.clone();
     if let Ok(cases) = runner::discover::discover(&pb) {
@@ -762,6 +772,157 @@ fn emit_report(fmt: &str, results: &[runner::CaseResult], verbose: bool, quiet_n
             report::print_summary(results);
         }
     }
+}
+
+/// 用例规范化：
+/// 1. 目录内所有用例完全相同的 headers → 上提 collection.json（用例删除）
+/// 2. 字段按可读顺序排列（name/tags/expectStatus/request/pre/post/tests/cases）
+/// 3. 清理默认值空字段（skip:false / 空 tags / 空 tests / 空 pre/post）
+fn cmd_fmt(paths: &[String], check: bool) -> u8 {
+    let paths: Vec<String> = if paths.is_empty() { vec!["collections".into()] } else { paths.to_vec() };
+    let pb: Vec<PathBuf> = paths.iter().map(PathBuf::from).collect();
+    let cases = match runner::discover::discover(&pb) {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("\x1b[31m错误: {e:#}\x1b[0m");
+            return 2;
+        }
+    };
+    // 按目录分组
+    use std::collections::BTreeMap;
+    let mut by_dir: BTreeMap<PathBuf, Vec<PathBuf>> = BTreeMap::new();
+    for dc in cases {
+        let dir = dc.path.parent().unwrap_or(std::path::Path::new(".")).to_path_buf();
+        by_dir.entry(dir).or_default().push(dc.path);
+    }
+
+    let mut changes = 0usize;
+    for (dir, files) in &by_dir {
+        // 加载全部用例原始 JSON
+        let mut docs: Vec<(PathBuf, serde_json::Value)> = vec![];
+        for f in files {
+            if let Some(v) = std::fs::read_to_string(f)
+                .ok()
+                .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
+            {
+                docs.push((f.clone(), v));
+            }
+        }
+        if docs.is_empty() {
+            continue;
+        }
+        // 1. 公共 headers 提取（所有用例 key+value 相同）
+        let mut common: Option<serde_json::Map<String, serde_json::Value>> = None;
+        for (_, d) in &docs {
+            let h = d.pointer("/request/headers").and_then(|v| v.as_object()).cloned();
+            match (&common, h) {
+                (None, Some(h)) if !h.is_empty() => common = Some(h),
+                (Some(c), Some(h)) => {
+                    let next: serde_json::Map<String, serde_json::Value> =
+                        c.iter().filter(|(k, v)| h.get(*k) == Some(v)).map(|(k, v)| (k.clone(), v.clone())).collect();
+                    common = Some(next);
+                }
+                _ => common = Some(Default::default()),
+            }
+        }
+        let common = common.unwrap_or_default();
+
+        for (fp, d) in docs.iter_mut() {
+            let f: &PathBuf = fp;
+            let before = serde_json::to_string_pretty(d).unwrap_or_default();
+            // headers 上提：删除公共部分
+            if !common.is_empty() {
+                if let Some(h) = d.pointer_mut("/request/headers").and_then(|v| v.as_object_mut()) {
+                    for (k, v) in &common {
+                        if h.get(k) == Some(v) {
+                            h.remove(k);
+                        }
+                    }
+                    if h.is_empty() {
+                        d.pointer_mut("/request").unwrap().as_object_mut().unwrap().remove("headers");
+                    }
+                }
+            }
+            // 字段规范排序 + 空字段清理
+            let ordered = reorder_case(d);
+            let after = serde_json::to_string_pretty(&ordered).unwrap_or_default();
+            if before != after {
+                changes += 1;
+                if check {
+                    println!("\x1b[33m可精简\x1b[0m {}", f.display());
+                } else {
+                    std::fs::write(f, after + "\n").ok();
+                    println!("\x1b[32m已格式化\x1b[0m {}", f.display());
+                }
+            }
+        }
+        // collection.json 写入公共 headers（合并已有）
+        if !common.is_empty() && !check {
+            let cf = dir.join("collection.json");
+            let mut col: serde_json::Value = std::fs::read_to_string(&cf)
+                .ok()
+                .and_then(|s| serde_json::from_str(&s).ok())
+                .unwrap_or_else(|| serde_json::json!({}));
+            let slot = col.as_object_mut().unwrap();
+            let hdrs = slot
+                .entry("headers")
+                .or_insert_with(|| serde_json::Value::Object(Default::default()));
+            if let Some(hm) = hdrs.as_object_mut() {
+                for (k, v) in &common {
+                    hm.entry(k.clone()).or_insert_with(|| v.clone());
+                }
+            }
+            std::fs::write(&cf, serde_json::to_string_pretty(&col).unwrap_or_default() + "\n").ok();
+            println!("\x1b[32m已上提 headers\x1b[0m {}", cf.display());
+        }
+    }
+    if changes == 0 {
+        println!("\x1b[32m✔ 已是精简形态\x1b[0m");
+    }
+    if check && changes > 0 { 1 } else { 0 }
+}
+
+/// 字段规范排序与空字段清理
+fn reorder_case(d: &serde_json::Value) -> serde_json::Value {
+    let order = ["name", "tags", "skip", "expectStatus", "request", "pre", "post", "tests", "cases"];
+    let mut out = serde_json::Map::new();
+    if let Some(obj) = d.as_object() {
+        for key in order {
+            if let Some(v) = obj.get(key) {
+                let empty = v.is_null()
+                    || v.as_str().map(|s| s.is_empty()).unwrap_or(false)
+                    || v.as_array().map(|a| a.is_empty()).unwrap_or(false)
+                    || v.as_bool() == Some(false);
+                if !empty {
+                    out.insert(key.into(), v.clone());
+                }
+            }
+        }
+        // 未知字段保留在尾部
+        for (k, v) in obj {
+            if !order.contains(&k.as_str()) {
+                out.insert(k.clone(), v.clone());
+            }
+        }
+    }
+    // request 内部排序
+    if let Some(req) = out.get_mut("request").and_then(|r| r.as_object_mut()) {
+        let mut ordered = serde_json::Map::new();
+        for key in ["method", "url", "headers", "body", "timeoutMs", "retry", "insecure", "followRedirects"] {
+            if let Some(v) = req.get(key) {
+                if !(v.is_null() || v.as_object().map(|o| o.is_empty()).unwrap_or(false)) {
+                    ordered.insert(key.into(), v.clone());
+                }
+            }
+        }
+        for (k, v) in req.iter() {
+            if !ordered.contains_key(k) {
+                ordered.insert(k.clone(), v.clone());
+            }
+        }
+        *req = ordered;
+    }
+    serde_json::Value::Object(out)
 }
 
 fn cmd_doctor() -> u8 {

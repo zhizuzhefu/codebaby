@@ -186,7 +186,7 @@ fn write_project(dir: &std::path::Path, port: u16) {
     "body": { "json": { "taskId": "{{taskId:number}}", "flag": "{{flag:bool}}", "name": "{{user}}" } }
   },
   "tests": [
-    "res.json().body === '{\"flag\":true,\"name\":\"admin\",\"taskId\":738011164633133}'"
+    "res.json().body === '{\"taskId\":738011164633133,\"flag\":true,\"name\":\"admin\"}'"
   ]
 }"#,
     )
@@ -338,7 +338,7 @@ fn tag_filter_selects_subset() {
     let port = spawn_server();
     let dir = TempDir::new().unwrap();
     write_project(dir.path(), port);
-    let out = run_cli(&["run", "collections", "--tag", "auth", "--json"], dir.path());
+    let out = run_cli(&["run", "collections", "--tag", "auth", "--report", "json"], dir.path());
     let stdout = String::from_utf8_lossy(&out.stdout);
     assert!(out.status.success());
     assert!(!stdout.contains("01-health"), "{stdout}");
@@ -412,7 +412,7 @@ fn typed_number_body_end_to_end() {
     let port = spawn_server();
     let dir = TempDir::new().unwrap();
     write_project(dir.path(), port);
-    let out = run_cli(&["run", "collections/05-typed-body.json", "--json"], dir.path());
+    let out = run_cli(&["run", "collections/05-typed-body.json", "--report", "json"], dir.path());
     let stdout = String::from_utf8_lossy(&out.stdout);
     assert!(out.status.success(), "{stdout}");
     let report: serde_json::Value = serde_json::from_str(&stdout).unwrap();
@@ -425,7 +425,7 @@ fn collection_headers_and_sugar_end_to_end() {
     let dir = TempDir::new().unwrap();
     write_project(dir.path(), port);
     // expectStatus + data 快捷引用 + 集合级 headers 继承
-    let out = run_cli(&["run", "collections/06-collection-defaults.json", "--json"], dir.path());
+    let out = run_cli(&["run", "collections/06-collection-defaults.json", "--report", "json"], dir.path());
     let stdout = String::from_utf8_lossy(&out.stdout);
     assert!(out.status.success(), "{stdout}");
     let report: serde_json::Value = serde_json::from_str(&stdout).unwrap();
@@ -453,7 +453,7 @@ fn env_var_inline_syntax() {
     let dir = TempDir::new().unwrap();
     write_project(dir.path(), port);
     let out = Command::new(BIN)
-        .args(["run", "collections/08-envvar.json", "--json"])
+        .args(["run", "collections/08-envvar.json", "--report", "json"])
         .current_dir(dir.path())
         .env("RB_TRACE_ID", "tr-9527")
         .output()
@@ -480,7 +480,7 @@ fn failed_case_has_response_snapshot() {
     let port = spawn_server();
     let dir = TempDir::new().unwrap();
     write_project(dir.path(), port);
-    let out = run_cli(&["run", "collections/04-slow-fail.json", "--json"], dir.path());
+    let out = run_cli(&["run", "collections/04-slow-fail.json", "--report", "json"], dir.path());
     let stdout = String::from_utf8_lossy(&out.stdout);
     let report: serde_json::Value = serde_json::from_str(&stdout).unwrap();
     assert!(report["results"][0]["response"]["body"]
@@ -494,7 +494,7 @@ fn collection_setup_teardown_with_http() {
     let port = spawn_server();
     let dir = TempDir::new().unwrap();
     write_project(dir.path(), port);
-    let out = run_cli(&["run", "collections/suite", "--json"], dir.path());
+    let out = run_cli(&["run", "collections/suite", "--report", "json"], dir.path());
     let stdout = String::from_utf8_lossy(&out.stdout);
     assert!(out.status.success(), "setup 造数 + 用例应全过: {stdout}");
 }
@@ -504,7 +504,7 @@ fn data_driven_expands_rows() {
     let port = spawn_server();
     let dir = TempDir::new().unwrap();
     write_project(dir.path(), port);
-    let out = run_cli(&["run", "collections/09-data-driven.json", "--json"], dir.path());
+    let out = run_cli(&["run", "collections/09-data-driven.json", "--report", "json"], dir.path());
     let stdout = String::from_utf8_lossy(&out.stdout);
     assert!(out.status.success(), "{stdout}");
     assert!(stdout.contains("[A1]"), "实例标签: {stdout}");
@@ -636,7 +636,7 @@ fn parallel_mode_runs_independent_cases() {
     let dir = TempDir::new().unwrap();
     write_project(dir.path(), port);
     // 01-health(独立) 02-login(有 post) 03-me(依赖 token) → 并发档位 2
-    let out = run_cli(&["run", "collections/01-health.json", "collections/02-login.json", "collections/03-me.json", "--parallel", "2", "--json"], dir.path());
+    let out = run_cli(&["run", "collections/01-health.json", "collections/02-login.json", "collections/03-me.json", "--parallel", "2", "--report", "json"], dir.path());
     let stdout = String::from_utf8_lossy(&out.stdout);
     assert!(out.status.success(), "并发模式依赖链应保序执行: {stdout}");
     let report: serde_json::Value = serde_json::from_str(&stdout).unwrap();

@@ -38,7 +38,7 @@
 |------|------|----------|
 | 0 | 全部通过 | 完成/提交 |
 | 1 | 测试失败（断言 false / 传输错误 / 脚本运行错误） | 读取 `--json` 报告的 tests.detail / response 快照，修复用例或被测代码 |
-| 2 | 配置错误（schema 违规 / 路径不存在 / 环境文件损坏） | 读取 `validate --json` 的 issues[].rule 定位修复 |
+| 2 | 配置错误（schema 违规 / 路径不存在 / 环境文件损坏） | 读取 `validate --report json` 的 issues[].rule 定位修复 |
 
 ## 命令契约
 
@@ -53,8 +53,10 @@ requestbaby schema --all
 ### 2. 静态校验（零副作用，可高频调用）
 
 ```bash
-requestbaby validate <paths> -e <env> --json
+requestbaby validate -e <env> --report json
 ```
+
+（paths 缺省 `collections/`）
 
 ```json
 {
@@ -82,7 +84,7 @@ requestbaby run <paths> --dry-run
 ### 4. 执行与结构化报告
 
 ```bash
-requestbaby run <paths> -e <env> --json -o out/
+requestbaby run -e <env> --report json -o out/
 ```
 
 - 报告字段：`results[].{passed, error, tests[{expr, pass, detail}], response{status, headers, body}}`——失败用例自带响应快照（≤4KB，secret 自动脱敏）
@@ -93,6 +95,12 @@ requestbaby run <paths> -e <env> --json -o out/
 
 ```bash
 requestbaby doctor    # curl 版本/引擎/项目配置/环境文件
+```
+
+## 用例精简（生成后建议执行）
+
+```bash
+requestbaby fmt            # 重复 headers 自动上提集合级、字段规范排序、清理空字段
 ```
 
 ## 用例生成规范（给 LLM 的约束摘要）
