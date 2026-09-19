@@ -31,6 +31,8 @@ enum Cmd {
         /// 目标目录（缺省当前目录）
         path: Option<String>,
     },
+    /// 环境自检（AI 调度前置）：curl 版本 / 配置完整性 / 引擎可用性
+    Doctor,
     /// 导出 JSON Schema（喂给 AI 约束生成；--all 输出四类 bundle）
     Schema,
     /// 导出全部 Schema（case/collection/env/project）
@@ -53,8 +55,11 @@ enum Cmd {
     },
     /// 导入外部格式：OpenAPI 3 / Swagger 2 / Postman Collection v2.1（JSON 或 YAML）
     Import {
-        /// spec 文件路径
-        spec: String,
+        /// spec 文件路径（OpenAPI/Swagger/Postman JSON 或 YAML）
+        spec: Option<String>,
+        /// 直接导入 curl 命令（与 spec 二选一）
+        #[arg(long)]
+        curl: Option<String>,
         /// 输出目录（生成完整项目脚手架，缺省 ./imported）
         #[arg(short, long)]
         out: Option<String>,
@@ -130,6 +135,9 @@ enum Cmd {
         /// 报告格式：term（默认）/ json / junit / html（写 report.html）
         #[arg(long)]
         report: Option<String>,
+        /// 执行引擎：curl（默认，调试保真）/ native（需 features=native 编译，连接复用）
+        #[arg(long)]
+        engine: Option<String>,
     },
 }
 
@@ -137,6 +145,7 @@ fn main() -> ExitCode {
     let cli = Cli::parse();
     let code = match cli.cmd {
         Cmd::Init { path } => cmd_init(path.as_deref()),
+        Cmd::Doctor => cmd_doctor(),
         Cmd::Schema => {
             println!("{}", validate::CASE_SCHEMA);
             0
@@ -156,14 +165,14 @@ fn main() -> ExitCode {
         }
         Cmd::Validate { paths, env, json } => cmd_validate(&paths, env.as_deref(), json),
         Cmd::List { paths } => cmd_list(&paths),
-        Cmd::Import { spec, out, env } => cmd_import(&spec, out.as_deref(), env.as_deref()),
+        Cmd::Import { spec, curl, out, env } => cmd_import(spec.as_deref(), curl.as_deref(), out.as_deref(), env.as_deref()),
         Cmd::Send { case, env } => cmd_send(&case, env.as_deref()),
         Cmd::Workflow { name, env, dry_run, verbose, report } => {
             cmd_workflow(&name, env.as_deref(), dry_run, verbose, report.as_deref())
         }
         Cmd::Watch { paths, env, tag, name } => cmd_watch(&paths, env.as_deref(), tag, name.as_deref()),
-        Cmd::Run { paths, env, tag, name, fail_fast, dry_run, json, verbose, output, parallel, report } => {
-            cmd_run(&paths, env.as_deref(), tag, name.as_deref(), fail_fast, dry_run, json, verbose, output.as_deref(), parallel, report.as_deref())
+        Cmd::Run { paths, env, tag, name, fail_fast, dry_run, json, verbose, output, parallel, report, engine } => {
+            cmd_run(&paths, env.as_deref(), tag, name.as_deref(), fail_fast, dry_run, json, verbose, output.as_deref(), parallel, report.as_deref(), engine.as_deref())
         }
     };
     ExitCode::from(code)
@@ -296,6 +305,7 @@ fn cmd_run(
     output: Option<&str>,
     parallel: Option<usize>,
     report: Option<&str>,
+    engine: Option<&str>,
 ) -> u8 {
     let pb: Vec<PathBuf> = paths.iter().map(PathBuf::from).collect();
     let result = (|| -> Result<u8> {
@@ -329,7 +339,7 @@ fn cmd_run(
             );
         }
 
-        let mut r = runner::Runner::new(ctx);
+        let mut r = runner::Runner::new(ctx, engine.unwrap_or("curl"));
         let results = r.run(&cases, &opts, |_| {})?;
 
         let fmt = report.unwrap_or(if json { "json" } else { "term" });
@@ -363,9 +373,30 @@ fn cmd_run(
     }
 }
 
-fn cmd_import(spec: &str, out: Option<&str>, env: Option<&str>) -> u8 {
+fn cmd_import(spec: Option<&str>, curl: Option<&str>, out: Option<&str>, env: Option<&str>) -> u8 {
     let out_dir = std::path::PathBuf::from(out.unwrap_or("imported"));
     let env_name = env.unwrap_or("dev");
+    // curl 命令模式：单用例导入
+    if let Some(cmdline) = curl {
+        return match importer::import_curl(cmdline) {
+            Ok(case) => {
+                let dir = out_dir.join("collections");
+                let _ = std::fs::create_dir_all(&dir);
+                let file = dir.join("01-imported-from-curl.json");
+                std::fs::write(&file, serde_json::to_vec_pretty(&case).unwrap_or_default()).ok();
+                println!("\x1b[32m✔\x1b[0m curl 命令已导入: {}", file.display());
+                0
+            }
+            Err(e) => {
+                eprintln!("\x1b[31m导入失败: {e:#}\x1b[0m");
+                2
+            }
+        };
+    }
+    let Some(spec) = spec else {
+        eprintln!("\x1b[31m错误: 需要 spec 文件或 --curl 命令\x1b[0m");
+        return 2;
+    };
     match importer::import(std::path::Path::new(spec), &out_dir, env_name) {
         Ok(sum) => {
             println!(
@@ -438,7 +469,7 @@ fn cmd_send(case: &str, env: Option<&str>) -> u8 {
     } else {
         case_cfg.name.clone()
     };
-    let mut r = runner::Runner::new(ctx);
+    let mut r = runner::Runner::new(ctx, "curl");
     let results = match r.run(&cases, &opts, |_| {}) {
         Ok(x) => x,
         Err(e) => {
@@ -558,16 +589,6 @@ fn cmd_watch(paths: &[String], env: Option<&str>, tags: Vec<String>, name: Optio
         }
     }
 
-    let snapshot = || -> BTreeMapAll {
-        let mut m = std::collections::BTreeMap::new();
-        for f in &watch_files {
-            if let Ok(meta) = std::fs::metadata(f) {
-                m.insert(f.display().to_string(), (meta.len(), mtime_of(&meta)));
-            }
-        }
-        m
-    };
-    let mut prev = snapshot();
     eprintln!("\x1b[2mwatching {} 个文件，变更自动重跑（Ctrl-C 退出）\x1b[0m", watch_files.len());
 
     let mut args: Vec<String> = vec!["run".into()];
@@ -589,21 +610,24 @@ fn cmd_watch(paths: &[String], env: Option<&str>, tags: Vec<String>, name: Optio
         print!("\x1b[2J\x1b[H");
         let _ = std::process::Command::new(&exe).args(&args).status();
         eprintln!("\n\x1b[2m── 已完成，等待变更…\x1b[0m");
-        loop {
-            std::thread::sleep(std::time::Duration::from_millis(600));
-            let cur = snapshot();
-            if cur != prev {
-                prev = cur;
-                break;
+        // 事件驱动等待：任一 watch 文件变更/新建即触发重跑
+        let (tx, rx) = std::sync::mpsc::channel();
+        let mut watcher = notify::recommended_watcher(move |res: Result<notify::Event, _>| {
+            if res.is_ok() {
+                let _ = tx.send(());
             }
+        })
+        .expect("文件监听初始化失败");
+        use notify::Watcher;
+        for f in &watch_files {
+            let _ = watcher.watch(f, notify::RecursiveMode::NonRecursive);
         }
+        // 父目录监听捕获新建文件（新增用例）
+        for f in watch_files.iter().filter_map(|p| p.parent()).collect::<std::collections::BTreeSet<_>>() {
+            let _ = watcher.watch(f, notify::RecursiveMode::NonRecursive);
+        }
+        let _ = rx.recv();
     }
-}
-
-type BTreeMapAll = std::collections::BTreeMap<String, (u64, std::time::SystemTime)>;
-
-fn mtime_of(meta: &std::fs::Metadata) -> std::time::SystemTime {
-    meta.modified().unwrap_or(std::time::SystemTime::UNIX_EPOCH)
 }
 
 fn cmd_workflow(name: &str, env: Option<&str>, dry_run: bool, verbose: bool, report: Option<&str>) -> u8 {
@@ -649,7 +673,7 @@ fn cmd_workflow(name: &str, env: Option<&str>, dry_run: bool, verbose: bool, rep
         wf.steps.len(),
         if dry_run { " [dry-run]" } else { "" }
     );
-    let mut r = runner::Runner::new(ctx);
+    let mut r = runner::Runner::new(ctx, "curl");
     let mut all_results: Vec<runner::CaseResult> = vec![];
     let fmt = report.unwrap_or("term");
     let is_term = fmt == "term";
@@ -712,22 +736,87 @@ fn cmd_workflow(name: &str, env: Option<&str>, dry_run: bool, verbose: bool, rep
         }
     }
 
+    emit_report(fmt, &all_results, verbose, false);
+    let failed = all_results.iter().filter(|x| !x.passed() && !x.skipped).count();
+    if failed > 0 { 1 } else { 0 }
+}
+
+/// 统一报告输出（run/workflow 共用）
+fn emit_report(fmt: &str, results: &[runner::CaseResult], verbose: bool, quiet_note: bool) {
     match fmt {
-        "json" => println!("{}", report::render_json(&all_results, verbose)),
+        "json" => println!("{}", report::render_json(results, verbose)),
         "junit" => {
-            let total_ms: u64 = all_results.iter().map(|r| r.duration_ms).sum();
-            println!("{}", report::render_junit(&all_results, total_ms));
+            let total_ms: u64 = results.iter().map(|r| r.duration_ms).sum();
+            println!("{}", report::render_junit(results, total_ms));
         }
         "html" => {
             let path = PathBuf::from("report.html");
-            std::fs::write(&path, report::render_html(&all_results)).ok();
-            eprintln!("\x1b[2mHTML 报告: {}\x1b[0m", path.display());
-            report::print_summary(&all_results);
+            std::fs::write(&path, report::render_html(results)).ok();
+            if !quiet_note {
+                eprintln!("\x1b[2mHTML 报告: {}\x1b[0m", path.display());
+            }
+            report::print_summary(results);
         }
-        _ => report::print_summary(&all_results),
+        _ => {
+            report::print_results(results, verbose);
+            report::print_summary(results);
+        }
     }
-    let failed = all_results.iter().filter(|x| !x.passed() && !x.skipped).count();
-    if failed > 0 { 1 } else { 0 }
+}
+
+fn cmd_doctor() -> u8 {
+    let mut ok = true;
+    println!("\x1b[1mrequestbaby doctor\x1b[0m");
+    // curl 引擎可用性
+    match std::process::Command::new("curl").arg("--version").output() {
+        Ok(o) if o.status.success() => {
+            let v = String::from_utf8_lossy(&o.stdout);
+            let first = v.lines().next().unwrap_or("curl");
+            let ver = first.split_whitespace().nth(1).unwrap_or("?").to_string();
+            let mut it = ver.split('.');
+            let major = it.next().and_then(|m| m.parse::<u32>().ok()).unwrap_or(0);
+            let minor = it.next().and_then(|m| m.parse::<u32>().ok()).unwrap_or(0);
+            if major > 7 || (major == 7 && minor >= 75) {
+                println!("  \x1b[32m✔\x1b[0m curl {ver}（支持 -w %{{json}}）");
+            } else {
+                println!("  \x1b[33m⚠\x1b[0m curl {ver} < 7.75，元数据采集可能失败");
+            }
+        }
+        _ => {
+            println!("  \x1b[31m✘\x1b[0m curl 未安装（引擎不可用）");
+            ok = false;
+        }
+    }
+    // native 引擎
+    #[cfg(feature = "native")]
+    println!("  \x1b[32m✔\x1b[0m native 引擎已编译（--engine native）");
+    #[cfg(not(feature = "native"))]
+    println!("  \x1b[2m-\x1b[0m native 引擎未编译（可选：cargo build --features native）");
+    // 项目上下文
+    let cwd = std::path::Path::new(".");
+    match runner::discover::find_project_root(cwd) {
+        Some(root) => {
+            println!("  \x1b[32m✔\x1b[0m 项目根: {}", root.display());
+            if let Some(pf) = runner::discover::project_file(&root) {
+                match config::load_strict::<config::Project>(&pf) {
+                    Ok(p) => println!("  \x1b[32m✔\x1b[0m 项目配置 ok（defaultEnv={} workflows={}）", p.default_env, p.workflows.len()),
+                    Err(e) => {
+                        println!("  \x1b[31m✘\x1b[0m 项目配置解析失败: {e:#}");
+                        ok = false;
+                    }
+                }
+                let envs_dir = root.join("envs");
+                if envs_dir.is_dir() {
+                    let n = std::fs::read_dir(&envs_dir).map(|d| d.filter_map(|e| e.ok()).count()).unwrap_or(0);
+                    println!("  \x1b[32m✔\x1b[0m 环境文件 {n} 个");
+                } else {
+                    println!("  \x1b[33m⚠\x1b[0m 无 envs/ 目录");
+                }
+            }
+        }
+        None => println!("  \x1b[33m⚠\x1b[0m 当前不在项目内（无 requestbaby.json）"),
+    }
+    if ok { 0 } else { 2 }
 }
 
 /// 从第一个路径定位项目默认环境

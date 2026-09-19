@@ -78,20 +78,28 @@ fn is_case_file(p: &Path) -> bool {
     name != "requestbaby.json" && name != "collection.json" && !name.starts_with('.')
 }
 
-/// 发现 + 构建集合链 + 按 rel 排序
+/// 发现 + 构建集合链 + 按 rel 排序（目录级结果缓存：root/chain 单次 IO）
 pub fn discover(paths: &[PathBuf]) -> Result<Vec<DiscoveredCase>> {
     let files = collect_case_files(paths)?;
     let mut cases = vec![];
+    let mut root_cache: std::collections::HashMap<PathBuf, Option<PathBuf>> = Default::default();
+    let mut chain_cache: std::collections::HashMap<PathBuf, Vec<Collection>> = Default::default();
     for f in files {
-        let root = find_project_root(&f).unwrap_or_else(|| {
-            f.parent().map(Path::to_path_buf).unwrap_or_default()
-        });
+        let parent = f.parent().unwrap_or(Path::new(".")).to_path_buf();
+        let root = root_cache
+            .entry(parent.clone())
+            .or_insert_with(|| find_project_root(&f))
+            .clone()
+            .unwrap_or_else(|| parent.clone());
         let rel = f
             .strip_prefix(&root)
             .unwrap_or(&f)
             .to_string_lossy()
             .replace('\\', "/");
-        let chain = collection_chain(&root, f.parent().unwrap_or(&root));
+        let chain = chain_cache
+            .entry(parent)
+            .or_insert_with(|| collection_chain(&root, f.parent().unwrap_or(&root)))
+            .clone();
         cases.push(DiscoveredCase { path: f, rel, chain });
     }
     cases.sort_by(|a, b| a.rel.cmp(&b.rel));

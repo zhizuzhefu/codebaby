@@ -1,6 +1,7 @@
 use super::{ReqData, RespData, ScriptHost, ScriptOutcome, TestOutcome};
 use anyhow::{anyhow, Result};
 use base64::Engine as _;
+use crate::vars::VarVal;
 use rquickjs::{Context, Ctx, Function, Runtime};
 use std::collections::BTreeMap;
 
@@ -26,10 +27,16 @@ impl QuickJsHost {
         Self
     }
 
+    /// Runtime 线程池化复用（创建开销 ~1ms/次，千用例规模显著）；
+    /// 隔离性由每次新建 Context 保证（QuickJS Context 独立全局对象与堆）
     fn with_ctx<T>(&self, f: impl for<'js> FnOnce(&Ctx<'js>) -> Result<T>) -> Result<T> {
-        let rt = Runtime::new().map_err(|e| anyhow!("QuickJS Runtime 创建失败: {e}"))?;
-        let ctx = Context::full(&rt).map_err(|e| anyhow!("QuickJS Context 创建失败: {e}"))?;
-        ctx.with(|ctx| f(&ctx))
+        thread_local! {
+            static RT: Runtime = Runtime::new().expect("QuickJS Runtime 创建失败");
+        }
+        RT.with(|rt| {
+            let ctx = Context::full(rt).map_err(|e| anyhow!("QuickJS Context 创建失败: {e}"))?;
+            ctx.with(|ctx| f(&ctx))
+        })
     }
 
     /// 执行用户脚本（pre/post）：
@@ -139,7 +146,9 @@ fn install_common(ctx: &Ctx<'_>) -> Result<()> {
 
 /// Rust 侧同步执行一次 curl（脚本级 http.request 后端）
 fn do_curl(opts_json: &str) -> String {
-    use crate::engine::{CurlTransport, ResolvedRequest, Transport};
+    use crate::engine::{CurlTransport, ResolvedRequest};
+    #[allow(unused_imports)]
+    use crate::engine::Transport;
     let Ok(v) = serde_json::from_str::<serde_json::Value>(opts_json) else {
         return r#"{"error":"bad opts"}"#.into();
     };
@@ -245,10 +254,17 @@ fn hex(bytes: &[u8]) -> String {
     bytes.iter().map(|b| format!("{b:02x}")).collect()
 }
 
-/// 注入 vars / env
-fn inject_scope(ctx: &Ctx<'_>, vars: &BTreeMap<String, String>, env: &BTreeMap<String, String>) -> Result<()> {
-    let vars_js = serde_json::to_string(vars)?;
-    let env_js = serde_json::to_string(env)?;
+/// 注入 vars / env（VarVal 保留原生类型：number/bool 还原，非字符串加引号）
+fn inject_scope(ctx: &Ctx<'_>, vars: &BTreeMap<String, VarVal>, env: &BTreeMap<String, VarVal>) -> Result<()> {
+    let to_js_obj = |m: &BTreeMap<String, VarVal>| -> String {
+        let inner: Vec<String> = m
+            .iter()
+            .map(|(k, v)| format!("{}: {}", serde_json::to_string(k).unwrap(), v.to_js_literal()))
+            .collect();
+        format!("{{{}}}", inner.join(", "))
+    };
+    let vars_js = to_js_obj(vars);
+    let env_js = to_js_obj(env);
     ctx.eval::<(), _>(format!(
         "globalThis.vars = {vars_js};
          globalThis.env = {env_js};"
@@ -325,7 +341,7 @@ fn extract(ctx: &Ctx<'_>, take_req: bool) -> Result<ScriptOutcome> {
     let vars_raw: String = ctx
         .eval("JSON.stringify(vars)")
         .map_err(|e| anyhow!("提取 vars 失败: {e}"))?;
-    out.vars = parse_string_map(&vars_raw)?;
+    out.vars = parse_var_map(&vars_raw)?;
     let logs: String = ctx
         .eval("JSON.stringify(__logs)")
         .map_err(|e| anyhow!("提取 logs 失败: {e}"))?;
@@ -333,18 +349,20 @@ fn extract(ctx: &Ctx<'_>, take_req: bool) -> Result<ScriptOutcome> {
     Ok(out)
 }
 
-/// vars JSON → BTreeMap<String,String>（数字/布尔转字符串，对象保留 JSON 形态）
-fn parse_string_map(raw: &str) -> Result<BTreeMap<String, String>> {
+/// vars JSON → BTreeMap<String, VarVal>（number/bool 保留原生类型）
+fn parse_var_map(raw: &str) -> Result<BTreeMap<String, VarVal>> {
     let v: serde_json::Value = serde_json::from_str(raw)?;
     let mut out = BTreeMap::new();
     if let serde_json::Value::Object(m) = v {
         for (k, val) in m {
-            let s = match val {
-                serde_json::Value::String(s) => s,
-                serde_json::Value::Null => String::new(),
-                other => other.to_string(),
+            let vv = match val {
+                serde_json::Value::String(s) => VarVal::Str(s),
+                serde_json::Value::Number(n) => VarVal::Num(n.as_f64().unwrap_or(0.0)),
+                serde_json::Value::Bool(b) => VarVal::Bool(b),
+                serde_json::Value::Null => VarVal::Str(String::new()),
+                other => VarVal::Str(other.to_string()),
             };
-            out.insert(k, s);
+            out.insert(k, vv);
         }
     }
     Ok(out)
@@ -366,8 +384,8 @@ impl ScriptHost for QuickJsHost {
     fn run_pre(
         &self,
         req: ReqData,
-        vars: &BTreeMap<String, String>,
-        env: &BTreeMap<String, String>,
+        vars: &BTreeMap<String, VarVal>,
+        env: &BTreeMap<String, VarVal>,
         script: &str,
     ) -> Result<ScriptOutcome> {
         self.with_ctx(|ctx| {
@@ -384,8 +402,8 @@ impl ScriptHost for QuickJsHost {
     fn run_post(
         &self,
         resp: &RespData,
-        vars: &BTreeMap<String, String>,
-        env: &BTreeMap<String, String>,
+        vars: &BTreeMap<String, VarVal>,
+        env: &BTreeMap<String, VarVal>,
         script: &str,
     ) -> Result<ScriptOutcome> {
         self.with_ctx(|ctx| {
@@ -401,8 +419,8 @@ impl ScriptHost for QuickJsHost {
 
     fn run_scoped(
         &self,
-        vars: &BTreeMap<String, String>,
-        env: &BTreeMap<String, String>,
+        vars: &BTreeMap<String, VarVal>,
+        env: &BTreeMap<String, VarVal>,
         script: &str,
     ) -> Result<ScriptOutcome> {
         self.with_ctx(|ctx| {
@@ -418,8 +436,8 @@ impl ScriptHost for QuickJsHost {
     fn eval_tests(
         &self,
         resp: &RespData,
-        vars: &BTreeMap<String, String>,
-        env: &BTreeMap<String, String>,
+        vars: &BTreeMap<String, VarVal>,
+        env: &BTreeMap<String, VarVal>,
         tests: &[String],
     ) -> Result<Vec<TestOutcome>> {
         self.with_ctx(|ctx| {
@@ -535,7 +553,7 @@ mod tests {
         let req = out.req.unwrap();
         assert_eq!(req.headers.get("X-A").unwrap(), "1");
         assert_eq!(req.body.unwrap(), r#"{"b":2}"#);
-        assert_eq!(out.vars.get("k").unwrap(), "v");
+        assert_eq!(out.vars.get("k").unwrap(), &VarVal::Str("v".into()));
         assert_eq!(out.logs, vec!["hi".to_string()]);
     }
 
@@ -545,7 +563,7 @@ mod tests {
         let out = host
             .run_post(&resp(), &BTreeMap::new(), &BTreeMap::new(), "vars.orderId = res.json().data.id")
             .unwrap();
-        assert_eq!(out.vars.get("orderId").unwrap(), "42");
+        assert_eq!(out.vars.get("orderId").unwrap(), &VarVal::Num(42.0));
     }
 
     #[test]
@@ -604,8 +622,8 @@ mod tests {
                 "vars.h = crypto.md5('abc'); vars.b = crypto.base64Encode('hi')",
             )
             .unwrap();
-        assert_eq!(out.vars.get("h").unwrap(), "900150983cd24fb0d6963f7d28e17f72");
-        assert_eq!(out.vars.get("b").unwrap(), "aGk=");
+        assert_eq!(out.vars.get("h").unwrap(), &VarVal::Str("900150983cd24fb0d6963f7d28e17f72".into()));
+        assert_eq!(out.vars.get("b").unwrap(), &VarVal::Str("aGk=".into()));
     }
 
     #[test]

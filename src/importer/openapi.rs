@@ -120,10 +120,19 @@ fn build_case(
         url.push_str(&qs.join("&"));
     }
 
-    // body
+    // body（content 下任意 */json 类型，如 text/json、application/json; charset=utf-8）
     let op_v = Value::Object(op.clone());
     let body_schema: Option<Value> = if version == 3 {
-        op_v.pointer("/requestBody/content/application~1json/schema").cloned()
+        let content = op_v.pointer("/requestBody/content").and_then(Value::as_object);
+        let json_media = content.and_then(|c| {
+            c.keys().find(|k| k.to_ascii_lowercase().contains("json"))
+        });
+        json_media
+            .and_then(|k| {
+                let ptr = format!("/requestBody/content/{}/schema", k.replace('/', "~1").replace('~', "~0").replace("~01", "~1"));
+                op_v.pointer(&ptr).cloned()
+            })
+            .or_else(|| op_v.pointer("/requestBody/content/application~1json/example").cloned().map(|e| json!({"example": e})))
     } else {
         op.get("parameters").and_then(Value::as_array).and_then(|ps| {
             ps.iter()
@@ -132,10 +141,7 @@ fn build_case(
                 .cloned()
         })
     };
-    let body_example = op_v
-        .pointer("/requestBody/content/application~1json/example")
-        .cloned()
-        .or_else(|| body_schema.map(|s| schema_to_example(&s, None, doc, version, 0)));
+    let body_example = body_schema.map(|s| schema_to_example(&s, None, doc, version, 0));
 
     // 默认期望状态码：responses 第一个 2xx
     let expect: Option<Value> = op

@@ -1,7 +1,7 @@
 use crate::config::{load_strict, Collection, EnvFile, Project, TestCase};
 use crate::runner::discover::{self, DiscoveredCase};
 use crate::script::{QuickJsHost, ScriptHost};
-use crate::vars::{find_undefined, Vars};
+use crate::vars::{find_undefined, VarVal, Vars};
 use anyhow::Result;
 use std::path::Path;
 
@@ -69,7 +69,7 @@ pub fn validate_paths(paths: &[std::path::PathBuf], env_name: &str) -> Result<Ve
         if let Some(pf) = discover::project_file(root) {
             if schema_check(PROJECT_SCHEMA, &pf, "project", &mut issues) {
                 if let Ok(p) = load_strict::<Project>(&pf) {
-                    base_vars.push_layer(p.vars.plain());
+                    base_vars.push_str_layer(p.vars.plain());
                     // workflow step.run 存在性
                     for (wf_name, wf) in &p.workflows {
                         for (i, step) in wf.steps.iter().enumerate() {
@@ -94,7 +94,7 @@ pub fn validate_paths(paths: &[std::path::PathBuf], env_name: &str) -> Result<Ve
         if env_path.exists() {
             if schema_check(ENV_SCHEMA, &env_path, "env", &mut issues) {
                 if let Ok(f) = load_strict::<EnvFile>(&env_path) {
-                    base_vars.push_layer(f.vars.plain());
+                    base_vars.push_str_layer(f.vars.plain());
                 }
             }
         }
@@ -188,11 +188,11 @@ fn validate_case(
     // 已知变量：base + 集合链 + 全部用例脚本写入（跨用例传递）
     let mut vars = base.clone();
     for c in &dc.chain {
-        vars.push_layer(c.vars.plain());
+        vars.push_str_layer(c.vars.plain());
     }
     let mut known = vars.env_snapshot();
     for k in global_written {
-        known.entry(k.clone()).or_insert_with(String::new);
+        known.entry(k.clone()).or_insert_with(|| VarVal::Str(String::new()));
     }
     let known_vars = {
         let mut v = Vars::new();

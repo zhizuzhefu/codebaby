@@ -2,6 +2,7 @@ pub mod quickjs;
 
 pub use quickjs::QuickJsHost;
 
+use crate::vars::VarVal;
 use anyhow::Result;
 use std::collections::BTreeMap;
 
@@ -36,7 +37,8 @@ pub struct TestOutcome {
 #[derive(Debug, Clone, Default)]
 pub struct ScriptOutcome {
     pub req: Option<ReqData>,
-    pub vars: BTreeMap<String, String>,
+    /// 脚本写入的变量（保留原生类型：Num/Bool 注入还原）
+    pub vars: BTreeMap<String, VarVal>,
     pub logs: Vec<String>,
     /// 脚本运行时异常（语法错误/抛出）
     pub error: Option<String>,
@@ -45,16 +47,16 @@ pub struct ScriptOutcome {
 /// 脚本宿主抽象：QuickJS 为当前实现
 pub trait ScriptHost {
     /// 前置脚本：注入 req/vars/env，返回改写后的请求与变量
-    fn run_pre(&self, req: ReqData, vars: &BTreeMap<String, String>, env: &BTreeMap<String, String>, script: &str) -> Result<ScriptOutcome>;
+    fn run_pre(&self, req: ReqData, vars: &BTreeMap<String, VarVal>, env: &BTreeMap<String, VarVal>, script: &str) -> Result<ScriptOutcome>;
 
     /// 后置脚本：注入 res/vars/env，返回变量回写
-    fn run_post(&self, resp: &RespData, vars: &BTreeMap<String, String>, env: &BTreeMap<String, String>, script: &str) -> Result<ScriptOutcome>;
+    fn run_post(&self, resp: &RespData, vars: &BTreeMap<String, VarVal>, env: &BTreeMap<String, VarVal>, script: &str) -> Result<ScriptOutcome>;
 
     /// 集合级脚本（setup/teardown）：注入 vars/env/http（可发请求造数/清数）
-    fn run_scoped(&self, vars: &BTreeMap<String, String>, env: &BTreeMap<String, String>, script: &str) -> Result<ScriptOutcome>;
+    fn run_scoped(&self, vars: &BTreeMap<String, VarVal>, env: &BTreeMap<String, VarVal>, script: &str) -> Result<ScriptOutcome>;
 
     /// 断言求值：注入 res/vars/env，逐条 eval
-    fn eval_tests(&self, resp: &RespData, vars: &BTreeMap<String, String>, env: &BTreeMap<String, String>, tests: &[String]) -> Result<Vec<TestOutcome>>;
+    fn eval_tests(&self, resp: &RespData, vars: &BTreeMap<String, VarVal>, env: &BTreeMap<String, VarVal>, tests: &[String]) -> Result<Vec<TestOutcome>>;
 
     /// 语法检查（validate 用）：new Function 编译不执行
     fn compile_check(&self, script: &str) -> Result<()>;

@@ -1,4 +1,6 @@
 pub mod curl;
+#[cfg(feature = "native")]
+pub mod native;
 
 pub use curl::CurlTransport;
 
@@ -35,13 +37,11 @@ impl Response {
     }
 }
 
-/// 传输层抽象：当前实现为 curl 子进程，未来可替换 libcurl FFI / 内置 HTTP
-pub trait Transport {
-    /// 编译为可执行表示（不执行），dry-run 与实际执行共用
-    fn compile(&self, req: &ResolvedRequest) -> Result<CurlInvocation>;
-
-    /// 执行
-    fn run(&self, inv: &CurlInvocation) -> Result<Response>;
+/// 传输引擎抽象：
+/// - CurlTransport（默认）：spawn curl 子进程，调试保真（-v 可复现命令）
+/// - NativeTransport（feature "native"）：hyper 内置客户端，连接复用，批量档位
+pub trait Transport: Send + Sync {
+    fn execute(&self, req: &ResolvedRequest) -> Result<Response>;
 }
 
 /// 一次 curl 调用的完整描述（argv + body 落盘文件）

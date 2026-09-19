@@ -233,7 +233,7 @@ fn write_project(dir: &std::path::Path, port: u16) {
   "tags": ["suite2"],
   "expectStatus": 200,
   "request": { "method": "GET", "url": "{{baseUrl}}/health" },
-  "tests": ["env.prepared === 'yes'", "env.probeStatus === '200'"]
+  "tests": ["env.prepared === 'yes'", "env.probeStatus === 200"]
 }"#,
     )
     .unwrap();

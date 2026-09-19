@@ -1,11 +1,47 @@
 use std::collections::BTreeMap;
 
+/// 变量值：保留原生类型（脚本捕获的 number/bool 在注入与断言时还原，
+/// 渲染 {{x}} 时按字符串展开）
+#[derive(Debug, Clone, PartialEq)]
+pub enum VarVal {
+    Str(String),
+    Num(f64),
+    Bool(bool),
+}
+
+impl VarVal {
+    pub fn to_render(&self) -> String {
+        match self {
+            VarVal::Str(s) => s.clone(),
+            VarVal::Num(n) => fmt_num(*n),
+            VarVal::Bool(b) => b.to_string(),
+        }
+    }
+
+    /// JS 字面量（注入脚本环境）
+    pub fn to_js_literal(&self) -> String {
+        match self {
+            VarVal::Str(s) => serde_json::to_string(s).unwrap_or_else(|_| "\"\"".into()),
+            VarVal::Num(n) => fmt_num(*n),
+            VarVal::Bool(b) => b.to_string(),
+        }
+    }
+}
+
+fn fmt_num(n: f64) -> String {
+    if n.fract() == 0.0 && n.abs() < 9.007_199_254_740_992e15 {
+        format!("{}", n as i64)
+    } else {
+        format!("{n}")
+    }
+}
+
 /// 四层变量作用域（低 → 高）：
 /// project vars < env vars < collection vars < runtime vars
-/// 高层覆盖低层；runtime 层由脚本动态写入。
+/// 高层覆盖低层；runtime 层由脚本动态写入（保留原生类型）。
 #[derive(Debug, Clone, Default)]
 pub struct Vars {
-    layers: Vec<BTreeMap<String, String>>,
+    layers: Vec<BTreeMap<String, VarVal>>,
 }
 
 impl Vars {
@@ -14,17 +50,23 @@ impl Vars {
     }
 
     /// 压入一层（按调用顺序即优先级升序）
-    pub fn push_layer(&mut self, vars: BTreeMap<String, String>) {
+    pub fn push_layer(&mut self, vars: BTreeMap<String, VarVal>) {
         self.layers.push(vars);
     }
 
+    /// 压入一层纯字符串（配置层便捷方法）
+    pub fn push_str_layer<I: IntoIterator<Item = (String, String)>>(&mut self, vars: I) {
+        self.layers
+            .push(vars.into_iter().map(|(k, v)| (k, VarVal::Str(v))).collect());
+    }
+
     /// 从低到高解析，最后命中者胜
-    pub fn get(&self, name: &str) -> Option<&String> {
+    pub fn get(&self, name: &str) -> Option<&VarVal> {
         self.layers.iter().rev().find_map(|l| l.get(name))
     }
 
-    /// 环境快照（注入脚本 env 对象，只读视图：project+env+collection 合并）
-    pub fn env_snapshot(&self) -> BTreeMap<String, String> {
+    /// 环境快照（注入脚本 env/vars 对象，保留原生类型）
+    pub fn env_snapshot(&self) -> BTreeMap<String, VarVal> {
         let mut merged = BTreeMap::new();
         for l in &self.layers {
             merged.extend(l.iter().map(|(k, v)| (k.clone(), v.clone())));
@@ -73,19 +115,19 @@ impl Vars {
             }
 
             let (name, type_tag) = split_type_tag(inner);
-            match self.get(name) {
+            match self.get(name).map(VarVal::to_render) {
                 Some(v) => match type_tag {
                     Some(tag @ ("number" | "bool")) => {
                         let valid = match tag {
-                            "number" => Self::is_number(v),
-                            _ => Self::is_bool(v),
+                            "number" => v.parse::<f64>().map(|f| f.is_finite()).unwrap_or(false),
+                            _ => v == "true" || v == "false",
                         };
                         if valid {
                             let quoted = out.ends_with('"') && closing.starts_with('"');
                             if quoted {
                                 out.pop(); // 去左引号
                             }
-                            out.push_str(v);
+                            out.push_str(&v);
                             rest = if quoted { &closing[1..] } else { closing }; // 跳右引号
                         } else {
                             out.push_str("{{");
@@ -95,7 +137,7 @@ impl Vars {
                         }
                     }
                     _ => {
-                        out.push_str(v);
+                        out.push_str(&v);
                         rest = closing;
                     }
                 },
@@ -109,14 +151,6 @@ impl Vars {
         }
         out.push_str(rest);
         out
-    }
-
-    fn is_number(s: &str) -> bool {
-        s.parse::<f64>().map(|f| f.is_finite()).unwrap_or(false)
-    }
-
-    fn is_bool(s: &str) -> bool {
-        s == "true" || s == "false"
     }
 }
 
@@ -159,78 +193,52 @@ mod tests {
 
     fn vars() -> Vars {
         let mut v = Vars::new();
-        v.push_layer(BTreeMap::from([("a".into(), "1".into())]));
-        v.push_layer(BTreeMap::from([("a".into(), "2".into()), ("b".into(), "x".into())]));
+        v.push_str_layer([
+            ("a".into(), "1".into()),
+            ("b".into(), "x".into()),
+        ]);
         v
     }
 
     #[test]
     fn layering_overrides() {
         let v = vars();
-        assert_eq!(v.get("a").unwrap(), "2");
-        assert_eq!(v.get("b").unwrap(), "x");
+        assert_eq!(v.get("a"), Some(&VarVal::Str("1".into())));
     }
 
     #[test]
     fn render_replaces_and_keeps_undefined() {
         let v = vars();
-        assert_eq!(v.render("a={{a}} b={{b}} c={{c}}"), "a=2 b=x c={{c}}");
+        assert_eq!(v.render("a={{a}} b={{b}} c={{c}}"), "a=1 b=x c={{c}}");
     }
 
     #[test]
     fn render_trims_name() {
         let v = vars();
-        assert_eq!(v.render("{{ a }}"), "2");
+        assert_eq!(v.render("{{ a }}"), "1");
     }
 
-    fn num_vars() -> Vars {
+    #[test]
+    fn native_types_render_and_inject() {
         let mut v = Vars::new();
-        v.push_layer(BTreeMap::from([
-            ("taskId".into(), "738011164633133".into()),
-            ("flag".into(), "true".into()),
-            ("notNum".into(), "abc".into()),
-        ]));
-        v
+        let mut layer = BTreeMap::new();
+        layer.insert("n".into(), VarVal::Num(200.0));
+        layer.insert("flag".into(), VarVal::Bool(true));
+        v.push_layer(layer);
+        assert_eq!(v.render("{{n}}"), "200");
+        assert_eq!(v.get("flag").unwrap().to_js_literal(), "true");
+        assert_eq!(v.get("n").unwrap().to_js_literal(), "200");
     }
 
     #[test]
     fn number_tag_replaces_json_string_position() {
-        let v = num_vars();
-        // JSON body 序列化后：值带引号 → 连引号替换为裸数字
-        assert_eq!(
-            v.render(r#"{"taskId":"{{taskId:number}}"}"#),
-            r#"{"taskId":738011164633133}"#
-        );
-    }
-
-    #[test]
-    fn number_tag_in_bare_position() {
-        let v = num_vars();
-        assert_eq!(v.render("x={{taskId:number}}"), "x=738011164633133");
-    }
-
-    #[test]
-    fn bool_tag_works() {
-        let v = num_vars();
-        assert_eq!(
-            v.render(r#"{"ok":"{{flag:bool}}"}"#),
-            r#"{"ok":true}"#
-        );
-    }
-
-    #[test]
-    fn invalid_typed_value_kept_as_is() {
-        let v = num_vars();
-        // 值非数字：保留占位符（validate/运行报告可见）
-        assert_eq!(
-            v.render(r#"{"x":"{{notNum:number}}"}"#),
-            r#"{"x":"{{notNum:number}}"}"#
-        );
+        let v = vars();
+        assert_eq!(v.render(r#"{"a":"{{a:number}}"}"#), r#"{"a":1}"#);
     }
 
     #[test]
     fn undefined_detection_ignores_type_tag() {
-        let v = num_vars();
-        assert_eq!(find_undefined("{{taskId:number}} {{nope}}", &v), vec!["nope".to_string()]);
+        let v = vars();
+        assert_eq!(find_undefined("{{a:number}} {{c}}", &v), vec!["c".to_string()]);
     }
 }

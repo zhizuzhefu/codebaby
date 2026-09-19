@@ -17,7 +17,14 @@ impl CurlTransport {
 }
 
 impl Transport for CurlTransport {
-    fn compile(&self, req: &ResolvedRequest) -> Result<CurlInvocation> {
+    fn execute(&self, req: &ResolvedRequest) -> Result<Response> {
+        let inv = self.compile(req)?;
+        self.run(&inv)
+    }
+}
+
+impl CurlTransport {
+    pub fn compile(&self, req: &ResolvedRequest) -> Result<CurlInvocation> {
         let mut argv: Vec<String> = vec![
             "curl".into(),
             "-sS".into(),
@@ -58,7 +65,7 @@ impl Transport for CurlTransport {
         Ok(CurlInvocation { argv, body: body_file })
     }
 
-    fn run(&self, inv: &CurlInvocation) -> Result<Response> {
+    pub fn run(&self, inv: &CurlInvocation) -> Result<Response> {
         let mut argv = inv.argv.clone();
 
         let hdr_file = tempfile::Builder::new()

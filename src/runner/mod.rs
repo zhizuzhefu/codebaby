@@ -1,9 +1,9 @@
 pub mod discover;
 
 use crate::config::{load_strict, Collection, Project, TestCase};
-use crate::engine::{CurlTransport, ResolvedRequest, Response, Transport};
+use crate::engine::{CurlTransport, ResolvedRequest, Response};
 use crate::script::{QuickJsHost, ReqData, RespData, ScriptHost, TestOutcome};
-use crate::vars::Vars;
+use crate::vars::{VarVal, Vars};
 use anyhow::{Context, Result};
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -95,16 +95,30 @@ pub struct ProjectCtx {
 #[derive(Clone)]
 pub struct Runner {
     ctx: ProjectCtx,
-    transport: CurlTransport,
+    /// 执行引擎（curl 默认 / native feature）
+    transport: std::sync::Arc<dyn crate::engine::Transport>,
+    /// curl 命令编译器（dry-run 展示专用，与执行引擎无关）
+    curl_view: CurlTransport,
     script: QuickJsHost,
-    runtime_vars: BTreeMap<String, String>,
+    runtime_vars: BTreeMap<String, VarVal>,
 }
 
 impl Runner {
-    pub fn new(ctx: ProjectCtx) -> Self {
+    /// engine: "curl"（默认）|"native"（需 features=native 编译）
+    pub fn new(ctx: ProjectCtx, engine: &str) -> Self {
+        let transport: std::sync::Arc<dyn crate::engine::Transport> = match engine {
+            #[cfg(feature = "native")]
+            "native" => std::sync::Arc::new(crate::engine::native::NativeTransport),
+            "curl" => std::sync::Arc::new(CurlTransport::new()),
+            other => {
+                eprintln!("\x1b[33m未知引擎 {other}（支持 curl|native），回落 curl\x1b[0m");
+                std::sync::Arc::new(CurlTransport::new())
+            }
+        };
         Self {
             ctx,
-            transport: CurlTransport::new(),
+            transport,
+            curl_view: CurlTransport::new(),
             script: QuickJsHost::new(),
             runtime_vars: BTreeMap::new(),
         }
@@ -113,10 +127,10 @@ impl Runner {
     /// 构建某个用例的变量作用域：project < env < 集合链 < runtime
     fn vars_for(&self, chain: &[Collection]) -> Vars {
         let mut v = Vars::new();
-        v.push_layer(self.ctx.project.vars.plain());
-        v.push_layer(self.ctx.env_vars.clone());
+        v.push_str_layer(self.ctx.project.vars.plain());
+        v.push_str_layer(self.ctx.env_vars.clone());
         for c in chain {
-            v.push_layer(c.vars.plain());
+            v.push_str_layer(c.vars.plain());
         }
         v.push_layer(self.runtime_vars.clone());
         v
@@ -493,9 +507,9 @@ impl Runner {
         };
         let env = {
             let mut v = Vars::new();
-            v.push_layer(self.ctx.project.vars.plain());
-            v.push_layer(self.ctx.env_vars.clone());
-            v.push_layer(col.vars.plain());
+            v.push_str_layer(self.ctx.project.vars.plain());
+            v.push_str_layer(self.ctx.env_vars.clone());
+            v.push_str_layer(col.vars.plain());
             v.push_layer(self.runtime_vars.clone());
             v.env_snapshot()
         };
@@ -563,7 +577,7 @@ impl Runner {
         let mut vars = self.vars_for(&dc.chain);
         // 数据驱动行变量：优先级最高
         if let Some(row) = row {
-            vars.push_layer(row.clone());
+            vars.push_str_layer(row.iter().map(|(k, v)| (k.clone(), v.clone())));
         }
         let mut result = CaseResult {
             rel: dc.rel.clone(),
@@ -705,8 +719,8 @@ impl Runner {
             }
         }
 
-        // ---- 编译 curl ----
-        let inv = match self.transport.compile(&req) {
+        // ---- 编译 curl（dry-run 展示）----
+        let inv = match self.curl_view.compile(&req) {
             Ok(i) => i,
             Err(e) => {
                 result.error = Some(format!("编译 curl 失败: {e:#}"));
@@ -731,7 +745,7 @@ impl Runner {
         }
 
         // ---- 执行 ----
-        let resp: Response = match self.transport.run(&inv) {
+        let resp: Response = match self.transport.execute(&req) {
             Ok(r) => r,
             Err(e) => {
                 result.error = Some(format!("{e:#}"));
@@ -793,7 +807,7 @@ impl Runner {
         if !exprs.is_empty() {
             let mut env_vars = self.vars_for(&dc.chain);
             if let Some(row) = row {
-                env_vars.push_layer(row.clone());
+                env_vars.push_str_layer(row.iter().map(|(k, v)| (k.clone(), v.clone())));
             }
             let env_now = env_vars.env_snapshot();
             match self
@@ -805,18 +819,26 @@ impl Runner {
             }
         }
 
+        // ---- 收尾：send 快照 / 失败快照 / 响应落盘（-o）/ 输出脱敏 ----
+        self.finalize_result(&mut result, dc, &resp_data, opts);
+        result
+    }
+
+    fn finalize_result(
+        &self,
+        result: &mut CaseResult,
+        dc: &discover::DiscoveredCase,
+        resp_data: &RespData,
+        opts: &RunOptions,
+    ) {
         if opts.send_mode {
             result.full_response = Some(resp_data.clone());
         }
-        // ---- 失败响应快照 + 响应落盘（-o）+ 输出脱敏 ----
         if !result.passed() {
             result.response_snapshot = Some(ResponseSnapshot {
                 status: resp_data.status,
                 headers: resp_data.headers.clone(),
-                body: {
-                    let b = &resp_data.body;
-                    b.chars().take(4000).collect::<String>()
-                },
+                body: resp_data.body.chars().take(4000).collect::<String>(),
                 duration_ms: resp_data.time_ms,
             });
         }
@@ -835,8 +857,7 @@ impl Runner {
             });
             let _ = std::fs::write(&file, serde_json::to_vec_pretty(&payload).unwrap_or_default());
         }
-        self.redact_result(&mut result);
-        result
+        self.redact_result(result);
     }
 
     /// 单段文本脱敏

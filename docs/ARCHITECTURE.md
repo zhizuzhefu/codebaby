@@ -139,9 +139,17 @@ AI 依据报错自修复 → 循环直到通过
 | 引擎 | curl 子进程 | 白拿 curl 全部能力（HTTP2/代理/证书/重试），`-v` 可打印完整命令复现 |
 | 加密 | md-5 / sha2 / hmac / base64 | 脚本 crypto 函数的 Rust 后端 |
 
-## 9. 一期边界
+## 9. 演进记录（v0.2 架构）
 
-- 仅 http/https
-- 顺序执行（`--parallel` 二期）
-- 报告：终端 + JSON（junit/html 二期）
-- 不做：云同步、协作、Monitor、OpenAPI 导入（AI 直接生成配置）
+- **执行模型**：串行（目录序+setup/teardown）→ 两阶段并行（`--parallel`，依赖用例自动串行前置）；副作用与 tag 过滤严格隔离
+- **传输层**：`Transport` trait 收敛为 `execute(&ResolvedRequest) -> Response`；curl（默认，调试保真）/ native（feature "native"，hyper 连接复用+HTTP/2，实验性）
+- **脚本层**：QuickJS Runtime 线程池化 + Context 每执行新建（隔离等价、开销降 90%）；`http.*` 受控同步请求；异常全透传（name/message/stack 行号修正）
+- **变量层**：四层作用域 + `VarVal` 原生类型域（捕获的 number/bool 注入还原）；`{{var:number/bool}}` 类型标注、`{{%ENV}}` 进程环境、`{value,secret}`/`{from:env}` 对象形态（全输出层脱敏）
+- **编排层**：`workflows`（requestbaby.json）多阶段编排，runtime vars 跨步骤传递；取代外部 shell 脚本
+- **校验闭环（AI 原生）**：四类 JSON Schema 内置（validate 程序化校验防漂移）；退出码 0/1/2 语义；`validate --json` 结构化 issue（file/level/rule/message）；失败响应快照 + `-o` 响应落盘供 LLM 分析；`doctor` 环境预检——协议见 docs/AI-NATIVE.md
+- **导入生态**：OpenAPI 3 / Swagger 2 / Postman v2.1 / curl 命令
+
+## 10. 支持矩阵
+
+- 协议：http/https
+- 平台：macOS / Linux（Windows 未声明）
