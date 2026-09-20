@@ -1,7 +1,7 @@
 pub mod discover;
 
 use crate::config::{load_strict, Collection, Project, TestCase};
-use crate::engine::{CurlTransport, ResolvedRequest, Response};
+use crate::engine::{CurlTransport, ResolvedRequest, Response, Transport};
 use crate::script::{QuickJsHost, ReqData, RespData, ScriptHost, TestOutcome};
 use crate::vars::{VarVal, Vars};
 use anyhow::{Context, Result};
@@ -95,30 +95,17 @@ pub struct ProjectCtx {
 #[derive(Clone)]
 pub struct Runner {
     ctx: ProjectCtx,
-    /// 执行引擎（curl 默认 / native feature）
-    transport: std::sync::Arc<dyn crate::engine::Transport>,
-    /// curl 命令编译器（dry-run 展示专用，与执行引擎无关）
-    curl_view: CurlTransport,
+    /// 执行引擎（libcurl binding）
+    transport: CurlTransport,
     script: QuickJsHost,
     runtime_vars: BTreeMap<String, VarVal>,
 }
 
 impl Runner {
-    /// engine: "curl"（默认）|"native"（需 features=native 编译）
-    pub fn new(ctx: ProjectCtx, engine: &str) -> Self {
-        let transport: std::sync::Arc<dyn crate::engine::Transport> = match engine {
-            #[cfg(feature = "native")]
-            "native" => std::sync::Arc::new(crate::engine::native::NativeTransport),
-            "curl" => std::sync::Arc::new(CurlTransport::new()),
-            other => {
-                eprintln!("\x1b[33m未知引擎 {other}（支持 curl|native），回落 curl\x1b[0m");
-                std::sync::Arc::new(CurlTransport::new())
-            }
-        };
+    pub fn new(ctx: ProjectCtx) -> Self {
         Self {
             ctx,
-            transport,
-            curl_view: CurlTransport::new(),
+            transport: CurlTransport::new(),
             script: QuickJsHost::new(),
             runtime_vars: BTreeMap::new(),
         }
@@ -719,8 +706,8 @@ impl Runner {
             }
         }
 
-        // ---- 编译 curl（dry-run 展示）----
-        let inv = match self.curl_view.compile(&req) {
+        // ---- 编译 curl 命令展示（dry-run / -v）----
+        let inv = match self.transport.compile(&req) {
             Ok(i) => i,
             Err(e) => {
                 result.error = Some(format!("编译 curl 失败: {e:#}"));
@@ -730,15 +717,12 @@ impl Runner {
         result.curl_cmd = Some(inv.argv.join(" "));
 
         if opts.dry_run {
-            // 展示最终 body（含 {{var:number}} 类型标注替换结果）；TempPath 尚存活
-            if let Some(tp) = &inv.body {
-                if let Ok(content) = std::fs::read_to_string(tp) {
-                    let mut preview: String = content.chars().take(800).collect();
-                    if content.len() > 800 {
-                        preview.push('…');
-                    }
-                    result.body_preview = Some(preview);
+            if let Some(content) = &inv.body {
+                let mut preview: String = content.chars().take(800).collect();
+                if content.len() > 800 {
+                    preview.push('…');
                 }
+                result.body_preview = Some(preview);
             }
             self.redact_result(&mut result);
             return result;

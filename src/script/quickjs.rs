@@ -166,7 +166,7 @@ fn do_curl(opts_json: &str) -> String {
         follow_redirects: v["followRedirects"].as_bool().unwrap_or(false),
     };
     let transport = CurlTransport::new();
-    let resp = match transport.compile(&req).and_then(|inv| transport.run(&inv)) {
+    let resp = match crate::engine::Transport::execute(&transport, &req) {
         Ok(r) => r,
         Err(e) => return serde_json::json!({ "error": format!("{e:#}") }).to_string(),
     };

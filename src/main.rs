@@ -141,9 +141,6 @@ enum Cmd {
         /// 报告格式：term（默认）/ json / junit / html（写 report.html）
         #[arg(long)]
         report: Option<String>,
-        /// 执行引擎：curl（默认，调试保真）/ native（需 features=native 编译，连接复用）
-        #[arg(long)]
-        engine: Option<String>,
     },
 }
 
@@ -177,8 +174,8 @@ fn main() -> ExitCode {
             cmd_workflow(&name, env.as_deref(), dry_run, verbose, report.as_deref())
         }
         Cmd::Watch { paths, env, tag, name } => cmd_watch(&paths, env.as_deref(), tag, name.as_deref()),
-        Cmd::Run { paths, env, tag, name, fail_fast, dry_run, verbose, output, parallel, report, engine } => {
-            cmd_run(&paths, env.as_deref(), tag, name.as_deref(), fail_fast, dry_run, verbose, output.as_deref(), parallel, report.as_deref(), engine.as_deref())
+        Cmd::Run { paths, env, tag, name, fail_fast, dry_run, verbose, output, parallel, report } => {
+            cmd_run(&paths, env.as_deref(), tag, name.as_deref(), fail_fast, dry_run, verbose, output.as_deref(), parallel, report.as_deref())
         }
     };
     ExitCode::from(code)
@@ -313,7 +310,6 @@ fn cmd_run(
     output: Option<&str>,
     parallel: Option<usize>,
     report: Option<&str>,
-    engine: Option<&str>,
 ) -> u8 {
     let paths: Vec<String> = if paths.is_empty() { vec!["collections".into()] } else { paths.to_vec() };
     let json = false; // --report json 经 fmt 参数传递
@@ -351,7 +347,7 @@ fn cmd_run(
             );
         }
 
-        let mut r = runner::Runner::new(ctx, engine.unwrap_or("curl"));
+        let mut r = runner::Runner::new(ctx);
         let results = r.run(&cases, &opts, |_| {})?;
 
         let fmt = report.unwrap_or("term");
@@ -481,7 +477,7 @@ fn cmd_send(case: &str, env: Option<&str>) -> u8 {
     } else {
         case_cfg.name.clone()
     };
-    let mut r = runner::Runner::new(ctx, "curl");
+    let mut r = runner::Runner::new(ctx);
     let results = match r.run(&cases, &opts, |_| {}) {
         Ok(x) => x,
         Err(e) => {
@@ -682,7 +678,7 @@ fn cmd_workflow(name: &str, env: Option<&str>, dry_run: bool, verbose: bool, rep
         wf.steps.len(),
         if dry_run { " [dry-run]" } else { "" }
     );
-    let mut r = runner::Runner::new(ctx, "curl");
+    let mut r = runner::Runner::new(ctx);
     let mut all_results: Vec<runner::CaseResult> = vec![];
     let fmt = report.unwrap_or("term");
     let is_term = fmt == "term";
@@ -927,31 +923,11 @@ fn reorder_case(d: &serde_json::Value) -> serde_json::Value {
 fn cmd_doctor() -> u8 {
     let mut ok = true;
     println!("\x1b[1mrequestbaby doctor\x1b[0m");
-    // curl 引擎可用性
-    match std::process::Command::new("curl").arg("--version").output() {
-        Ok(o) if o.status.success() => {
-            let v = String::from_utf8_lossy(&o.stdout);
-            let first = v.lines().next().unwrap_or("curl");
-            let ver = first.split_whitespace().nth(1).unwrap_or("?").to_string();
-            let mut it = ver.split('.');
-            let major = it.next().and_then(|m| m.parse::<u32>().ok()).unwrap_or(0);
-            let minor = it.next().and_then(|m| m.parse::<u32>().ok()).unwrap_or(0);
-            if major > 7 || (major == 7 && minor >= 75) {
-                println!("  \x1b[32m✔\x1b[0m curl {ver}（支持 -w %{{json}}）");
-            } else {
-                println!("  \x1b[33m⚠\x1b[0m curl {ver} < 7.75，元数据采集可能失败");
-            }
-        }
-        _ => {
-            println!("  \x1b[31m✘\x1b[0m curl 未安装（引擎不可用）");
-            ok = false;
-        }
+    // HTTP 引擎：内嵌 libcurl（零外部依赖）
+    {
+        let v = curl::Version::get();
+        println!("  \x1b[32m✔\x1b[0m HTTP 引擎 libcurl {}（静态链接，无需系统 curl）", v.version());
     }
-    // native 引擎
-    #[cfg(feature = "native")]
-    println!("  \x1b[32m✔\x1b[0m native 引擎已编译（--engine native）");
-    #[cfg(not(feature = "native"))]
-    println!("  \x1b[2m-\x1b[0m native 引擎未编译（可选：cargo build --features native）");
     // 项目上下文
     let cwd = std::path::Path::new(".");
     match runner::discover::find_project_root(cwd) {

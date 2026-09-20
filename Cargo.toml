@@ -2,9 +2,9 @@
 name = "requestbaby"
 version = "0.2.0"
 edition = "2021"
-description = "AI-native API testing CLI: curl-powered, file-based collections, scriptable, workflow-driven"
+description = "AI-native API testing CLI: single binary, file-based collections, scriptable, workflow-driven"
 license = "MIT"
-repository = "https://github.com/requestbaby/requestbaby"
+repository = "https://github.com/zhizuzhefu/requestbaby"
 keywords = ["api", "testing", "cli", "e2e", "curl"]
 categories = ["command-line-utilities", "development-tools::testing"]
 
@@ -16,22 +16,16 @@ serde_json = { version = "1", features = ["preserve_order"] }
 serde_yaml = "0.9"
 jsonschema = { version = "0.17", default-features = false }
 walkdir = "2"
-tempfile = "3"
 rquickjs = "0.6"
 md-5 = "0.10"
 sha2 = "0.10"
 hmac = "0.12"
 base64 = "0.22"
-hyper = { version = "1", features = ["client", "http1", "http2"], optional = true }
-hyper-util = { version = "0.1", features = ["client", "client-legacy", "http1", "http2", "tokio"], optional = true }
-hyper-rustls = { version = "0.27", features = ["http1", "http2", "native-tokio", "webpki-tokio", "ring"], default-features = false, optional = true }
-http-body-util = { version = "0.1", optional = true }
-tokio = { version = "1", features = ["rt-multi-thread", "time"], optional = true }
-bytes = { version = "1", optional = true }
 notify = "6"
-
-[features]
-native = ["dep:hyper", "dep:hyper-util", "dep:hyper-rustls", "dep:http-body-util", "dep:tokio", "dep:bytes"]
+tempfile = "3"
+# HTTP 引擎：libcurl 官方 Rust binding，static-curl 静态编译进二进制
+# —— 运行时零外部依赖（不 spawn curl 进程、不动态链接系统 libcurl）
+curl = { version = "0.4", features = ["static-curl"] }
 
 [profile.release]
 lto = true

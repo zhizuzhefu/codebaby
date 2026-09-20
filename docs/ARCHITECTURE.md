@@ -136,13 +136,13 @@ AI 依据报错自修复 → 循环直到通过
 | CLI | clap v4 derive | 子命令 + 补全 |
 | 配置 | serde + serde_json（deny_unknown_fields） | 严格解析即第一层校验 |
 | 脚本 | rquickjs（QuickJS） | 100% ES2020、静态链接、测试同学零学习成本 |
-| 引擎 | curl 子进程 | 白拿 curl 全部能力（HTTP2/代理/证书/重试），`-v` 可打印完整命令复现 |
+| 引擎 | `curl` crate（libcurl 官方 binding，static-curl 静态链接） | 单二进制内嵌 libcurl：零外部进程/动态库依赖，行为与系统 curl 一致（TLS/代理环境变量/HTTP2），dry-run 仍展示可复现 curl 命令 |
 | 加密 | md-5 / sha2 / hmac / base64 | 脚本 crypto 函数的 Rust 后端 |
 
 ## 9. 演进记录（v0.2 架构）
 
 - **执行模型**：串行（目录序+setup/teardown）→ 两阶段并行（`--parallel`，依赖用例自动串行前置）；副作用与 tag 过滤严格隔离
-- **传输层**：`Transport` trait 收敛为 `execute(&ResolvedRequest) -> Response`；curl（默认，调试保真）/ native（feature "native"，hyper 连接复用+HTTP/2，实验性）
+- **传输层**：`Transport` trait 收敛为 `execute(&ResolvedRequest) -> Response`；实现为 libcurl binding（static-curl，全内存执行无临时文件），hyper 实验引擎已移除
 - **脚本层**：QuickJS Runtime 线程池化 + Context 每执行新建（隔离等价、开销降 90%）；`http.*` 受控同步请求；异常全透传（name/message/stack 行号修正）
 - **变量层**：四层作用域 + `VarVal` 原生类型域（捕获的 number/bool 注入还原）；`{{var:number/bool}}` 类型标注、`{{%ENV}}` 进程环境、`{value,secret}`/`{from:env}` 对象形态（全输出层脱敏）
 - **编排层**：`workflows`（requestbaby.json）多阶段编排，runtime vars 跨步骤传递；取代外部 shell 脚本

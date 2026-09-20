@@ -24,8 +24,9 @@
 ## 安装
 
 ```bash
-cargo install --path .
-# 依赖：curl >= 7.75（支持 -w '%{json}'）
+cargo install --path .     # 构建期依赖 cmake（编译内嵌 libcurl）
+# 运行时零外部依赖：HTTP 引擎为 libcurl 官方 Rust binding（static-curl 静态链接进二进制），
+# 不 spawn curl 进程、不动态链接系统 libcurl、无需任何运行时
 ```
 
 ## 快速开始

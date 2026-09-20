@@ -125,6 +125,7 @@ requestbaby fmt            # 重复 headers 自动上提集合级、字段规范
 
 ## 安全边界
 
+- HTTP 引擎为内嵌 libcurl（静态链接单二进制），零外部进程依赖
 - 脚本沙箱（QuickJS）无文件/网络自由权限，仅 `http.*` 受控请求 + `crypto` 纯函数
 - `secret` 变量在所有输出层（curl 命令/日志/报告/快照/send 面板）强制脱敏
 - `--tag` 过滤与 setup 副作用严格隔离：只读跑法不触发造数

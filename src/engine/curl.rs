@@ -1,29 +1,20 @@
+//! libcurl 执行引擎（curl crate 官方 binding，static-curl 静态编译）：
+//! - 单二进制内嵌 libcurl，零外部进程/动态库依赖
+//! - 行为与系统 curl 一致（TLS/代理环境变量/HTTP2 自动协商）
+//! - 全内存执行（body 不落盘、无临时文件）
 use super::{CurlInvocation, ResolvedRequest, Response, Transport};
 use anyhow::{Context, Result};
-use serde_json::Value;
-use std::process::Command;
+use std::time::Duration;
 
-/// curl 子进程传输实现：
-/// - 参数数组直接传递，不经 shell（无注入风险）
-/// - 元数据走 `-w %{json}`（curl >= 7.75）
-/// - 响应头 `-D <file>`、响应体 `-o <file>`、body 临时文件 `--data-binary @file`
-#[derive(Debug, Default, Clone, Copy)]
+#[derive(Debug, Clone, Copy, Default)]
 pub struct CurlTransport;
 
 impl CurlTransport {
     pub fn new() -> Self {
         Self
     }
-}
 
-impl Transport for CurlTransport {
-    fn execute(&self, req: &ResolvedRequest) -> Result<Response> {
-        let inv = self.compile(req)?;
-        self.run(&inv)
-    }
-}
-
-impl CurlTransport {
+    /// 生成 curl 命令行展示（dry-run / -v 复现命令；纯字符串，不执行）
     pub fn compile(&self, req: &ResolvedRequest) -> Result<CurlInvocation> {
         let mut argv: Vec<String> = vec![
             "curl".into(),
@@ -48,95 +39,102 @@ impl CurlTransport {
             argv.push("-H".into());
             argv.push(format!("{k}: {v}"));
         }
-
-        let mut body_file = None;
-        if let Some(body) = &req.body {
-            let mut f = tempfile::Builder::new()
-                .prefix("requestbaby-body-")
-                .suffix(".bin")
-                .tempfile()
-                .context("创建 body 临时文件失败")?;
-            std::io::Write::write_all(&mut f, body.as_bytes())?;
-            argv.push("--data-binary".into());
-            argv.push(format!("@{}", f.path().display()));
-            body_file = Some(f.into_temp_path());
-        }
-
-        Ok(CurlInvocation { argv, body: body_file })
-    }
-
-    pub fn run(&self, inv: &CurlInvocation) -> Result<Response> {
-        let mut argv = inv.argv.clone();
-
-        let hdr_file = tempfile::Builder::new()
-            .prefix("requestbaby-hdr-")
-            .tempfile()
-            .context("创建响应头临时文件失败")?;
-        let body_file = tempfile::Builder::new()
-            .prefix("requestbaby-resp-")
-            .tempfile()
-            .context("创建响应体临时文件失败")?;
-        argv.push("-D".into());
-        argv.push(hdr_file.path().display().to_string());
-        argv.push("-o".into());
-        argv.push(body_file.path().display().to_string());
-        argv.push("-w".into());
-        argv.push("%{json}".into());
-
-        // argv[0] 是 "curl"，Command::new 直接用程序名
-        let prog = argv.remove(0);
-        let output = Command::new(&prog)
-            .args(&argv)
-            .output()
-            .with_context(|| format!("启动 curl 失败: {prog}（是否已安装？）"))?;
-
-        let body = std::fs::read(body_file.path()).unwrap_or_default();
-        let headers = parse_header_file(&std::fs::read_to_string(hdr_file.path()).unwrap_or_default());
-
-        let mut resp = Response {
-            headers,
-            body,
-            ..Default::default()
-        };
-
-        if !output.status.success() {
-            let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
-            resp.transport_error = Some(format!(
-                "curl exit {}: {}",
-                output.status.code().unwrap_or(-1),
-                stderr
-            ));
-            // 尽力解析已获得的元数据
-            let _ = parse_meta(&String::from_utf8_lossy(&output.stdout), &mut resp);
-            return Ok(resp);
-        }
-
-        parse_meta(&String::from_utf8_lossy(&output.stdout), &mut resp)?;
-        Ok(resp)
+        Ok(CurlInvocation {
+            argv,
+            body: req.body.clone(),
+        })
     }
 }
 
-/// 解析 -w '%{json}' 元数据
-fn parse_meta(stdout: &str, resp: &mut Response) -> Result<()> {
-    let meta: Value = serde_json::from_str(stdout.trim())
-        .with_context(|| format!("解析 curl %{{json}} 输出失败: {stdout:?}"))?;
-    resp.status = meta.get("http_code").and_then(Value::as_u64).unwrap_or(0) as u16;
-    resp.time_ms = (meta
-        .get("time_total")
-        .and_then(Value::as_f64)
-        .unwrap_or(0.0)
-        * 1000.0) as u64;
-    resp.size = meta.get("size_download").and_then(Value::as_u64).unwrap_or(0);
-    Ok(())
+impl Transport for CurlTransport {
+    /// 单次 libcurl 执行（传输层错误按 retry 配置重试）
+    fn execute(&self, req: &ResolvedRequest) -> Result<Response> {
+        let attempts = req.retry + 1;
+        let mut last_err = None;
+        for _ in 0..attempts {
+            match perform_once(req) {
+                Ok(resp) => return Ok(resp),
+                Err(e) => last_err = Some(e),
+            }
+        }
+        Err(last_err.unwrap_or_else(|| anyhow::anyhow!("未知传输错误")))
+    }
 }
 
-/// 解析 -D 响应头文件（容忍多段：跟随重定向时会有多组状态行）
-fn parse_header_file(content: &str) -> Vec<(String, String)> {
+fn perform_once(req: &ResolvedRequest) -> Result<Response> {
+    let mut easy = curl::easy::Easy::new();
+    easy.url(&req.url).with_context(|| format!("非法 URL: {}", req.url))?;
+    easy.timeout(Duration::from_millis(req.timeout_ms.max(1)))?;
+    easy.connect_timeout(Duration::from_secs(10))?;
+    if req.follow_redirects {
+        easy.follow_location(true)?;
+        easy.max_redirections(10)?;
+    }
+    if req.insecure {
+        easy.ssl_verify_peer(false)?;
+        easy.ssl_verify_host(false)?;
+    }
+
+    // 方法与 body：POST/PUT/PATCH 走 post_fields；其余（含 GET+body）custom_request 显式指定
+    let has_body = req.body.as_deref().map(|b| !b.is_empty()).unwrap_or(false);
+    if has_body {
+        easy.custom_request(&req.method)?;
+        easy.post(true)?;
+        easy.post_fields_copy(req.body.as_deref().unwrap().as_bytes())?;
+    } else {
+        match req.method.as_str() {
+            "POST" => easy.post(true)?,
+            "GET" => easy.get(true)?,
+            "HEAD" => easy.custom_request("HEAD")?,
+            other => easy.custom_request(other)?,
+        }
+    }
+
+    let mut header_list = curl::easy::List::new();
+    for (k, v) in &req.headers {
+        header_list.append(&format!("{k}: {v}"))?;
+    }
+    easy.http_headers(header_list)?;
+
+    let mut body_buf: Vec<u8> = vec![];
+    let mut header_lines: Vec<String> = vec![];
+    {
+        let mut transfer = easy.transfer();
+        transfer
+            .write_function(|data| {
+                body_buf.extend_from_slice(data);
+                Ok(data.len())
+            })
+            .context("注册 body 回调失败")?;
+        transfer
+            .header_function(|data| {
+                header_lines.push(String::from_utf8_lossy(data).trim_end().to_string());
+                true
+            })
+            .context("注册 header 回调失败")?;
+        transfer.perform().map_err(|e| anyhow::anyhow!("curl: {e}"))?;
+    }
+
+    let status = easy.response_code()? as u16;
+    let time_ms = easy.total_time()?.as_millis() as u64;
+    let size = body_buf.len() as u64;
+    let headers = parse_headers(&header_lines);
+    Ok(Response {
+        status,
+        headers,
+        body: body_buf,
+        time_ms,
+        size,
+        transport_error: None,
+    })
+}
+
+/// 解析 header 行（跳过状态行与重定向多段分隔）
+fn parse_headers(lines: &[String]) -> Vec<(String, String)> {
     let mut out = vec![];
-    for line in content.lines() {
+    for line in lines {
         let line = line.trim_end_matches('\r');
-        // 跳过状态行
-        if line.starts_with("HTTP/") {
+        if line.is_empty() || line.starts_with("HTTP/") {
             continue;
         }
         if let Some(idx) = line.find(':') {
@@ -156,9 +154,15 @@ mod tests {
 
     #[test]
     fn parse_headers_skips_status_lines() {
-        let raw = "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nSet-Cookie: a=1\r\nSet-Cookie: b=2\r\n\r\nbody";
-        let h = parse_header_file(raw);
-        assert_eq!(h.len(), 3);
+        let lines = vec![
+            "HTTP/1.1 200 OK".into(),
+            "Content-Type: application/json".into(),
+            "".into(),
+            "HTTP/1.1 404 Not Found".into(),
+            "Set-Cookie: a=1".into(),
+        ];
+        let h = parse_headers(&lines);
+        assert_eq!(h.len(), 2);
         assert_eq!(h[0], ("Content-Type".into(), "application/json".into()));
     }
 
@@ -178,6 +182,5 @@ mod tests {
         let inv = t.compile(&req).unwrap();
         assert!(inv.argv.contains(&"--max-time".to_string()));
         assert!(inv.argv.contains(&"2".to_string()));
-        assert!(!inv.argv.iter().any(|a| a.starts_with("--data")));
     }
 }
