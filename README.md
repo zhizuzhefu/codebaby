@@ -18,16 +18,29 @@
 | Postman 集合是闭源 JSON 黑盒，无法 review | 纯 JSON 配置 + 目录树即集合，Git 原生管理 |
 | 接口测试框架要写代码、搭工程 | 一个 JSON 一个用例，`pre/post/tests` 脚本内嵌 |
 | 配置靠人手写易错 | **AI 原生**：`requestbaby schema` 导出 Schema 约束生成，`validate` + `--dry-run` 程序化校验闭环 |
-| HTTP 客户端轮子重 | curl 子进程执行，`-v` 打印完整 curl 命令可直接复现 |
+| HTTP 客户端轮子重 | 内嵌 libcurl 执行（静态链接、零运行时依赖），`-v` 打印等价 curl 命令可直接复现 |
 | 存量资产迁移难 | `import`：OpenAPI 3 / Swagger 2 / Postman v2.1 一键导入 |
 
 ## 安装
 
+两个独立程序，共用同一个核心库（`crates/requestbaby-core`）、同一份项目目录与运行历史：
+
+| 程序 | 用途 |
+|------|------|
+| `requestbaby` | CLI 主体：AI / CI / 终端使用 |
+| `requestbaby-desktop` | 桌面端（GPUI）：给人观察与编辑用，读写同一项目目录 |
+
 ```bash
-cargo install --path .     # 构建期依赖 cmake（编译内嵌 libcurl）
-# 运行时零外部依赖：HTTP 引擎为 libcurl 官方 Rust binding（static-curl 静态链接进二进制），
-# 不 spawn curl 进程、不动态链接系统 libcurl、无需任何运行时
+# 构建期依赖：rustup（rust-toolchain.toml 固定版本，首次自动下载）、cmake（编译内嵌 libcurl）
+# 桌面端在 macOS 另需 Xcode 命令行工具：xcode-select --install
+cargo install --path crates/requestbaby-cli        # → ~/.cargo/bin/requestbaby
+cargo install --path crates/requestbaby-desktop    # → ~/.cargo/bin/requestbaby-desktop
 ```
+
+运行时零外部依赖：HTTP 引擎为 libcurl 官方 Rust binding（static-curl 静态链接进二进制），
+不 spawn curl 进程、不动态链接系统 libcurl。`requestbaby open` 会在同目录或 PATH 中查找桌面端。
+
+开发时不安装直接运行：`cargo run -p requestbaby -- run collections`、`cargo run -p requestbaby-desktop -- <项目目录>`。
 
 ## 快速开始
 
@@ -38,24 +51,33 @@ requestbaby validate collections     # 结构 + 变量引用 + 脚本语法校�
 requestbaby run collections          # 跑整个集合
 requestbaby send collections/01-login.json   # 单用例调试面板（状态/响应头/美化响应体/断言）
 requestbaby watch collections        # 监听变更自动重跑
+requestbaby open                     # 在桌面端打开当前项目
 ```
 
 ## 命令全景
 
 ```bash
-requestbaby run <paths> [--tag smoke] [--name login] [-e prod]
-                [--fail-fast] [--dry-run] [--json] [-v]
+requestbaby run [paths] [-e env] [--tag smoke] [--name login]
+                [--fail-fast] [--dry-run] [-v]
                 [-o outdir]           # 响应落盘（AI 自修复素材）
                 [--parallel 4]        # 独立用例并发
-                [--report term|json|junit|html]
-requestbaby workflow <name> [-e env]  # 命名工作流：多阶段编排，变量跨阶段自动传递
-requestbaby send <case> [-e env]      # 交互式单发
+                [--report term|json|html]
+                [--json-stream]       # NDJSON 运行事件（与桌面端同一协议）
+                [--no-history]        # 不写入 .requestbaby/runs/
+requestbaby workflow <name> [-e env] [--dry-run] [--report ...] [--json-stream]
+requestbaby send <case> [-e env]      # 单用例调试（不写历史）
 requestbaby watch <paths> [...]       # 变更自动重跑
-requestbaby import <spec> [-o dir]    # OpenAPI3/Swagger2/Postman 导入
-requestbaby validate <paths> [-e env]
-requestbaby list <paths>
-requestbaby schema                    # 导出用例 JSON Schema（喂给 AI）
+requestbaby validate [paths] [-e env] [--report json]
+requestbaby vars <case> [-e env]      # 变量解析预览：最终取值与来源层级
+requestbaby fmt [paths] [--check]     # 规范格式，公共请求头上提 collection.json
+requestbaby doctor                    # 环境自检
 requestbaby init [dir]
+requestbaby new case|collection|env   # 与桌面端新建同一模板
+requestbaby import <spec> [-o dir]    # OpenAPI3/Swagger2/Postman 导入
+requestbaby list [paths]
+requestbaby schema [--all]            # 导出 JSON Schema（喂给 AI）
+requestbaby history                   # 运行历史（CLI / 桌面端共享）
+requestbaby open [dir]                # 在桌面端打开
 ```
 
 ## 项目结构
@@ -204,8 +226,8 @@ requestbaby workflow e2e -e test    # 步骤失败即中止；支持 --dry-run/-
 ## CI 集成
 
 ```yaml
-- run: requestbaby run collections --fail-fast --report junit
-# 或 --report html（artifact 挂载）；失败 exit 1
+- run: requestbaby run collections --fail-fast --report json > report.json
+# 或 --report html（写 report.html，artifact 挂载）；失败 exit 1
 ```
 
 ## 测试与示例

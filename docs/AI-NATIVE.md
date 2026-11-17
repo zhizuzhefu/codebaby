@@ -118,9 +118,9 @@ requestbaby fmt            # 重复 headers 自动上提集合级、字段规范
 
 ```yaml
 # 代码合入门禁：LLM 生成的用例 + 接口回归
-- run: requestbaby validate collections --json || exit 2
-- run: requestbaby run collections --report junit --fail-fast
-- run: requestbaby workflow e2e --report junit
+- run: requestbaby validate collections --report json || exit 2
+- run: requestbaby run collections --report json --fail-fast > report.json
+- run: requestbaby workflow e2e --report html
 ```
 
 ## 安全边界

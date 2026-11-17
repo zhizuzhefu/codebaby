@@ -1,0 +1,26 @@
+[package]
+name = "requestbaby-core"
+description = "requestbaby 核心库：配置 / 变量 / 引擎 / 脚本 / 编排 / 校验 / 导入 / 报告模型（CLI 与 Desktop 共享）"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+serde_yaml = "0.9"
+jsonschema = { version = "0.17", default-features = false }
+walkdir = "2"
+rquickjs = "0.6"
+md-5 = "0.10"
+sha2 = "0.10"
+hmac = "0.12"
+base64 = "0.22"
+# HTTP 引擎：libcurl 官方 Rust binding，static-curl 静态编译进二进制
+# —— 运行时零外部依赖（不 spawn curl 进程、不动态链接系统 libcurl）
+curl = { version = "0.4", features = ["static-curl"] }
+
+[dev-dependencies]
+tempfile = "3"

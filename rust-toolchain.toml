@@ -1,0 +1,4 @@
+[toolchain]
+# gpui（desktop）依赖较新的稳定版特性；core/cli 同样使用此版本保持一致
+channel = "1.100.0"
+components = ["clippy", "rustfmt"]

@@ -1,31 +1,21 @@
-[package]
-name = "requestbaby"
-version = "0.2.0"
+[workspace]
+resolver = "2"
+members = ["crates/requestbaby-core", "crates/requestbaby-cli", "crates/requestbaby-desktop"]
+# 默认只构建无界面的 core + cli：CI / 服务器 / AI 沙箱无需 GPU 与窗口系统
+default-members = ["crates/requestbaby-core", "crates/requestbaby-cli"]
+
+[workspace.package]
+version = "0.3.0"
 edition = "2021"
-description = "AI-native API testing CLI: single binary, file-based collections, scriptable, workflow-driven"
 license = "MIT"
 repository = "https://github.com/zhizuzhefu/requestbaby"
-keywords = ["api", "testing", "cli", "e2e", "curl"]
-categories = ["command-line-utilities", "development-tools::testing"]
 
-[dependencies]
+[workspace.dependencies]
+requestbaby-core = { path = "crates/requestbaby-core" }
 anyhow = "1"
-clap = { version = "4", features = ["derive"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["preserve_order"] }
-serde_yaml = "0.9"
-jsonschema = { version = "0.17", default-features = false }
-walkdir = "2"
-rquickjs = "0.6"
-md-5 = "0.10"
-sha2 = "0.10"
-hmac = "0.12"
-base64 = "0.22"
 notify = "6"
-tempfile = "3"
-# HTTP 引擎：libcurl 官方 Rust binding，static-curl 静态编译进二进制
-# —— 运行时零外部依赖（不 spawn curl 进程、不动态链接系统 libcurl）
-curl = { version = "0.4", features = ["static-curl"] }
 
 [profile.release]
 lto = true
