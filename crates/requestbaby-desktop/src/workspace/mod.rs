@@ -1,21 +1,27 @@
-//! 工作区：标题栏 / 侧栏（集合树·工作流·环境·项目）/ 中央编辑区 / 底部（结果·日志·历史·校验）/ 状态栏。
+//! 工作区：标题栏 / 侧栏（集合树·流程·环境·项目）/ 中央编辑区 / 底部（结果·日志·历史·校验）/ 状态栏。
 //!
 //! 所有能力都调用 requestbaby-core，与 CLI 同一实现：运行走 `session` / `workflow`，
 //! 新建 / 重命名 / 删除走 `scaffold`，校验 / 格式化 / 自检走 `validate` / `fmt` / `doctor`。
 //! 文件监听让两端共享同一份事实：AI 改了文件 → 树与编辑器刷新；终端跑了一次 → 结果立刻出现。
 mod bottom;
+mod envs;
 mod sidebar;
 
 use crate::case_editor::{CaseEditor, CaseEditorEvent};
-use crate::config_editors::{CollectionEditor, ConfigEditorEvent, EnvEditor, ProjectEditor};
+use crate::config_editors::{CollectionEditor, ConfigEditorEvent, ProjectEditor};
+use crate::vars_panel::{VarsPanel, VarsPanelEvent};
+use crate::workflow_editor::{WorkflowEditor, WorkflowEditorEvent};
+use requestbaby_core::varstore::VarScope;
 use crate::dialogs;
+use crate::new_case_dialog::{self, NewCaseMode};
 use sidebar::menu_item;
 use crate::project::{CaseStatus, Project};
-use crate::response::ResponsePanel;
+use crate::response::{ResponsePanel, ResponsePanelEvent};
+use crate::style;
 use crate::run::{RunJob, RunState, RunStateEvent, StepState, StepView};
-use crate::run_dialog::RunOptionsPanel;
+use crate::run_dialog::{RunDialogInit, RunOptionsPanel};
 use crate::shell::ShellRequest;
-use crate::{RunAll, RunWithOptions, SaveCase, SendCase, StopRun, ToggleTheme};
+use crate::{FindInTree, ManageEnvs, QuickOpen, RunAll, RunWithOptions, SaveCase, SendCase, StopRun, ToggleTheme, Verify};
 use futures::StreamExt as _;
 use futures::channel::mpsc;
 use gpui_kit::component::{
@@ -24,12 +30,13 @@ use gpui_kit::component::{
     menu::{DropdownMenu as _, PopupMenuItem},
     notification::Notification,
     resizable::{h_resizable, resizable_panel, v_resizable},
+    input::{InputEvent, InputState},
     select::{Select, SelectEvent, SelectState},
     tree::{TreeEvent, TreeState},
     v_flex,
 };
 use gpui_kit::{
-    App, AppContext as _, Context, Entity, EventEmitter, FocusHandle, Focusable, FontWeight, InteractiveElement as _,
+    App, AppContext as _, ClipboardItem, Context, Entity, EventEmitter, FocusHandle, Focusable, FontWeight, InteractiveElement as _,
     IntoElement, MouseButton, ParentElement as _, Render, SharedString, Styled as _, Subscription, Task, Window, div,
     prelude::FluentBuilder as _, px,
 };
@@ -37,8 +44,8 @@ use notify::Watcher as _;
 use requestbaby_core::report::{CaseReport, RunReport};
 use requestbaby_core::session::RunRequest;
 use requestbaby_core::validate::ValidationIssue;
-use requestbaby_core::{doctor, fmt, report, scaffold, validate, workflow};
-use std::collections::{HashMap, HashSet};
+use requestbaby_core::{doctor, fmt, guide, report, scaffold, validate, verify, workflow};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -61,18 +68,24 @@ enum Target {
     Case(String),
     /// 集合目录（相对项目根）的 collection.json
     Collection(String),
-    /// envs/<name>.json
-    Env(String),
+    /// 变量面板（None = 总览）
+    Vars(Option<VarScope>),
     /// requestbaby.json
     Project,
+    /// 流程编辑器（None = 新建）
+    Workflow(Option<String>),
+    /// 环境管理页
+    Envs,
 }
 
 /// 中央编辑区当前内容。用例编辑器常驻（切去配置再回来不丢编辑），配置编辑器按需创建
 enum Center {
     Case,
     Collection(String, Entity<CollectionEditor>),
-    Env(String, Entity<EnvEditor>),
+    Vars(Entity<VarsPanel>),
     Project(Entity<ProjectEditor>),
+    Workflow(Entity<WorkflowEditor>),
+    Envs,
 }
 
 /// 项目级校验（`requestbaby validate` 同一实现）
@@ -90,6 +103,8 @@ pub struct Workspace {
     env_select: Entity<SelectState<Vec<SharedString>>>,
     tree: Entity<TreeState>,
     collapsed: HashSet<String>,
+    /// 集合树筛选（名称 / 路径 / 方法 / URL）
+    tree_filter: Entity<InputState>,
     center: Center,
     editor: Entity<CaseEditor>,
     response: Entity<ResponsePanel>,
@@ -123,15 +138,18 @@ impl Workspace {
         let env = pick_env(&project, None);
         let env_select = cx.new(|cx| SelectState::new(env_items(&project), env_index(&project, &env), window, cx));
         let tree = cx.new(|cx| TreeState::new(cx));
+        let tree_filter = cx.new(|cx| InputState::new(window, cx).placeholder("筛选用例  ⌘P 快速打开").clean_on_escape());
         let editor = cx.new(|cx| CaseEditor::new(window, cx));
-        editor.update(cx, |e, _| e.set_env(env.clone()));
+        editor.update(cx, |e, cx| e.set_env(env.clone(), cx));
         let response = cx.new(|cx| ResponsePanel::new(window, cx));
+        let root = project.root().to_path_buf();
+        response.update(cx, |p, _| p.set_root(Some(root)));
         let run = cx.new(|_| RunState::new());
 
         let subs = vec![
-            cx.subscribe_in(&env_select, window, |this, _, ev: &SelectEvent<Vec<SharedString>>, _, cx| {
+            cx.subscribe_in(&env_select, window, |this, _, ev: &SelectEvent<Vec<SharedString>>, window, cx| {
                 if let SelectEvent::Confirm(Some(env)) = ev {
-                    this.set_env(env.to_string(), cx);
+                    this.set_env(env.to_string(), window, cx);
                 }
             }),
             cx.subscribe(&tree, |this, _, ev: &TreeEvent, _| match ev {
@@ -145,8 +163,17 @@ impl Workspace {
             cx.subscribe_in(&editor, window, |this, _, ev: &CaseEditorEvent, window, cx| match ev {
                 CaseEditorEvent::Saved => this.after_save(window, cx),
                 CaseEditorEvent::Send => this.send_current(window, cx),
+                CaseEditorEvent::EditVar { name, defined_in } => this.edit_var(name.clone(), defined_in.clone(), window, cx),
+                CaseEditorEvent::OpenVars => this.open(Target::Vars(None), window, cx),
             }),
             cx.subscribe_in(&run, window, Self::on_run_event),
+            cx.subscribe_in(&response, window, Self::on_response_event),
+            cx.subscribe(&tree_filter, |this, _, ev: &InputEvent, cx| {
+                if matches!(ev, InputEvent::Change) {
+                    this.rebuild_tree(cx);
+                    cx.notify();
+                }
+            }),
         ];
 
         let seen_runs = project.history().iter().filter_map(|r| r.meta.as_ref().map(|m| m.id.clone())).collect();
@@ -156,6 +183,7 @@ impl Workspace {
             env_select,
             tree,
             collapsed: HashSet::new(),
+            tree_filter,
             center: Center::Case,
             editor,
             response,
@@ -198,14 +226,56 @@ impl Workspace {
         out
     }
 
-    fn set_env(&mut self, env: String, cx: &mut Context<Self>) {
+    fn set_env(&mut self, env: String, window: &mut Window, cx: &mut Context<Self>) {
         if self.env == env {
             return;
         }
         self.env = env.clone();
-        self.editor.update(cx, |e, _| e.set_env(env));
+        self.editor.update(cx, |e, cx| e.set_env(env.clone(), cx));
+        if let Center::Vars(panel) = &self.center {
+            let default_env = self.project.config().default_env.clone();
+            panel.update(cx, |p, cx| p.set_env(env, default_env, window, cx));
+        }
         self.revalidate(cx);
         cx.notify();
+    }
+
+    /// 本次会话捕获的变量 → 用例编辑器预览（「发送」时会带上）
+    fn sync_session(&mut self, cx: &mut Context<Self>) {
+        let vars: BTreeMap<String, String> =
+            self.run.read(cx).session().vars.iter().map(|(k, v)| (k.clone(), v.to_render())).collect();
+        self.editor.update(cx, |e, cx| e.set_session_vars(vars, cx));
+    }
+
+    fn clear_session(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.run.update(cx, |r, cx| r.clear_session(cx));
+        self.sync_session(cx);
+        window.push_notification(Notification::info("已清空本次会话的变量与 Cookie：之后的发送从零开始"), cx);
+    }
+
+    /// 完整验证（requestbaby verify）：开始前展示全部阶段
+    fn verify_all(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let steps = match verify::plan(self.project.root(), Some(&self.env)) {
+            Ok((_, _, stages)) => stages
+                .into_iter()
+                .map(|s| StepView {
+                    label: s.label,
+                    state: if s.skip.is_some() { StepState::NotRun } else { StepState::Pending },
+                    // 跳过的阶段（流程固定在其他环境）：原因显示在 stepper 说明里
+                    run: s.skip.unwrap_or_default(),
+                    planned: s.planned,
+                    passed: 0,
+                    failed: 0,
+                    skipped: 0,
+                })
+                .collect(),
+            Err(e) => {
+                window.push_notification(Notification::error(format!("{e:#}")), cx);
+                return;
+            }
+        };
+        let env = self.env.clone();
+        self.start_job(RunJob::Verify { env }, steps, window, cx);
     }
 
     /// 环境列表变化（新建 / 复制 / 删除）后同步下拉框
@@ -216,16 +286,17 @@ impl Workspace {
             s.set_items(items, window, cx);
             s.set_selected_index(ix, window, cx);
         });
-        self.set_env(env, cx);
+        self.set_env(env, window, cx);
     }
 
     // ---------------------------------------------------------------- 中央编辑区
 
     fn config_dirty(&self, cx: &App) -> Option<String> {
         let (dirty, path) = match &self.center {
-            Center::Case => return None,
+            Center::Case | Center::Envs => return None,
             Center::Collection(_, e) => (e.read(cx).is_dirty(), e.read(cx).path().clone()),
-            Center::Env(_, e) => (e.read(cx).is_dirty(), e.read(cx).path().clone()),
+            Center::Vars(p) => return p.read(cx).dirty_label(),
+            Center::Workflow(e) => return e.read(cx).dirty_label(cx),
             Center::Project(e) => (e.read(cx).is_dirty(), e.read(cx).path().clone()),
         };
         dirty.then(|| self.project.rel_of(&path))
@@ -235,14 +306,24 @@ impl Workspace {
         match &self.center {
             Center::Case => self.editor.read(cx).rel().map(|r| Target::Case(r.to_string())),
             Center::Collection(dir, _) => Some(Target::Collection(dir.clone())),
-            Center::Env(name, _) => Some(Target::Env(name.clone())),
+            Center::Vars(p) => Some(Target::Vars(p.read(cx).active().cloned())),
             Center::Project(_) => Some(Target::Project),
+            Center::Workflow(e) => Some(Target::Workflow(e.read(cx).key().map(String::from))),
+            Center::Envs => Some(Target::Envs),
         }
     }
 
     /// 打开文档；会丢弃未保存修改时先确认
     fn open(&mut self, target: Target, window: &mut Window, cx: &mut Context<Self>) {
+        self.adopt_env_of(&target, window, cx);
         if self.center_target(cx).as_ref() == Some(&target) {
+            return;
+        }
+        // 变量面板内切换层：由面板自己处理未保存确认
+        if let (Center::Vars(panel), Target::Vars(scope)) = (&self.center, &target) {
+            let (panel, scope) = (panel.clone(), scope.clone());
+            panel.update(cx, |p, cx| p.select(scope, window, cx));
+            cx.notify();
             return;
         }
         let mut lost = vec![];
@@ -258,12 +339,13 @@ impl Workspace {
             return;
         }
         let this = cx.entity().downgrade();
-        confirm_discard(lost, window, cx, move |window, cx| {
+        dialogs::confirm_discard(lost, window, cx, move |window, cx| {
             let _ = this.update(cx, |w, cx| w.open_now(target.clone(), window, cx));
         });
     }
 
     fn open_now(&mut self, target: Target, window: &mut Window, cx: &mut Context<Self>) {
+        self.adopt_env_of(&target, window, cx);
         let root = self.project.root().to_path_buf();
         match target {
             Target::Case(rel) => {
@@ -296,24 +378,36 @@ impl Workspace {
                 self.select_in_tree(&format!("dir:{dir}"), cx);
                 self.center = Center::Collection(dir, editor);
             }
-            Target::Env(name) => {
-                let path = self.project.env_path(&name);
-                let rel = self.project.rel_of(&path);
-                let is_default = self.project.config().default_env == name;
-                let editor = cx.new(|cx| EnvEditor::new(path, rel, name.clone(), is_default, window, cx));
+            Target::Vars(scope) => {
+                let (root, env) = (self.project.root().to_path_buf(), self.env.clone());
+                let default_env = self.project.config().default_env.clone();
+                let panel = cx.new(|cx| VarsPanel::new(root, env, default_env, scope, false, window, cx));
                 self._center_subscription =
-                    Some(cx.subscribe_in(&editor, window, |this, _, ev, window, cx| this.on_config_event(ev, window, cx)));
-                self.center = Center::Env(name, editor);
+                    Some(cx.subscribe_in(&panel, window, |this, _, ev, window, cx| this.on_vars_event(ev, window, cx)));
+                self.center = Center::Vars(panel);
                 self.select_in_tree("", cx);
             }
             Target::Project => {
                 let path = self.project.project_file();
                 let rel = self.project.rel_of(&path);
-                let (env, envs, targets) = (self.env.clone(), self.project.envs().to_vec(), self.run_targets());
-                let editor = cx.new(|cx| ProjectEditor::new(path, rel, env, envs, targets, window, cx));
+                let (env, envs) = (self.env.clone(), self.project.envs().to_vec());
+                let editor = cx.new(|cx| ProjectEditor::new(path, rel, env, envs, window, cx));
                 self._center_subscription =
                     Some(cx.subscribe_in(&editor, window, |this, _, ev, window, cx| this.on_config_event(ev, window, cx)));
                 self.center = Center::Project(editor);
+                self.select_in_tree("", cx);
+            }
+            Target::Workflow(key) => {
+                let targets = self.run_targets();
+                let editor = cx.new(|cx| WorkflowEditor::new(root, key, targets, window, cx));
+                self._center_subscription =
+                    Some(cx.subscribe_in(&editor, window, |this, _, ev, window, cx| this.on_workflow_event(ev, window, cx)));
+                self.center = Center::Workflow(editor);
+                self.select_in_tree("", cx);
+            }
+            Target::Envs => {
+                self._center_subscription = None;
+                self.center = Center::Envs;
                 self.select_in_tree("", cx);
             }
         }
@@ -325,8 +419,8 @@ impl Workspace {
         let rel = self.project.rel_of(path);
         let target = if rel == self.project.rel_of(&self.project.project_file()) {
             Target::Project
-        } else if let Some(name) = rel.strip_prefix("envs/").and_then(|n| n.strip_suffix(".json")) {
-            Target::Env(name.to_string())
+        } else if let Some(scope @ (VarScope::Env(_) | VarScope::Local(_))) = VarScope::of_file(&rel) {
+            Target::Vars(Some(scope))
         } else if let Some(dir) = rel.strip_suffix("/collection.json") {
             Target::Collection(dir.to_string())
         } else if self.project.case(&rel).is_some() {
@@ -353,8 +447,10 @@ impl Workspace {
         match &self.center {
             Center::Case => self.editor.update(cx, |e, cx| e.save(window, cx)),
             Center::Collection(_, e) => e.update(cx, |e, cx| e.save(cx)),
-            Center::Env(_, e) => e.update(cx, |e, cx| e.save(cx)),
+            Center::Vars(p) => p.update(cx, |p, cx| p.save(window, cx)),
             Center::Project(e) => e.update(cx, |e, cx| e.save(cx)),
+            Center::Workflow(e) => e.update(cx, |e, cx| e.save(cx)),
+            Center::Envs => true,
         }
     }
 
@@ -366,10 +462,59 @@ impl Workspace {
     fn on_config_event(&mut self, ev: &ConfigEditorEvent, window: &mut Window, cx: &mut Context<Self>) {
         match ev {
             ConfigEditorEvent::Saved => self.after_save(window, cx),
-            ConfigEditorEvent::DuplicateEnv(from) => self.new_env(Some(from.clone()), window, cx),
-            ConfigEditorEvent::DeleteEnv(name) => {
-                let path = self.project.env_path(name);
-                self.delete_path(path, format!("环境「{name}」"), window, cx);
+            ConfigEditorEvent::EditVars(scope) => self.open(Target::Vars(Some(scope.clone())), window, cx),
+            ConfigEditorEvent::OpenWorkflow(key) => self.open(Target::Workflow(key.clone()), window, cx),
+        }
+    }
+
+    fn on_workflow_event(&mut self, ev: &WorkflowEditorEvent, window: &mut Window, cx: &mut Context<Self>) {
+        match ev {
+            WorkflowEditorEvent::Saved(key) => {
+                self.reload_files(window, cx);
+                window.push_notification(Notification::success(format!("流程 {key} 已保存")), cx);
+            }
+            WorkflowEditorEvent::Deleted(key) => {
+                self.center = Center::Case;
+                self._center_subscription = None;
+                self.reload_files(window, cx);
+                if !key.is_empty() {
+                    window.push_notification(Notification::success(format!("已删除流程 {key}")), cx);
+                }
+            }
+            WorkflowEditorEvent::Duplicated(key) => {
+                self.reload_files(window, cx);
+                self.open_now(Target::Workflow(Some(key.clone())), window, cx);
+            }
+            WorkflowEditorEvent::Run { key, dry_run } => self.run_workflow(key.clone(), *dry_run, window, cx),
+        }
+    }
+
+    fn on_vars_event(&mut self, ev: &VarsPanelEvent, window: &mut Window, cx: &mut Context<Self>) {
+        match ev {
+            VarsPanelEvent::Saved => self.after_save(window, cx),
+            VarsPanelEvent::NewEnv => self.new_env(None, window, cx),
+            VarsPanelEvent::DuplicateEnv(from) => self.new_env(Some(from.clone()), window, cx),
+            VarsPanelEvent::DeleteEnv(name) => self.delete_env(name.clone(), window, cx),
+        }
+    }
+
+    /// 用例编辑器中点击某个变量：跳到定义它的那一层；未定义则在当前环境新增
+    fn edit_var(&mut self, name: String, defined_in: Option<String>, window: &mut Window, cx: &mut Context<Self>) {
+        let scope = match &defined_in {
+            Some(file) => match VarScope::of_file(file) {
+                Some(scope) => scope,
+                // 数据驱动值：定义在用例自身
+                None => {
+                    self.editor.update(cx, |e, cx| e.set_tab(crate::case_editor::EditorTab::Advanced, window, cx));
+                    return;
+                }
+            },
+            None => VarScope::Env(self.env.clone()),
+        };
+        self.open(Target::Vars(Some(scope.clone())), window, cx);
+        if defined_in.is_none() {
+            if let Center::Vars(panel) = &self.center {
+                panel.update(cx, |p, cx| p.add_var(scope, name, window, cx));
             }
         }
     }
@@ -385,26 +530,21 @@ impl Workspace {
 
     // ---------------------------------------------------------------- 新建 / 重命名 / 删除（core::scaffold）
 
-    fn new_case_in(&mut self, dir_rel: String, window: &mut Window, cx: &mut Context<Self>) {
+    /// 新建用例对话框（协议 / 名称 / 地址，HTTP 可粘贴 cURL）；创建后打开编辑器
+    pub(crate) fn new_case_in(&mut self, dir_rel: String, mode: NewCaseMode, window: &mut Window, cx: &mut Context<Self>) {
         let dir = self.project.root().join(&dir_rel);
+        let base_url = requestbaby_core::config::load_env(self.project.root(), &self.env)
+            .ok()
+            .flatten()
+            .and_then(|e| e.vars.get("baseUrl").map(|v| v.value.clone()));
         let this = cx.entity().downgrade();
-        dialogs::prompt_text(
-            window,
-            cx,
-            "新建用例",
-            format!("在 {dir_rel}/ 下创建 NN-<名称>.json；等价命令 requestbaby new case {dir_rel} <名称>"),
-            "",
-            "创建",
-            move |name, window, cx| {
-                let path = scaffold::new_case(&dir, &name, "GET", "")?;
-                let _ = this.update(cx, |w, cx| {
-                    w.reload_files(window, cx);
-                    let rel = w.project.rel_of(&path);
-                    w.open(Target::Case(rel), window, cx);
-                });
-                Ok(())
-            },
-        );
+        new_case_dialog::open(dir, dir_rel, base_url, mode, window, cx, move |path, window, cx| {
+            let _ = this.update(cx, |w, cx| {
+                w.reload_files(window, cx);
+                let rel = w.project.rel_of(&path);
+                w.open(Target::Case(rel), window, cx);
+            });
+        });
     }
 
     fn new_collection_in(&mut self, parent_rel: String, window: &mut Window, cx: &mut Context<Self>) {
@@ -444,10 +584,10 @@ impl Workspace {
             initial,
             "创建",
             move |name, window, cx| {
-                scaffold::new_env(&root, &name, from.as_deref())?;
+                requestbaby_core::envs::create(&root, &name, from.as_deref())?;
                 let _ = this.update(cx, |w, cx| {
                     w.reload_files(window, cx);
-                    w.open(Target::Env(name.clone()), window, cx);
+                    w.open(Target::Vars(Some(VarScope::Env(name.clone()))), window, cx);
                 });
                 Ok(())
             },
@@ -469,6 +609,23 @@ impl Workspace {
         });
     }
 
+    /// 复制用例 / 集合为同级新名称（core::scaffold::duplicate，与 `requestbaby case cp` / `collection cp` 同一实现）
+    fn duplicate_path(&mut self, path: PathBuf, window: &mut Window, cx: &mut Context<Self>) {
+        let stem = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+        let stem = stem.strip_suffix(".json").map(String::from).unwrap_or(stem);
+        let what = if path.is_dir() { "集合" } else { "用例" };
+        let this = cx.entity().downgrade();
+        dialogs::prompt_text(window, cx, format!("复制{what}"), "复制到同级的新名称；name 字段同步改为新名称", format!("{stem}-copy"), "复制", move |name, window, cx| {
+            let target = scaffold::duplicate(&path, &name)?;
+            let _ = this.update(cx, |w, cx| {
+                w.reload_files(window, cx);
+                let rel = w.project.rel_of(&target);
+                w.open(if target.is_dir() { Target::Collection(rel) } else { Target::Case(rel) }, window, cx);
+            });
+            Ok(())
+        });
+    }
+
     fn delete_path(&mut self, path: PathBuf, what: String, window: &mut Window, cx: &mut Context<Self>) {
         let is_dir = path.is_dir();
         let this = cx.entity().downgrade();
@@ -476,20 +633,26 @@ impl Workspace {
         window.open_alert_dialog(cx, move |alert, _, _| {
             let this = this.clone();
             let path = path.clone();
+            let rel_done = rel.clone();
             alert
                 .title(format!("删除{what}？"))
                 .description(if is_dir {
-                    format!("将删除目录 {rel}/ 及其中全部用例。文件删除后只能从版本控制恢复。")
+                    format!("将把目录 {rel}/ 及其中全部用例移到废纸篓，可在 Finder 中还原。")
                 } else {
-                    format!("将删除 {rel}。文件删除后只能从版本控制恢复。")
+                    format!("将把 {rel} 移到废纸篓，可在 Finder 中还原。")
                 })
                 .confirm()
-                .ok_text("删除")
+                .ok_text("移到废纸篓")
                 .ok_variant(ButtonVariant::Danger)
                 .cancel_text("取消")
                 .on_ok(move |_, window, cx| {
                     match scaffold::delete(&path) {
-                        Ok(()) => {
+                        Ok(how) => {
+                            let msg = match how {
+                                scaffold::Deleted::Trashed => format!("已移到废纸篓：{rel_done}"),
+                                scaffold::Deleted::Removed => format!("系统不支持废纸篓，已永久删除：{rel_done}"),
+                            };
+                            window.push_notification(Notification::info(msg), cx);
                             let _ = this.update(cx, |w, cx| w.after_move(&path, None, window, cx));
                         }
                         Err(e) => window.push_notification(Notification::error(format!("{e:#}")), cx),
@@ -504,7 +667,7 @@ impl Workspace {
         let case = e.is_dirty() && e.path().is_some_and(|p| p.starts_with(path));
         let config = match &self.center {
             Center::Collection(_, c) => c.read(cx).is_dirty() && c.read(cx).path().starts_with(path),
-            Center::Env(_, c) => c.read(cx).is_dirty() && c.read(cx).path().starts_with(path),
+            Center::Vars(p) => p.read(cx).active().is_some_and(|s| s.file(self.project.root()).starts_with(path)) && p.read(cx).is_dirty(),
             _ => false,
         };
         case || config
@@ -525,7 +688,7 @@ impl Workspace {
         }
         let config_path = match &self.center {
             Center::Collection(_, e) => Some(e.read(cx).path().clone()),
-            Center::Env(_, e) => Some(e.read(cx).path().clone()),
+            Center::Vars(p) => p.read(cx).active().map(|s| s.file(self.project.root())),
             _ => None,
         };
         if config_path.is_some_and(|p| p.starts_with(old)) {
@@ -600,6 +763,92 @@ impl Workspace {
         self.start_job(RunJob::Run(req), vec![], window, cx);
     }
 
+    /// 重跑失败：失败的用例文件 + 它们依赖的前置用例（core::inspect::with_prerequisites，与 `run --failed` 同一规则）
+    pub(crate) fn rerun_failed(&mut self, files: Vec<String>, window: &mut Window, cx: &mut Context<Self>) {
+        let paths = requestbaby_core::inspect::with_prerequisites(self.project.root(), &files);
+        let extra = paths.len().saturating_sub(files.len());
+        if extra > 0 {
+            window.push_notification(Notification::info(format!("重跑 {} 个失败用例，并带上 {extra} 个前置用例（它们捕获了失败用例需要的变量）", files.len())), cx);
+        }
+        self.run_paths(paths, window, cx);
+    }
+
+    /// 响应「字段」页：断言 / 捕获写回用例。编辑器里有未保存修改 → 追加进编辑器；否则直接写文件（core::suggest）
+    fn on_response_event(&mut self, _: &Entity<ResponsePanel>, ev: &ResponsePanelEvent, window: &mut Window, cx: &mut Context<Self>) {
+        let ResponsePanelEvent::Add { file, add } = ev;
+        let (file, what) = (file.clone(), add.label());
+        let open_here = self.editor.read(cx).rel() == Some(file.as_str());
+        if open_here && self.editor.read(cx).is_dirty() {
+            self.editor.update(cx, |e, cx| e.append(add, window, cx));
+            window.push_notification(Notification::info(format!("已加入编辑器（未保存，⌘S 保存）：{what}")), cx);
+            return;
+        }
+        match requestbaby_core::suggest::append_to_case(&self.project.root().join(&file), std::slice::from_ref(add)) {
+            Ok(()) => {
+                if open_here {
+                    self.editor.update(cx, |e, cx| {
+                        e.reload_if_clean(window, cx);
+                        e.set_tab(crate::case_editor::EditorTab::Expect, window, cx);
+                    });
+                }
+                self.revalidate(cx);
+                window.push_notification(Notification::success(format!("已写入 {file}：{what}")), cx);
+            }
+            Err(e) => window.push_notification(Notification::error(format!("{e:#}")), cx),
+        }
+    }
+
+    /// ⌘P 快速打开：用例（名称 / 路径 / 方法 / URL）、流程、环境、项目配置
+    fn quick_open(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        use gpui_kit::component::command::{Command, CommandItem, CommandState};
+        let mut targets: Vec<Target> = vec![];
+        let mut items: Vec<CommandItem> = vec![];
+        for c in self.project.cases() {
+            targets.push(Target::Case(c.rel.clone()));
+            items.push(
+                CommandItem::new()
+                    .icon(IconName::File)
+                    .label(format!("{}  {}  ·  {}", c.method, c.name, c.rel.trim_start_matches("collections/")))
+                    .keywords([c.rel.clone(), c.url.clone()]),
+            );
+        }
+        for (key, wf) in &self.project.config().workflows {
+            targets.push(Target::Workflow(Some(key.clone())));
+            let label = if wf.name.is_empty() { key.clone() } else { format!("{key} · {}", wf.name) };
+            items.push(CommandItem::new().icon(IconName::Play).label(format!("流程  {label}")).keywords(["workflow".to_string()]));
+        }
+        targets.push(Target::Vars(Some(VarScope::Env(self.env.clone()))));
+        items.push(CommandItem::new().icon(IconName::Globe).label(format!("环境变量  {}", self.env)).keywords(["env".to_string(), "vars".to_string()]));
+        targets.push(Target::Envs);
+        items.push(CommandItem::new().icon(IconName::Globe).label("环境管理").keywords(["env".to_string(), "环境".to_string()]));
+        targets.push(Target::Vars(None));
+        items.push(CommandItem::new().icon(IconName::LayoutDashboard).label("变量总览").keywords(["vars".to_string()]));
+        targets.push(Target::Project);
+        items.push(CommandItem::new().icon(IconName::Settings).label("项目配置 requestbaby.json").keywords(["project".to_string()]));
+
+        let state = cx.new(|cx| CommandState::new(window, cx));
+        let view = cx.entity().downgrade();
+        let targets = std::rc::Rc::new(targets);
+        let focus_state = state.clone();
+        window.open_dialog(cx, move |dialog, _, _| {
+            let (view, targets) = (view.clone(), targets.clone());
+            dialog.w(px(640.)).child(
+                Command::new(&state)
+                    .items(items.clone())
+                    .placeholder("搜索用例名 / 路径 / URL / 方法，或流程、环境…")
+                    .max_h(px(440.))
+                    .on_confirm(move |ix, window, cx| {
+                        if let Some(t) = targets.get(ix.row).cloned() {
+                            window.close_dialog(cx);
+                            let _ = view.update(cx, |w, cx| w.open(t, window, cx));
+                        }
+                    })
+                    .on_cancel(|window, cx| window.close_dialog(cx)),
+            )
+        });
+        window.defer(cx, move |window, cx| focus_state.update(cx, |s, cx| s.focus(window, cx)));
+    }
+
     fn run_all(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.run_paths(vec!["collections".into()], window, cx);
     }
@@ -626,8 +875,100 @@ impl Workspace {
                     .collect()
             })
             .unwrap_or_default();
-        let env = self.env.clone();
+        // 固定了环境的流程（如本地 fixture）始终在它自己的环境运行，不跟随右上角的环境
+        let env = self.project.config().workflows.get(&name).and_then(|w| w.env.clone()).unwrap_or_else(|| self.env.clone());
         self.start_job(RunJob::Workflow { name, env, dry_run }, steps, window, cx);
+    }
+
+    // ---------------------------------------------------------------- 流程管理（core::workflow，与 CLI 同一实现）
+
+    fn duplicate_workflow(&mut self, key: String, window: &mut Window, cx: &mut Context<Self>) {
+        let (root, this) = (self.project.root().to_path_buf(), cx.entity().downgrade());
+        dialogs::prompt_text(window, cx, "复制流程", "新流程 key", format!("{key}-copy"), "复制", move |new_key, window, cx| {
+            workflow::duplicate(&root, &key, &new_key)?;
+            let _ = this.update(cx, |w, cx| {
+                w.reload_files(window, cx);
+                w.open(Target::Workflow(Some(new_key.clone())), window, cx);
+            });
+            Ok(())
+        });
+    }
+
+    fn rename_workflow(&mut self, key: String, window: &mut Window, cx: &mut Context<Self>) {
+        if matches!(&self.center, Center::Workflow(e) if e.read(cx).key() == Some(key.as_str()) && e.read(cx).dirty_label(cx).is_some()) {
+            window.push_notification(Notification::warning("流程有未保存的修改：请先保存或放弃后再重命名"), cx);
+            return;
+        }
+        let (root, this) = (self.project.root().to_path_buf(), cx.entity().downgrade());
+        dialogs::prompt_text(window, cx, format!("重命名流程「{key}」"), "新的流程 key", key.clone(), "重命名", move |new_key, window, cx| {
+            let new_key = new_key.trim().to_string();
+            let wf = workflow::get(&root, &key)?;
+            workflow::save(&root, Some(&key), &new_key, &wf)?;
+            let _ = this.update(cx, |w, cx| {
+                let editing = matches!(&w.center, Center::Workflow(e) if e.read(cx).key() == Some(key.as_str()));
+                w.reload_files(window, cx);
+                if editing {
+                    w.open_now(Target::Workflow(Some(new_key.clone())), window, cx);
+                }
+            });
+            Ok(())
+        });
+    }
+
+    fn delete_workflow(&mut self, key: String, window: &mut Window, cx: &mut Context<Self>) {
+        let (root, this) = (self.project.root().to_path_buf(), cx.entity().downgrade());
+        dialogs::confirm_danger(
+            window,
+            cx,
+            format!("删除流程 {key}？"),
+            "只删除 requestbaby.json 中的编排，不会删除任何用例文件。",
+            "删除",
+            move |window, cx| {
+                let _ = this.update(cx, |w, cx| match workflow::delete(&root, &key) {
+                    Ok(()) => {
+                        if matches!(&w.center, Center::Workflow(e) if e.read(cx).key() == Some(key.as_str())) {
+                            w.center = Center::Case;
+                            w._center_subscription = None;
+                        }
+                        w.reload_files(window, cx);
+                        window.push_notification(Notification::success(format!("已删除流程 {key}")), cx);
+                    }
+                    Err(e) => window.push_notification(Notification::error(format!("{e:#}")), cx),
+                });
+            },
+        );
+    }
+
+    /// 用例树「添加到流程」：追加为最后一步
+    fn add_to_workflow(&mut self, key: String, target: String, window: &mut Window, cx: &mut Context<Self>) {
+        let step = requestbaby_core::config::WorkflowStep { run: target.clone(), ..Default::default() };
+        match workflow::add_step(self.project.root(), &key, step, None) {
+            Ok(ix) => {
+                self.reload_files(window, cx);
+                self.reopen_config_if_clean(&[self.project.project_file()], window, cx);
+                window.push_notification(Notification::success(format!("已添加到流程 {key}：第 {} 步 {target}", ix + 1)), cx);
+            }
+            Err(e) => window.push_notification(Notification::error(format!("{e:#}")), cx),
+        }
+    }
+
+    /// 以某个目录 / 用例为第一步新建流程
+    fn new_workflow_with(&mut self, target: String, window: &mut Window, cx: &mut Context<Self>) {
+        let (root, this) = (self.project.root().to_path_buf(), cx.entity().downgrade());
+        let suggested = target.rsplit('/').next().unwrap_or("workflow").trim_end_matches(".json").to_string();
+        dialogs::prompt_text(window, cx, "新建流程", format!("第一步：{target}"), suggested, "创建", move |key, window, cx| {
+            let wf = requestbaby_core::config::Workflow {
+                name: String::new(),
+                env: None,
+                steps: vec![requestbaby_core::config::WorkflowStep { run: target.clone(), ..Default::default() }],
+            };
+            workflow::save(&root, None, &key, &wf)?;
+            let _ = this.update(cx, |w, cx| {
+                w.reload_files(window, cx);
+                w.open(Target::Workflow(Some(key.clone())), window, cx);
+            });
+            Ok(())
+        });
     }
 
     fn send_current(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -651,15 +992,21 @@ impl Workspace {
     }
 
     fn open_run_dialog(&mut self, initial: Option<RunRequest>, window: &mut Window, cx: &mut Context<Self>) {
-        let initial = initial.or_else(|| self.last_request.clone()).unwrap_or_default();
-        let (targets, env) = (self.run_targets(), self.env.clone());
-        let panel = cx.new(|cx| RunOptionsPanel::new(targets, &initial, env, window, cx));
+        let init = RunDialogInit {
+            root: self.project.root().to_path_buf(),
+            targets: self.run_targets(),
+            envs: self.project.envs().to_vec(),
+            env: self.env.clone(),
+            default_env: self.project.config().default_env.clone(),
+            initial: initial.or_else(|| self.last_request.clone()).unwrap_or_default(),
+        };
+        let panel = cx.new(|cx| RunOptionsPanel::new(init, window, cx));
         let this = cx.entity().downgrade();
         window.open_dialog(cx, move |dialog, _, _| {
             let (panel_c, this) = (panel.clone(), this.clone());
             dialog
                 .title("运行配置")
-                .w(px(640.))
+                .w(px(860.))
                 .child(panel.clone())
                 .footer(
                     h_flex()
@@ -667,15 +1014,39 @@ impl Workspace {
                         .justify_end()
                         .child(Button::new("run-cancel").outline().label("取消").on_click(|_, window, cx| window.close_dialog(cx)))
                         .child(Button::new("run-go").primary().icon(IconName::Play).label("运行").on_click(move |_, window, cx| {
+                            // 变量页的修改先落盘，保证这次运行用的就是看到的值
+                            if !panel_c.update(cx, |p, cx| p.save_vars(window, cx)) {
+                                window.push_notification(Notification::error("变量保存失败，未开始运行"), cx);
+                                return;
+                            }
                             let req = panel_c.read(cx).request(cx);
                             window.close_dialog(cx);
                             let _ = this.update(cx, |w, cx| {
+                                if let Some(env) = req.env.clone() {
+                                    w.switch_env(env, window, cx);
+                                }
                                 w.last_request = Some(req.clone());
                                 w.start_job(RunJob::Run(req), vec![], window, cx);
                             });
                         })),
                 )
         });
+    }
+
+    /// 切换运行环境并同步标题栏下拉框
+    /// 打开某个环境的变量 = 先切换到该环境：界面上只显示当前环境的变量
+    fn adopt_env_of(&mut self, target: &Target, window: &mut Window, cx: &mut Context<Self>) {
+        if let Target::Vars(Some(VarScope::Env(n) | VarScope::Local(n))) = target {
+            if *n != self.env {
+                self.switch_env(n.clone(), window, cx);
+            }
+        }
+    }
+
+    fn switch_env(&mut self, env: String, window: &mut Window, cx: &mut Context<Self>) {
+        let ix = env_index(&self.project, &env);
+        self.env_select.update(cx, |s, cx| s.set_selected_index(ix, window, cx));
+        self.set_env(env, window, cx);
     }
 
     fn on_run_event(&mut self, _: &Entity<RunState>, ev: &RunStateEvent, window: &mut Window, cx: &mut Context<Self>) {
@@ -685,24 +1056,44 @@ impl Workspace {
                     self.show_session_response(&file.clone(), window, cx);
                 }
             }
-            RunStateEvent::Finished { send, workflow, failed, total, dry_run } => {
+            RunStateEvent::Finished { send, workflow, verify, blocked, failed, total, dry_run } => {
+                self.sync_session(cx);
                 if *send {
                     return;
                 }
                 if !*dry_run {
                     self.reload_history(cx);
                 }
-                let what = workflow.as_ref().map(|w| format!("工作流「{w}」")).unwrap_or_else(|| "运行".into());
-                let note = if *dry_run {
+                let what = match (verify, workflow) {
+                    (true, _) => "完整验证".to_string(),
+                    (_, Some(w)) => format!("流程「{w}」"),
+                    _ => "运行".into(),
+                };
+                let summary = self.run.read(cx).report().map(|r| r.failure_text()).unwrap_or_default();
+                let note = if let Some(why) = blocked {
+                    // 不自动消失：原因可能很长，点「复制详情」拿到完整文本
+                    with_copy(Notification::error(format!("{what}无法完成：{}", why.lines().next().unwrap_or_default())), summary)
+                } else if *dry_run {
                     Notification::info(format!("{what} dry-run 完成：{total} 个用例编译通过，未发送请求"))
                 } else if *failed == 0 {
                     Notification::success(format!("{what}：{total} 个用例全部通过，已写入共享历史"))
                 } else {
-                    Notification::warning(format!("{what}：{failed}/{total} 个用例失败 —— 在结果中查看现场"))
+                    with_copy(Notification::warning(format!("{what}：{failed}/{total} 个用例失败 —— 在结果中查看现场")), summary).autohide(true)
                 };
                 window.push_notification(note, cx);
             }
-            RunStateEvent::Error(msg) => window.push_notification(Notification::error(msg.clone()), cx),
+            RunStateEvent::Prerequisite(msg) => {
+                // 通知里只留文件名：完整路径太长（CLI 仍输出完整路径）
+                let short = match msg.split_once('：') {
+                    Some((head, tail)) => match head.rsplit_once('/') {
+                        Some((_, file)) => format!("先运行前置用例「{}」：{tail}", file.trim_end_matches(".json")),
+                        None => msg.clone(),
+                    },
+                    None => msg.clone(),
+                };
+                window.push_notification(Notification::info(short), cx)
+            }
+            RunStateEvent::Error(msg) => window.push_notification(with_copy(Notification::error(msg.clone()), msg.clone()), cx),
         }
         cx.notify();
     }
@@ -730,10 +1121,12 @@ impl Workspace {
         let id = report.meta.as_ref().map(|m| m.id.clone()).unwrap_or_else(|| "report".into());
         let name = format!("requestbaby-{id}.{}", if html { "html" } else { "json" });
         let rx = cx.prompt_for_new_path(self.project.root(), Some(&name));
+        let root = self.project.root().to_path_buf();
         cx.spawn_in(window, async move |_, cx| {
             let Ok(Ok(Some(path))) = rx.await else { return };
-            let text = if html { report::render_html(&report) } else { report::render_json(&report) };
-            let note = match std::fs::write(&path, text) {
+            // HTML 内嵌界面用例的截图：报告单独发给别人也能看
+            let text = if html { report::render_html(&report, Some(&root)) } else { report::render_json(&report) };
+            let note = match requestbaby_core::fsx::write(&path, text) {
                 Ok(()) => Notification::success(format!("报告已导出：{}", path.display())),
                 Err(e) => Notification::error(format!("导出失败：{e}")),
             };
@@ -745,9 +1138,10 @@ impl Workspace {
     // ---------------------------------------------------------------- 校验 / 格式化 / 自检
 
     fn revalidate(&mut self, cx: &mut Context<Self>) {
-        let (dir, env) = (self.project.collections_dir(), self.env.clone());
+        let (root, env) = (self.project.root().to_path_buf(), self.env.clone());
         self.validation.running = true;
-        let task = cx.background_spawn(async move { validate::validate_paths(&[dir], &env) });
+        // 与 CLI `validate` / verify 同一范围：collections + 本环境会运行的流程引用的目录
+        let task = cx.background_spawn(async move { validate::validate_paths(&validate::project_scope(&root, &env), &env) });
         self._validate_task = Some(cx.spawn(async move |this, cx| {
             let res = task.await;
             let _ = this.update(cx, |w, cx| {
@@ -773,7 +1167,7 @@ impl Workspace {
             return;
         }
         let dir = self.project.collections_dir();
-        let preview = match fmt::format_paths(std::slice::from_ref(&dir), true) {
+        let preview = match fmt::format_paths(std::slice::from_ref(&dir), true, true) {
             Ok(r) => r,
             Err(e) => {
                 window.push_notification(Notification::error(format!("{e:#}")), cx);
@@ -782,7 +1176,7 @@ impl Workspace {
         };
         let n = preview.case_changes();
         if n == 0 {
-            window.push_notification(Notification::success("所有用例已是规范格式（requestbaby fmt --check 通过）"), cx);
+            window.push_notification(Notification::success("所有用例已是规范格式，也没有可自动改写的写法"), cx);
             return;
         }
         let this = cx.entity().downgrade();
@@ -791,13 +1185,13 @@ impl Workspace {
             alert
                 .title(format!("格式化 {n} 个用例？"))
                 .description(
-                    "字段按可读顺序排列、清理默认值；目录内所有用例相同的请求头上提到 collection.json。\n等价命令：requestbaby fmt",
+                    "按写法建议改写（JS 断言 → 断言表格、post 取值 → 捕获、写死的域名 → {{baseUrl}} 等，语义不变）；字段按可读顺序排列、清理默认值；目录内所有用例相同的请求头上提到 collection.json。",
                 )
                 .confirm()
                 .ok_text("格式化")
                 .cancel_text("取消")
                 .on_ok(move |_, window, cx| {
-                    match fmt::format_paths(std::slice::from_ref(&dir), false) {
+                    match fmt::format_paths(std::slice::from_ref(&dir), false, true) {
                         Ok(r) => {
                             let hoisted = r.changes.len() - r.case_changes();
                             let mut text = format!("已格式化 {} 个用例", r.case_changes());
@@ -818,7 +1212,7 @@ impl Workspace {
     }
 
     fn run_doctor(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        dialogs::show_doctor(doctor::run(self.project.root()), window, cx);
+        dialogs::show_doctor(doctor::run(self.project.root(), Some(&self.env)), window, cx);
     }
 
     // ---------------------------------------------------------------- 文件监听（CLI / AI ↔ Desktop）
@@ -855,7 +1249,9 @@ impl Workspace {
 
     fn on_files_changed(&mut self, paths: Vec<PathBuf>, window: &mut Window, cx: &mut Context<Self>) {
         let state_dir = requestbaby_core::history::state_dir(self.project.root());
-        let history_changed = paths.iter().any(|p| p.starts_with(&state_dir));
+        // 只有运行历史算「历史变化」：.requestbaby/ 下的其他文件不触发重载
+        let runs_dir = requestbaby_core::history::runs_dir(self.project.root());
+        let history_changed = paths.iter().any(|p| p.starts_with(&runs_dir));
         let files_changed = paths.iter().any(|p| !p.starts_with(&state_dir) && (p.extension().is_none_or(|x| x == "json")));
         if files_changed {
             self.reload_files(window, cx);
@@ -873,6 +1269,8 @@ impl Workspace {
                 }
             }
             self.reopen_config_if_clean(&paths, window, cx);
+            // 变量定义可能变了：刷新用例编辑器里的解析预览
+            self.editor.update(cx, |e, cx| e.refresh_vars(cx));
         }
         if history_changed && !self.run.read(cx).is_running() {
             let fresh = self.reload_history(cx);
@@ -894,12 +1292,27 @@ impl Workspace {
 
     /// 打开的配置文件在外部被改：未编辑则重新载入，被删则关闭
     fn reopen_config_if_clean(&mut self, changed: &[PathBuf], window: &mut Window, cx: &mut Context<Self>) {
+        if let Center::Workflow(editor) = &self.center {
+            let (editor, targets) = (editor.clone(), self.run_targets());
+            editor.update(cx, |e, cx| {
+                e.set_targets(targets);
+                e.reload_if_clean(window, cx)
+            });
+            return;
+        }
+        if let Center::Vars(panel) = &self.center {
+            // 任一变量文件变化都会影响总览与覆盖提示
+            let root = self.project.root().to_path_buf();
+            if changed.iter().any(|p| VarScope::of_file(&self.project.rel_of(p)).is_some() || !p.starts_with(&root)) {
+                panel.update(cx, |p, cx| p.reload_if_clean(window, cx));
+            }
+            return;
+        }
         let Some(target) = self.center_target(cx).filter(|_| !matches!(self.center, Center::Case)) else { return };
         let path = match &self.center {
             Center::Collection(_, e) => e.read(cx).path().clone(),
-            Center::Env(_, e) => e.read(cx).path().clone(),
             Center::Project(e) => e.read(cx).path().clone(),
-            Center::Case => return,
+            Center::Case | Center::Vars(_) | Center::Workflow(_) | Center::Envs => return,
         };
         if !changed.contains(&path) || self.config_dirty(cx).is_some() {
             return;
@@ -921,6 +1334,7 @@ impl Workspace {
         let view = cx.entity().downgrade();
         let root = self.project.root().to_path_buf();
         TitleBar::new()
+            .bg(style::canvas(cx))
             .child(
                 h_flex()
                     .gap_2()
@@ -950,7 +1364,19 @@ impl Workspace {
                                     .item(menu_item(&view, "环境自检", IconName::Settings, |w, window, cx| w.run_doctor(window, cx)))
                                     .item(menu_item(&view, "项目设置", IconName::Settings2, |w, window, cx| w.open(Target::Project, window, cx)))
                                     .separator()
+                                    .item(menu_item(&view, "复制用例写法速查（粘贴给 AI 对话）", IconName::Bot, |_, window, cx| {
+                                        cx.write_to_clipboard(ClipboardItem::new_string(guide::quickstart()));
+                                        window.push_notification(
+                                            Notification::success(
+                                                "已复制用例写法速查卡：粘贴到 ChatGPT / Claude 等对话里，AI 就会按 requestbaby 的格式写用例",
+                                            ),
+                                            cx,
+                                        );
+                                    }))
+                                    .separator()
                                     .item(PopupMenuItem::new("在 Finder 中显示").icon(IconName::Folder).on_click(move |_, _, cx| cx.reveal_path(&root)))
+                                    .separator()
+                                    .item(menu_item(&view, "关闭项目", IconName::Close, |_, _, cx| cx.emit(ShellRequest::CloseProject)))
                             }),
                     ),
             )
@@ -961,6 +1387,26 @@ impl Workspace {
                     .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
                     .child(div().text_xs().text_color(cx.theme().muted_foreground).child("环境"))
                     .child(div().w(px(120.)).child(Select::new(&self.env_select).small()))
+                    .child(
+                        Button::new("manage-envs")
+                            .small()
+                            .ghost()
+                            .icon(IconName::Globe)
+                            .tooltip("环境管理：查看 / 切换 / 新建 / 重命名 / 复制 / 删除 / 设为默认")
+                            .on_click(cx.listener(|this, _, window, cx| this.open(Target::Envs, window, cx))),
+                    )
+                    .child(
+                        Button::new("open-vars")
+                            .small()
+                            .ghost()
+                            .icon(IconName::Settings2)
+                            .label("变量")
+                            .tooltip("变量面板：按层（项目 / 环境 / 集合）查看与编辑")
+                            .on_click(cx.listener(|this, _, window, cx| {
+                                let scope = VarScope::Env(this.env.clone());
+                                this.open(Target::Vars(Some(scope)), window, cx)
+                            })),
+                    )
                     .map(|this| {
                         if running {
                             this.child(
@@ -973,9 +1419,19 @@ impl Workspace {
                             )
                         } else {
                             this.child(
-                                Button::new("run-all")
+                                Button::new("verify")
                                     .small()
                                     .primary()
+                                    .rounded(style::PILL)
+                                    .icon(IconName::CircleCheck)
+                                    .label("验证")
+                                    .tooltip("完整验证：校验 → 全部用例 → 全部流程（requestbaby verify，⇧⌘V）")
+                                    .on_click(cx.listener(|this, _, window, cx| this.verify_all(window, cx))),
+                            )
+                            .child(
+                                Button::new("run-all")
+                                    .small()
+                                    .ghost()
                                     .icon(IconName::Play)
                                     .label("运行全部")
                                     .tooltip("requestbaby run collections（⌘R）")
@@ -984,7 +1440,7 @@ impl Workspace {
                             .child(
                                 Button::new("run-options")
                                     .small()
-                                    .outline()
+                                    .ghost()
                                     .icon(IconName::Settings2)
                                     .label("运行配置")
                                     .tooltip("选择目标、标签、并发、dry-run…（⇧⌘R）")
@@ -1015,8 +1471,10 @@ impl Workspace {
                 )
                 .into_any_element(),
             Center::Collection(_, e) => div().size_full().child(e.clone()).into_any_element(),
-            Center::Env(_, e) => div().size_full().child(e.clone()).into_any_element(),
+            Center::Vars(p) => div().size_full().child(p.clone()).into_any_element(),
             Center::Project(e) => div().size_full().child(e.clone()).into_any_element(),
+            Center::Workflow(e) => div().size_full().child(e.clone()).into_any_element(),
+            Center::Envs => self.render_env_manager(cx),
         }
     }
 }
@@ -1031,55 +1489,51 @@ impl Render for Workspace {
                 this.save_center(window, cx);
             }))
             .on_action(cx.listener(|this, _: &SendCase, window, cx| this.send_current(window, cx)))
+            .on_action(cx.listener(|this, _: &QuickOpen, window, cx| this.quick_open(window, cx)))
+            .on_action(cx.listener(|this, _: &FindInTree, window, cx| {
+                let focus = this.tree_filter.read(cx).focus_handle(cx);
+                focus.focus(window, cx);
+            }))
             .on_action(cx.listener(|this, _: &RunAll, window, cx| this.run_all(window, cx)))
+            .on_action(cx.listener(|this, _: &ManageEnvs, window, cx| this.open(Target::Envs, window, cx)))
+            .on_action(cx.listener(|this, _: &Verify, window, cx| this.verify_all(window, cx)))
             .on_action(cx.listener(|this, _: &RunWithOptions, window, cx| this.open_run_dialog(None, window, cx)))
             .on_action(cx.listener(|this, _: &StopRun, _, cx| this.run.update(cx, |r, cx| r.stop(cx))))
             .size_full()
-            .bg(cx.theme().background)
+            .bg(style::canvas(cx))
             .text_color(cx.theme().foreground)
             .child(self.render_title_bar(cx))
+            // 侧栏直接放在画布上；编辑区与结果是两张浮起的卡片，分隔条透明（悬停才出现拖动提示）
             .child(
-                div().flex_1().min_h_0().child(
+                div().flex_1().min_h_0().pr(px(style::GAP)).child(
                     h_resizable("main-split")
+                        .with_handle_appearance(style::gap_handle())
                         .child(
                             resizable_panel()
-                                .size(px(300.))
+                                .size(px(280.))
                                 .size_range(px(220.)..px(460.))
                                 .child(self.render_sidebar(cx)),
                         )
                         .child(
                             v_resizable("work-split")
-                                .child(resizable_panel().child(self.render_center(cx)))
+                                .with_handle_appearance(style::gap_handle())
+                                .child(resizable_panel().child(
+                                    div().size_full().pb(px(style::GAP / 2.)).child(style::card(cx).size_full().child(self.render_center(cx))),
+                                ))
                                 .child(
-                                    resizable_panel()
-                                        .size(px(280.))
-                                        .size_range(px(140.)..px(640.))
-                                        .child(self.render_bottom(cx)),
+                                    resizable_panel().size(px(280.)).size_range(px(140.)..px(640.)).child(
+                                        div()
+                                            .size_full()
+                                            .pt(px(style::GAP / 2.))
+                                            .pb(px(style::GAP))
+                                            .child(style::card(cx).size_full().child(self.render_bottom(cx))),
+                                    ),
                                 ),
                         ),
                 ),
             )
             .child(self.render_status_bar(cx))
     }
-}
-
-/// 打开某文档会丢弃未保存修改时的确认框
-pub(crate) fn confirm_discard(lost: Vec<String>, window: &mut Window, cx: &mut App, then: impl Fn(&mut Window, &mut App) + 'static) {
-    let then = std::rc::Rc::new(then);
-    window.open_alert_dialog(cx, move |alert, _, _| {
-        let then = then.clone();
-        alert
-            .title(format!("放弃对「{}」的修改？", lost.join("」「")))
-            .description("修改尚未写入文件。")
-            .confirm()
-            .ok_text("放弃修改")
-            .ok_variant(ButtonVariant::Danger)
-            .cancel_text("继续编辑")
-            .on_ok(move |_, window, cx| {
-                then(window, cx);
-                true
-            })
-    });
 }
 
 /// 选择环境：保持当前（若仍存在）→ 项目默认 → 第一个
@@ -1117,3 +1571,17 @@ fn relative_time(ms: u64) -> String {
         _ => format!("{} 天前", secs / 86_400),
     }
 }
+
+/// 通知附「复制详情」：错误信息可完整复制（通知本身的文字不能选中）
+fn with_copy(note: Notification, text: String) -> Notification {
+    if text.is_empty() {
+        return note;
+    }
+    note.action(move |_, _, _| {
+        let text = text.clone();
+        Button::new("copy-detail").xsmall().outline().icon(IconName::Copy).label("复制详情").on_click(move |_, _, cx| {
+            cx.write_to_clipboard(ClipboardItem::new_string(text.clone()));
+        })
+    })
+}
+

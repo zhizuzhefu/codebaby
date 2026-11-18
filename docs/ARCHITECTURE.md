@@ -1,6 +1,6 @@
 # requestbaby 架构设计
 
-> CLI 中的 Postman：curl 为引擎、文件目录为集合、AI 原生 JSON 配置、面向项目级接口自动化测试。
+> AI 交付的独立验收层，辅助人对 AI 交付的成果验收：用例与实现分离，在接口边界（HTTP / gRPC / WebSocket）与真实界面（Web / Android）核对行为；文件目录为集合、JSON 配置 AI 可生成可校验，CLI 与桌面端共用同一核心与运行历史。
 
 ## 1. 设计原则
 
@@ -70,20 +70,23 @@ requestbaby.json vars  <  envs/<env>.json vars  <  各级 collection.json vars  
     "followRedirects": false
   },
   "pre":  "req.headers['X-Ts'] = String(Math.floor(Date.now()/1000))",
-  "post": "vars.orderId = res.json().data.id",
-  "tests": [
-    "res.status === 201",
-    "res.json().data.sku === env.sku",
-    "res.timeMs < 1000"
-  ]
+  "expect": {
+    "status": 201,
+    "body": { "data.sku": "{{sku}}", "data.items[*].qty": { "gt": 0 } }
+  },
+  "capture": { "orderId": "data.id" },
+  "tests": ["res.timeMs < 1000"]
 }
 ```
 
 - `body` 形态：`{"json": <obj>}`（序列化 + 自动 Content-Type）/ `{"text": "<str>"}`
 - JSON body 中 `{{x}}` 写在引号内 → 字符串替换；要求数值写在引号外：`{"qty": {{qty}}}`
 - `pre`：请求前，可改写 `req.method/url/headers/body`，辅助 `req.setJson(obj)`
-- `post`：响应后、断言前，写 `vars.*` 捕获传递
-- `tests`：表达式数组，逐条求值，失败报告表达式与响应摘要
+- `expect`：声明式断言（core/expect.rs）：状态码 / 响应头 / 响应体路径 → 期望值或运算符；失败写明「字段 · 期望 · 实际」
+- `capture`：声明式捕获：变量名 → 响应体路径或 `header:名称`；取不到值即失败
+- `post`（进阶）：响应后、capture 之后执行，写 `vars.*`
+- `tests`（进阶）：JS 表达式数组，expect 之后逐条求值
+- 写法建议（core/teach.rs）：validate 的 warn 与 `fmt --fix` 的自动改写共用一套规则（JS 断言 → expect、post 取值 → capture …）
 
 脚本沙箱注入：`req`（pre）/ `res`（post、tests）/ `vars`（读写）/ `env`（只读）/ `log()` / `crypto.{md5,sha256,hmacSha256,base64Encode,base64Decode}`
 
@@ -93,8 +96,8 @@ requestbaby.json vars  <  envs/<env>.json vars  <  各级 collection.json vars  
 TestCase ──load──► 合并变量作用域 ──pre 脚本──► ResolvedRequest
         ──编译──► curl argv + body 临时文件
         ──spawn curl──► stdout: %{json} 元数据 / -D: 响应头 / -o: 响应体
-        ──解析──► Response ──post 脚本──► vars 回写
-        ──tests 逐条求值──► CaseResult ──聚合──► Report
+        ──解析──► Response ──capture──► vars 回写 ──post 脚本──► vars 回写
+        ──expect 逐条求值 ──tests 逐条求值──► CaseResult ──聚合──► Report
 ```
 
 关键点：
@@ -109,6 +112,8 @@ TestCase ──load──► 合并变量作用域 ──pre 脚本──► Res
 | `config` | Project/Env/Collection/TestCase 模型与加载（serde 严格模式，未知字段报错） | 新配置字段由 Schema 同步约束 |
 | `vars` | 四层作用域栈、`{{}}` 替换 | 新变量来源（如 keychain） |
 | `engine::Transport` | `execute(ResolvedRequest) -> Response` | 替换为 libcurl FFI / 内置 HTTP（二期协议扩展） |
+| `engine::ui::UiDriver` | 界面驱动：find / actionable / click / fill / … / screenshot / failure_scene | Web = `engine::web`（CDP，`engine::cdp` 同步客户端 + 浏览器进程）；Android = `engine::android`（adb + uiautomator）；新平台实现同一 trait |
+| `runner::ui` | 界面步骤循环（自动等待、断言、捕获、截图标注、失败现场），两种驱动共用 | 新动作 / 新定位 |
 | `script::ScriptHost` | `run_pre / run_post / eval_tests / compile_check` | 替换 JS 引擎；表达式方言 |
 | `runner` | 目录发现、排序、过滤、fail-fast、顺序执行、并发（二期） | 调度策略 |
 | `report::Reporter` | 终端美化 / JSON /（二期 junit、html） | 新报告格式 |
@@ -146,10 +151,21 @@ AI 依据报错自修复 → 循环直到通过
 - **脚本层**：QuickJS Runtime 线程池化 + Context 每执行新建（隔离等价、开销降 90%）；`http.*` 受控同步请求；异常全透传（name/message/stack 行号修正）
 - **变量层**：四层作用域 + `VarVal` 原生类型域（捕获的 number/bool 注入还原）；`{{var:number/bool}}` 类型标注、`{{%ENV}}` 进程环境、`{value,secret}`/`{from:env}` 对象形态（全输出层脱敏）
 - **编排层**：`workflows`（requestbaby.json）多阶段编排，runtime vars 跨步骤传递；取代外部 shell 脚本
-- **校验闭环（AI 原生）**：四类 JSON Schema 内置（validate 程序化校验防漂移）；退出码 0/1/2 语义；`validate --json` 结构化 issue（file/level/rule/message）；失败响应快照 + `-o` 响应落盘供 LLM 分析；`doctor` 环境预检——协议见 docs/AI-NATIVE.md
+- **校验闭环（AI 原生）**：四类 JSON Schema 内置（validate 程序化校验防漂移）；退出码 0/1/2 语义；`validate --json` 结构化 issue（file/level/rule/message）；失败响应快照 + `-o` 响应落盘供 LLM 分析；`doctor` 环境预检——协议见 docs/guide/cli.md（`requestbaby guide cli`）
 - **导入生态**：OpenAPI 3 / Swagger 2 / Postman v2.1 / curl 命令
+- **界面验收（Web / Android）**：第 4、5 种「协议」，与接口用例共用断言 / 捕获 / 变量 / 集合 / 流程 / 历史。
+  Web 自写最小 CDP 客户端驱动本机 Chrome / Edge（不依赖 Playwright / Node），每个用例一个独立浏览器上下文，
+  角色 + 名称 / 表单标签走浏览器无障碍树；Android 走 adb + uiautomator。步骤循环只写一遍（`runner::ui`），
+  每一步截图并标注（`engine::ui::annotate`，image crate），证据进 `.requestbaby/runs/<运行 ID>/<用例>/`，
+  运行记录绑定 git 提交（`RunMeta.git`），同一提交上时过时不过的用例标为不稳定；最近 30 次的证据全保留、更早的只留失败的。
+  界面用例强制串行；运行与判定全程确定性，不调用大模型。
+  远程执行：Web 可连远程浏览器（`web.endpoint`：http 调试端口经 /json/version 解析并改写主机，或直接 ws/wss，
+  wss 复用 rustls + 平台证书校验；远程浏览器只断开不关闭），Android 网络序列号自动 `adb connect`、`android.server` 连远程 adb server。
+- **代理**（`engine::proxy`）：一条规则（跟随系统 = 环境变量 → macOS 系统代理设置 / 使用代理 / 直连，本机地址始终直连）覆盖全部对外连接。
+  libcurl 原生代理；gRPC / WebSocket / CDP 用自带的 SOCKS5 / HTTP CONNECT 拨号器；本机浏览器经进程内 SOCKS5 中转（浏览器不支持带认证的 SOCKS5）；
+  adb 经本地转发端口。设置读写在 `proxy_setting`（CLI `requestbaby proxy` 与桌面端项目设置共用）
 
 ## 10. 支持矩阵
 
-- 协议：http/https
+- 协议：http/https、gRPC、WebSocket；界面：Web（Chrome / Edge / Chromium，本机或远程）、Android（adb，本机 / 网络设备 / 远程 adb server）
 - 平台：macOS / Linux（Windows 未声明）

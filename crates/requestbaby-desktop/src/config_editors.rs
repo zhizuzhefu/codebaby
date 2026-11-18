@@ -1,7 +1,8 @@
 //! 配置编辑器：collection.json / envs/*.json / requestbaby.json。
 //!
 //! 与用例编辑器同一原则：文件是唯一事实；保存走 core 的规范化写出，随后立即校验。
-use crate::vars_editor::{VarsEditor, VarsEditorEvent};
+use crate::kv_table::{KvMode, KvTable, KvTableEvent};
+use requestbaby_core::varstore::VarScope;
 use gpui_kit::component::{
     ActiveTheme as _, Disableable as _, Icon, IconName, IndexPath, Sizable as _, h_flex,
     button::{Button, ButtonVariants as _},
@@ -12,17 +13,19 @@ use gpui_kit::component::{
 };
 use gpui_kit::{
     AnyElement, App, AppContext as _, Context, Entity, EventEmitter, FontWeight, InteractiveElement as _, IntoElement,
-    ParentElement as _, Render, SharedString, StatefulInteractiveElement as _, Styled as _, Subscription, Window, div,
+    ParentElement as _, Render, SharedString, StatefulInteractiveElement as _, Styled as _, Subscription, Task, Window, div,
     prelude::FluentBuilder as _, px,
 };
-use requestbaby_core::{fmt, validate::ValidationIssue};
+use requestbaby_core::{fmt, proxy_setting, validate::ValidationIssue};
 use serde_json::{Map, Value, json};
 use std::path::PathBuf;
 
 pub enum ConfigEditorEvent {
     Saved,
-    DuplicateEnv(String),
-    DeleteEnv(String),
+    /// 打开变量面板编辑该层变量（变量只有这一个编辑入口）
+    EditVars(VarScope),
+    /// 打开流程编辑器（None = 新建；流程只有这一个编辑入口）
+    OpenWorkflow(Option<String>),
 }
 
 /// 三种编辑器共享的文件状态
@@ -34,6 +37,8 @@ struct FileState {
     dirty: bool,
     error: Option<String>,
     issues: Vec<ValidationIssue>,
+    /// 后台校验任务（新的一次替换旧的，旧结果随之作废）
+    _validate: Option<Task<()>>,
 }
 
 impl FileState {
@@ -44,11 +49,34 @@ impl FileState {
             Ok(v) => (v, None),
             Err(e) => (json!({}), Some(format!("JSON 解析失败（请在文本编辑器中修复）: {e}"))),
         };
-        Self { saved_text: canonical(&base), path, rel, base, dirty: false, error, issues: vec![] }
+        Self { saved_text: canonical(&base), path, rel, base, dirty: false, error, issues: vec![], _validate: None }
     }
 
-    fn save(&mut self, doc: Value, text: String, env: &str) -> bool {
-        if let Err(e) = std::fs::write(&self.path, &text) {
+    /// 写入前以磁盘上的 vars 为准：变量由变量面板维护，这里不覆盖其最新修改
+    fn with_disk_vars(&self, doc: Value) -> Value {
+        self.with_disk_fields(doc, &["vars"])
+    }
+
+    /// 由其他专用编辑器维护的字段（vars → 变量面板，workflows → 流程编辑器）以磁盘为准
+    fn with_disk_fields(&self, mut doc: Value, fields: &[&str]) -> Value {
+        let disk = std::fs::read_to_string(&self.path).ok().and_then(|t| serde_json::from_str::<Value>(&t).ok());
+        if let Value::Object(o) = &mut doc {
+            for field in fields {
+                match disk.as_ref().and_then(|d| d.get(*field)).cloned() {
+                    Some(v) => {
+                        o.insert((*field).into(), v);
+                    }
+                    None => {
+                        o.remove(*field);
+                    }
+                }
+            }
+        }
+        doc
+    }
+
+    fn save(&mut self, doc: Value, text: String) -> bool {
+        if let Err(e) = requestbaby_core::fsx::write(&self.path, &text) {
             self.error = Some(format!("写入失败: {e}"));
             return false;
         }
@@ -56,12 +84,36 @@ impl FileState {
         self.saved_text = text;
         self.dirty = false;
         self.error = None;
-        self.validate(env);
         true
     }
+}
 
-    fn validate(&mut self, env: &str) {
-        self.issues = requestbaby_core::validate::validate_file(&self.path, env).unwrap_or_default();
+trait HasFile: Sized + 'static {
+    fn file_mut(&mut self) -> &mut FileState;
+}
+
+/// 后台校验（全项目上下文，项目大时不卡界面）
+fn revalidate<T: HasFile>(this: &mut T, env: String, cx: &mut Context<T>) {
+    let path = this.file_mut().path.clone();
+    let task = cx.background_spawn(async move { requestbaby_core::validate::validate_file(&path, &env).unwrap_or_default() });
+    this.file_mut()._validate = Some(cx.spawn(async move |view, cx| {
+        let issues = task.await;
+        let _ = view.update(cx, |t, cx| {
+            t.file_mut().issues = issues;
+            cx.notify();
+        });
+    }));
+}
+
+impl HasFile for CollectionEditor {
+    fn file_mut(&mut self) -> &mut FileState {
+        &mut self.file
+    }
+}
+
+impl HasFile for ProjectEditor {
+    fn file_mut(&mut self) -> &mut FileState {
+        &mut self.file
     }
 }
 
@@ -147,6 +199,33 @@ fn render_problems(f: &FileState, cx: &App) -> impl IntoElement {
         }))
 }
 
+/// 变量只读摘要 + 唯一编辑入口（变量面板）
+fn vars_summary(title: &'static str, hint: &'static str, f: &FileState, scope: VarScope, cx: &mut Context<impl EventEmitter<ConfigEditorEvent>>) -> impl IntoElement {
+    let names: Vec<String> = f.base.get("vars").and_then(|v| v.as_object()).map(|m| m.keys().cloned().collect()).unwrap_or_default();
+    let muted = cx.theme().muted_foreground;
+    v_flex()
+        .gap_2()
+        .child(
+            h_flex()
+                .gap_2()
+                .child(section(title, hint, cx))
+                .child(div().flex_1())
+                .child(
+                    Button::new("edit-vars")
+                        .small()
+                        .outline()
+                        .icon(IconName::Settings2)
+                        .label("在变量面板中编辑 →")
+                        .on_click(cx.listener(move |_, _, _, cx| cx.emit(ConfigEditorEvent::EditVars(scope.clone())))),
+                ),
+        )
+        .child(div().text_xs().text_color(muted).child(if names.is_empty() {
+            "（未定义变量）".to_string()
+        } else {
+            format!("{} 个：{}", names.len(), names.join("、"))
+        }))
+}
+
 fn save_button(id: &'static str, dirty: bool) -> Button {
     Button::new(id).small().primary().icon(IconName::Check).label("保存").disabled(!dirty)
 }
@@ -158,8 +237,7 @@ pub struct CollectionEditor {
     env: String,
     name: Entity<InputState>,
     tags: Entity<InputState>,
-    headers: Entity<VarsEditor>,
-    vars: Entity<VarsEditor>,
+    headers: Entity<KvTable>,
     setup: Entity<EditorState>,
     teardown: Entity<EditorState>,
     _subscriptions: Vec<Subscription>,
@@ -169,8 +247,7 @@ impl EventEmitter<ConfigEditorEvent> for CollectionEditor {}
 
 impl CollectionEditor {
     pub fn new(path: PathBuf, rel: String, env: String, window: &mut Window, cx: &mut Context<Self>) -> Self {
-        let mut file = FileState::load(path, rel, fmt::canonical_collection_text);
-        file.validate(&env);
+        let file = FileState::load(path, rel, fmt::canonical_collection_text);
         let d = file.base.clone();
         let s = |k: &str| d.get(k).and_then(|v| v.as_str()).unwrap_or_default().to_string();
         let tags = d
@@ -180,10 +257,8 @@ impl CollectionEditor {
             .unwrap_or_default();
         let name = cx.new(|cx| InputState::new(window, cx).placeholder("缺省为目录名").default_value(s("name")));
         let tags = cx.new(|cx| InputState::new(window, cx).placeholder("smoke, auth（逗号分隔，附加到集合内全部用例）").default_value(tags));
-        let headers = cx.new(|_| VarsEditor::new(false));
+        let headers = cx.new(|_| KvTable::new(KvMode::Toggle, "请求头名"));
         headers.update(cx, |e, cx| e.load(d.get("headers").and_then(|h| h.as_object()), window, cx));
-        let vars = cx.new(|_| VarsEditor::new(true));
-        vars.update(cx, |e, cx| e.load(d.get("vars").and_then(|h| h.as_object()), window, cx));
         let setup_text = s("setup");
         let teardown_text = s("teardown");
         let setup = cx.new(|cx| js_editor("进入集合前执行：可写 vars、可 http.get/post 造数", window, cx).default_value(setup_text));
@@ -199,10 +274,10 @@ impl CollectionEditor {
                 }
             }));
         }
-        for v in [&headers, &vars] {
-            subs.push(cx.subscribe(v, |this, _, _: &VarsEditorEvent, cx| this.refresh_dirty(cx)));
-        }
-        Self { file, env, name, tags, headers, vars, setup, teardown, _subscriptions: subs }
+        subs.push(cx.subscribe(&headers, |this, _, _: &KvTableEvent, cx| this.refresh_dirty(cx)));
+        let mut this = Self { file, env: env.clone(), name, tags, headers, setup, teardown, _subscriptions: subs };
+        revalidate(&mut this, env, cx);
+        this
     }
 
     pub fn path(&self) -> &PathBuf {
@@ -231,7 +306,6 @@ impl CollectionEditor {
             .collect();
         d.insert("tags".into(), Value::Array(tags));
         d.insert("headers".into(), Value::Object(self.headers.read(cx).to_map(cx)));
-        d.insert("vars".into(), Value::Object(self.vars.read(cx).to_map(cx)));
         d.insert("setup".into(), Value::String(text(&self.setup)));
         d.insert("teardown".into(), Value::String(text(&self.teardown)));
         Value::Object(d)
@@ -246,10 +320,11 @@ impl CollectionEditor {
     }
 
     pub fn save(&mut self, cx: &mut Context<Self>) -> bool {
-        let doc = self.collect(cx);
+        let doc = self.file.with_disk_vars(self.collect(cx));
         let text = fmt::canonical_collection_text(&doc);
-        let ok = self.file.save(doc, text, &self.env.clone());
+        let ok = self.file.save(doc, text);
         if ok {
+            revalidate(self, self.env.clone(), cx);
             cx.emit(ConfigEditorEvent::Saved);
         }
         cx.notify();
@@ -283,8 +358,14 @@ impl Render for CollectionEditor {
                             .child(v_flex().flex_1().gap_1().child(section("名称", "", cx)).child(Input::new(&self.name).small()))
                             .child(v_flex().flex_1().gap_1().child(section("标签", "", cx)).child(Input::new(&self.tags).small())),
                     )
-                    .child(v_flex().gap_2().child(section("请求头", "逐级继承，用例同名覆盖；值支持 {{var}}", cx)).child(self.headers.clone()))
-                    .child(v_flex().gap_2().child(section("集合变量", "覆盖环境变量，被运行时捕获覆盖", cx)).child(self.vars.clone()))
+                    .child(v_flex().gap_2().child(section("请求头", "逐级继承，用例同名覆盖；值支持 {{var}}；取消勾选 = 保留但不发送", cx)).child(self.headers.clone()))
+                    .child(vars_summary(
+                        "集合变量",
+                        "仅对本集合内用例生效；覆盖环境与项目变量",
+                        &self.file,
+                        VarScope::Collection(self.file.rel.trim_end_matches("/collection.json").to_string()),
+                        cx,
+                    ))
                     .child(v_flex().gap_1().child(section("setup", "进入集合时执行一次", cx)).child(Editor::new(&self.setup).h(px(96.))))
                     .child(v_flex().gap_1().child(section("teardown", "离开集合时执行一次", cx)).child(Editor::new(&self.teardown).h(px(96.))))
                     .child(render_problems(&self.file, cx)),
@@ -292,142 +373,21 @@ impl Render for CollectionEditor {
     }
 }
 
-// ------------------------------------------------------------------ envs/<name>.json
-
-pub struct EnvEditor {
-    file: FileState,
-    name: String,
-    is_default: bool,
-    vars: Entity<VarsEditor>,
-    _subscriptions: Vec<Subscription>,
-}
-
-impl EventEmitter<ConfigEditorEvent> for EnvEditor {}
-
-impl EnvEditor {
-    pub fn new(path: PathBuf, rel: String, name: String, is_default: bool, window: &mut Window, cx: &mut Context<Self>) -> Self {
-        let mut file = FileState::load(path, rel, fmt::canonical_env_text);
-        file.validate(&name);
-        let vars = cx.new(|_| VarsEditor::new(true));
-        vars.update(cx, |e, cx| e.load(file.base.get("vars").and_then(|v| v.as_object()), window, cx));
-        let subs = vec![cx.subscribe(&vars, |this: &mut Self, _, _: &VarsEditorEvent, cx| {
-            let dirty = fmt::canonical_env_text(&this.collect(cx)) != this.file.saved_text;
-            if dirty != this.file.dirty {
-                this.file.dirty = dirty;
-                cx.notify();
-            }
-        })];
-        Self { file, name, is_default, vars, _subscriptions: subs }
-    }
-
-    pub fn path(&self) -> &PathBuf {
-        &self.file.path
-    }
-
-    pub fn is_dirty(&self) -> bool {
-        self.file.dirty
-    }
-
-    fn collect(&self, cx: &App) -> Value {
-        let mut d = match &self.file.base {
-            Value::Object(o) => o.clone(),
-            _ => Map::new(),
-        };
-        d.insert("vars".into(), Value::Object(self.vars.read(cx).to_map(cx)));
-        Value::Object(d)
-    }
-
-    pub fn save(&mut self, cx: &mut Context<Self>) -> bool {
-        let doc = self.collect(cx);
-        let text = fmt::canonical_env_text(&doc);
-        let env = self.name.clone();
-        let ok = self.file.save(doc, text, &env);
-        if ok {
-            cx.emit(ConfigEditorEvent::Saved);
-        }
-        cx.notify();
-        ok
-    }
-}
-
-impl Render for EnvEditor {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let save = save_button("save-env", self.file.dirty).on_click(cx.listener(|this, _, _, cx| {
-            this.save(cx);
-        }));
-        let name = self.name.clone();
-        let name2 = self.name.clone();
-        let extra = vec![
-            Button::new("dup-env")
-                .small()
-                .outline()
-                .icon(IconName::Copy)
-                .label("复制为新环境")
-                .on_click(cx.listener(move |_, _, _, cx| cx.emit(ConfigEditorEvent::DuplicateEnv(name.clone()))))
-                .into_any_element(),
-            Button::new("del-env")
-                .small()
-                .ghost()
-                .icon(IconName::Delete)
-                .disabled(self.is_default)
-                .tooltip(if self.is_default { "默认环境不能删除" } else { "删除环境" })
-                .on_click(cx.listener(move |_, _, _, cx| cx.emit(ConfigEditorEvent::DeleteEnv(name2.clone()))))
-                .into_any_element(),
-        ];
-        v_flex()
-            .size_full()
-            .child(render_header(
-                format!("环境 · {}{}", self.name, if self.is_default { "（默认）" } else { "" }),
-                IconName::Globe,
-                &self.file,
-                save,
-                extra,
-                cx,
-            ))
-            .child(
-                v_flex()
-                    .id("env-editor")
-                    .flex_1()
-                    .min_h_0()
-                    .overflow_y_scroll()
-                    .p_4()
-                    .gap_3()
-                    .child(section("环境变量", "覆盖项目变量；Secret 值在 curl 命令、报告、日志中一律脱敏", cx))
-                    .child(self.vars.clone())
-                    .child(render_problems(&self.file, cx)),
-            )
-    }
-}
-
 // ------------------------------------------------------------------ requestbaby.json
-
-struct StepRow {
-    id: usize,
-    name: Entity<InputState>,
-    run: Entity<SelectState<Vec<SharedString>>>,
-    tags: Entity<InputState>,
-    name_filter: Entity<InputState>,
-}
-
-struct WorkflowRow {
-    id: usize,
-    key: Entity<InputState>,
-    name: Entity<InputState>,
-    steps: Vec<StepRow>,
-}
 
 pub struct ProjectEditor {
     file: FileState,
     env: String,
     default_env: Entity<SelectState<Vec<SharedString>>>,
     timeout: Entity<InputState>,
-    vars: Entity<VarsEditor>,
-    workflows: Vec<WorkflowRow>,
-    /// 步骤 run 的候选：集合目录 + 用例文件（相对项目根）
-    targets: Vec<SharedString>,
-    next_id: usize,
+    /// 代理：跟随系统 / 使用代理 / 不使用代理（与 CLI `requestbaby proxy` 同一读写）
+    proxy_mode: Entity<SelectState<Vec<SharedString>>>,
+    proxy_url: Entity<InputState>,
+    proxy_bypass: Entity<InputState>,
     _subscriptions: Vec<Subscription>,
 }
+
+const PROXY_MODES: [proxy_setting::Mode; 3] = [proxy_setting::Mode::System, proxy_setting::Mode::On, proxy_setting::Mode::Off];
 
 impl EventEmitter<ConfigEditorEvent> for ProjectEditor {}
 
@@ -437,12 +397,10 @@ impl ProjectEditor {
         rel: String,
         env: String,
         envs: Vec<String>,
-        targets: Vec<String>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
-        let mut file = FileState::load(path, rel, fmt::canonical_project_text);
-        file.validate(&env);
+        let file = FileState::load(path, rel, fmt::canonical_project_text);
         let d = file.base.clone();
         let default = d.get("defaultEnv").and_then(|v| v.as_str()).unwrap_or("dev").to_string();
         let env_items: Vec<SharedString> = envs.iter().map(|e| SharedString::from(e.clone())).collect();
@@ -450,32 +408,39 @@ impl ProjectEditor {
         let default_env = cx.new(|cx| SelectState::new(env_items, env_ix, window, cx));
         let timeout_text = d.get("timeoutMs").map(|v| v.to_string()).unwrap_or_default();
         let timeout = cx.new(|cx| InputState::new(window, cx).placeholder("30000").default_value(timeout_text));
-        let vars = cx.new(|_| VarsEditor::new(true));
-        vars.update(cx, |e, cx| e.load(d.get("vars").and_then(|v| v.as_object()), window, cx));
+        let proxy: Option<requestbaby_core::config::ProxyConfig> = d.get("proxy").and_then(|v| serde_json::from_value(v.clone()).ok());
+        let mode = proxy_setting::Mode::of(proxy.as_ref());
+        let mode_items: Vec<SharedString> = PROXY_MODES.iter().map(|m| SharedString::from(m.label())).collect();
+        let mode_ix = PROXY_MODES.iter().position(|m| *m == mode).map(IndexPath::new);
+        let proxy_mode = cx.new(|cx| SelectState::new(mode_items, mode_ix, window, cx));
+        let url_text = proxy.as_ref().map(|p| p.url.clone()).unwrap_or_default();
+        let proxy_url = cx.new(|cx| InputState::new(window, cx).placeholder("socks5://127.0.0.1:1080").default_value(url_text));
+        let bypass_text = proxy.as_ref().map(|p| p.no_proxy.join(", ")).unwrap_or_default();
+        let proxy_bypass = cx.new(|cx| InputState::new(window, cx).placeholder("例：corp.internal, 10.0.0.0/8").default_value(bypass_text));
 
         let mut this = Self {
             file,
             env,
             default_env,
             timeout,
-            vars,
-            workflows: vec![],
-            targets: targets.into_iter().map(SharedString::from).collect(),
-            next_id: 0,
+            proxy_mode,
+            proxy_url,
+            proxy_bypass,
             _subscriptions: vec![],
         };
         let mut subs = vec![];
         subscribe_input(&mut subs, &this.timeout, window, cx, Self::refresh_dirty);
-        subs.push(cx.subscribe(&this.vars, |this, _, _: &VarsEditorEvent, cx| this.refresh_dirty(cx)));
+        subscribe_input(&mut subs, &this.proxy_url, window, cx, Self::refresh_dirty);
+        subscribe_input(&mut subs, &this.proxy_bypass, window, cx, Self::refresh_dirty);
+        subs.push(cx.subscribe_in(&this.proxy_mode, window, |this, _, _: &SelectEvent<Vec<SharedString>>, _, cx| {
+            this.refresh_dirty(cx)
+        }));
         subs.push(cx.subscribe_in(&this.default_env, window, |this, _, _: &SelectEvent<Vec<SharedString>>, _, cx| {
             this.refresh_dirty(cx)
         }));
         this._subscriptions = subs;
-        if let Some(wfs) = d.get("workflows").and_then(|w| w.as_object()) {
-            for (key, wf) in wfs {
-                this.push_workflow(key, wf, window, cx);
-            }
-        }
+        let env = this.env.clone();
+        revalidate(&mut this, env, cx);
         this
     }
 
@@ -485,60 +450,6 @@ impl ProjectEditor {
 
     pub fn is_dirty(&self) -> bool {
         self.file.dirty
-    }
-
-    fn id(&mut self) -> usize {
-        self.next_id += 1;
-        self.next_id
-    }
-
-    fn input(&mut self, value: &str, placeholder: &'static str, window: &mut Window, cx: &mut Context<Self>) -> Entity<InputState> {
-        let value = value.to_string();
-        let e = cx.new(|cx| InputState::new(window, cx).placeholder(placeholder).default_value(value));
-        let mut subs = std::mem::take(&mut self._subscriptions);
-        subscribe_input(&mut subs, &e, window, cx, Self::refresh_dirty);
-        self._subscriptions = subs;
-        e
-    }
-
-    fn push_step(&mut self, wf_ix: usize, step: &Value, window: &mut Window, cx: &mut Context<Self>) {
-        let s = |k: &str| step.get(k).and_then(|v| v.as_str()).unwrap_or_default().to_string();
-        let tags = step
-            .get("tags")
-            .and_then(|t| t.as_array())
-            .map(|a| a.iter().filter_map(|x| x.as_str()).collect::<Vec<_>>().join(", "))
-            .unwrap_or_default();
-        let id = self.id();
-        let name = self.input(&s("name"), "步骤名（可选）", window, cx);
-        let tags = self.input(&tags, "标签过滤", window, cx);
-        let name_filter = self.input(&s("nameFilter"), "用例名过滤", window, cx);
-        let current = SharedString::from(s("run"));
-        let mut items = self.targets.clone();
-        if !current.is_empty() && !items.contains(&current) {
-            items.push(current.clone());
-        }
-        let ix = items.iter().position(|t| *t == current).map(IndexPath::new);
-        let run = cx.new(|cx| SelectState::new(items, ix, window, cx).searchable(true));
-        self._subscriptions.push(cx.subscribe_in(&run, window, |this, _, _: &SelectEvent<Vec<SharedString>>, _, cx| {
-            this.refresh_dirty(cx)
-        }));
-        if let Some(wf) = self.workflows.get_mut(wf_ix) {
-            wf.steps.push(StepRow { id, name, run, tags, name_filter });
-        }
-    }
-
-    fn push_workflow(&mut self, key: &str, wf: &Value, window: &mut Window, cx: &mut Context<Self>) {
-        let id = self.id();
-        let key = self.input(key, "工作流 key（CLI: requestbaby workflow <key>）", window, cx);
-        let display = wf.get("name").and_then(|v| v.as_str()).unwrap_or_default().to_string();
-        let name = self.input(&display, "显示名（可选）", window, cx);
-        self.workflows.push(WorkflowRow { id, key, name, steps: vec![] });
-        let ix = self.workflows.len() - 1;
-        if let Some(steps) = wf.get("steps").and_then(|s| s.as_array()) {
-            for step in steps {
-                self.push_step(ix, step, window, cx);
-            }
-        }
     }
 
     fn collect(&self, cx: &App) -> Value {
@@ -561,53 +472,26 @@ impl ProjectEditor {
                 d.insert("timeoutMs".into(), Value::String(timeout));
             }
         }
-        d.insert("vars".into(), Value::Object(self.vars.read(cx).to_map(cx)));
-        let mut wfs = Map::new();
-        for wf in &self.workflows {
-            let key = wf.key.read(cx).value().trim().to_string();
-            if key.is_empty() {
-                continue;
+        // 代理：跟随系统 = 不写；其余写 enabled / url / noProxy（地址不合法时照写，由校验指出）
+        match self.proxy_mode_of(cx) {
+            proxy_setting::Mode::System => {
+                d.remove("proxy");
             }
-            let mut w = Map::new();
-            let name = wf.name.read(cx).value().trim().to_string();
-            if !name.is_empty() {
-                w.insert("name".into(), Value::String(name));
+            mode => {
+                let cfg = requestbaby_core::config::ProxyConfig {
+                    enabled: mode == proxy_setting::Mode::On,
+                    url: self.proxy_url.read(cx).value().trim().to_string(),
+                    no_proxy: proxy_setting::parse_no_proxy(&self.proxy_bypass.read(cx).value()),
+                };
+                d.insert("proxy".into(), serde_json::to_value(cfg).unwrap_or_default());
             }
-            let steps: Vec<Value> = wf
-                .steps
-                .iter()
-                .map(|s| {
-                    let mut o = Map::new();
-                    let name = s.name.read(cx).value().trim().to_string();
-                    if !name.is_empty() {
-                        o.insert("name".into(), Value::String(name));
-                    }
-                    let run = s.run.read(cx).selected_value().map(|v| v.to_string()).unwrap_or_default();
-                    o.insert("run".into(), Value::String(run));
-                    let tags: Vec<Value> = s
-                        .tags
-                        .read(cx)
-                        .value()
-                        .split(',')
-                        .map(str::trim)
-                        .filter(|t| !t.is_empty())
-                        .map(|t| Value::String(t.into()))
-                        .collect();
-                    if !tags.is_empty() {
-                        o.insert("tags".into(), Value::Array(tags));
-                    }
-                    let nf = s.name_filter.read(cx).value().trim().to_string();
-                    if !nf.is_empty() {
-                        o.insert("nameFilter".into(), Value::String(nf));
-                    }
-                    Value::Object(o)
-                })
-                .collect();
-            w.insert("steps".into(), Value::Array(steps));
-            wfs.insert(key, Value::Object(w));
         }
-        d.insert("workflows".into(), Value::Object(wfs));
         Value::Object(d)
+    }
+
+    fn proxy_mode_of(&self, cx: &App) -> proxy_setting::Mode {
+        let label = self.proxy_mode.read(cx).selected_value().map(|v| v.to_string()).unwrap_or_default();
+        PROXY_MODES.into_iter().find(|m| m.label() == label).unwrap_or(proxy_setting::Mode::System)
     }
 
     fn refresh_dirty(&mut self, cx: &mut Context<Self>) {
@@ -619,112 +503,73 @@ impl ProjectEditor {
     }
 
     pub fn save(&mut self, cx: &mut Context<Self>) -> bool {
-        let doc = self.collect(cx);
+        let doc = self.file.with_disk_fields(self.collect(cx), &["vars", "workflows"]);
         let text = fmt::canonical_project_text(&doc);
-        let env = self.env.clone();
-        let ok = self.file.save(doc, text, &env);
+        let ok = self.file.save(doc, text);
         if ok {
+            revalidate(self, self.env.clone(), cx);
             cx.emit(ConfigEditorEvent::Saved);
         }
         cx.notify();
         ok
     }
 
+    /// 代理：模式 + 地址 + 直连主机；说明当前实际生效的规则
+    fn render_proxy(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let muted = cx.theme().muted_foreground;
+        let mode = self.proxy_mode_of(cx);
+        let note = match mode {
+            proxy_setting::Mode::System => "按系统的代理设置：先看 HTTPS_PROXY / ALL_PROXY 等环境变量，没有再看系统设置 → 网络 → 代理，都没有则直连",
+            proxy_setting::Mode::On => "HTTP / gRPC / WebSocket / 浏览器 / adb 全部经这个代理；本机地址（localhost / 127.0.0.1）始终直连。账号密码可写成 {{变量}} 放进 envs/<环境>.local.json",
+            proxy_setting::Mode::Off => "全部直连，也不使用环境变量里的代理；地址保留，切回「使用代理」即可",
+        };
+        v_flex()
+            .gap_2()
+            .child(section("代理", "所有对外连接走同一条规则（与 requestbaby proxy 同一设置）", cx))
+            .child(
+                h_flex()
+                    .gap_3()
+                    .items_end()
+                    .child(v_flex().w(px(200.)).gap_1().child(div().text_xs().text_color(muted).child("模式")).child(Select::new(&self.proxy_mode).small()))
+                    .when(mode != proxy_setting::Mode::System, |this| {
+                        this.child(v_flex().flex_1().gap_1().child(div().text_xs().text_color(muted).child("代理地址（socks5 / socks5h / http）")).child(Input::new(&self.proxy_url).small()))
+                            .child(v_flex().w(px(260.)).gap_1().child(div().text_xs().text_color(muted).child("直连主机（逗号分隔）")).child(Input::new(&self.proxy_bypass).small()))
+                    }),
+            )
+            .child(div().text_xs().text_color(muted).child(note))
+    }
+
+    /// 流程概览：编辑在独立的流程编辑器中（与 CLI `requestbaby workflow …` 同一实现）
     fn render_workflows(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let muted = cx.theme().muted_foreground;
+        let workflows = requestbaby_core::workflow::list(self.file.path.parent().unwrap_or(std::path::Path::new("."))).unwrap_or_default();
         v_flex()
-            .gap_3()
-            .children(self.workflows.iter().enumerate().map(|(wf_ix, wf)| {
-                let wf_id = wf.id;
-                v_flex()
-                    .p_3()
+            .gap_1()
+            .when(workflows.is_empty(), |this| this.child(div().text_xs().text_color(muted).child("还没有流程")))
+            .children(workflows.into_iter().enumerate().map(|(ix, (key, wf))| {
+                let label = if wf.name.is_empty() { key.clone() } else { format!("{} · {key}", wf.name) };
+                let open_key = key.clone();
+                h_flex()
+                    .id(("project-wf", ix))
                     .gap_2()
+                    .px_2()
+                    .py_1()
                     .rounded(cx.theme().radius)
-                    .border_1()
-                    .border_color(cx.theme().border)
-                    .child(
-                        h_flex()
-                            .gap_2()
-                            .child(Icon::new(IconName::Network).small().text_color(muted))
-                            .child(div().w(px(220.)).child(Input::new(&wf.key).small()))
-                            .child(div().flex_1().child(Input::new(&wf.name).small()))
-                            .child(
-                                Button::new(("del-wf", wf_id))
-                                    .ghost()
-                                    .xsmall()
-                                    .icon(IconName::Delete)
-                                    .tooltip("删除工作流")
-                                    .on_click(cx.listener(move |this, _, _, cx| {
-                                        this.workflows.retain(|w| w.id != wf_id);
-                                        this.refresh_dirty(cx);
-                                        cx.notify();
-                                    })),
-                            ),
-                    )
-                    .child(
-                        h_flex()
-                            .gap_2()
-                            .pl_6()
-                            .text_xs()
-                            .text_color(muted)
-                            .child(div().w(px(24.)).child("#"))
-                            .child(div().w(px(260.)).child("运行目标"))
-                            .child(div().w(px(150.)).child("步骤名"))
-                            .child(div().w(px(130.)).child("标签"))
-                            .child(div().flex_1().child("用例名")),
-                    )
-                    .children(wf.steps.iter().enumerate().map(|(ix, s)| {
-                        let step_id = s.id;
-                        h_flex()
-                            .gap_2()
-                            .pl_6()
-                            .child(div().w(px(24.)).text_xs().text_color(muted).child(format!("{}", ix + 1)))
-                            .child(div().w(px(260.)).child(Select::new(&s.run).small().placeholder("选择目录或用例")))
-                            .child(div().w(px(150.)).child(Input::new(&s.name).small()))
-                            .child(div().w(px(130.)).child(Input::new(&s.tags).small()))
-                            .child(div().flex_1().child(Input::new(&s.name_filter).small()))
-                            .child(
-                                Button::new(("del-step", step_id))
-                                    .ghost()
-                                    .xsmall()
-                                    .icon(IconName::Close)
-                                    .on_click(cx.listener(move |this, _, _, cx| {
-                                        if let Some(w) = this.workflows.get_mut(wf_ix) {
-                                            w.steps.retain(|s| s.id != step_id);
-                                        }
-                                        this.refresh_dirty(cx);
-                                        cx.notify();
-                                    })),
-                            )
-                    }))
-                    .child(
-                        h_flex().pl_6().child(
-                            Button::new(("add-step", wf_id))
-                                .ghost()
-                                .xsmall()
-                                .icon(IconName::Plus)
-                                .label("添加步骤")
-                                .on_click(cx.listener(move |this, _, window, cx| {
-                                    this.push_step(wf_ix, &json!({ "run": "collections" }), window, cx);
-                                    this.refresh_dirty(cx);
-                                    cx.notify();
-                                })),
-                        ),
-                    )
+                    .cursor_pointer()
+                    .hover(|d| d.bg(cx.theme().muted))
+                    .child(Icon::new(IconName::Network).xsmall().text_color(muted))
+                    .child(div().flex_1().text_sm().child(label))
+                    .child(div().text_xs().text_color(muted).child(format!("{} 步", wf.steps.len())))
+                    .on_click(cx.listener(move |_, _, _, cx| cx.emit(ConfigEditorEvent::OpenWorkflow(Some(open_key.clone())))))
             }))
             .child(
                 h_flex().child(
-                    Button::new("add-wf")
+                    Button::new("project-new-wf")
                         .ghost()
                         .xsmall()
                         .icon(IconName::Plus)
-                        .label("添加工作流")
-                        .on_click(cx.listener(|this, _, window, cx| {
-                            let n = this.workflows.len() + 1;
-                            this.push_workflow(&format!("workflow{n}"), &json!({ "steps": [{ "run": "collections" }] }), window, cx);
-                            this.refresh_dirty(cx);
-                            cx.notify();
-                        })),
+                        .label("新建流程")
+                        .on_click(cx.listener(|_, _, _, cx| cx.emit(ConfigEditorEvent::OpenWorkflow(None)))),
                 ),
             )
     }
@@ -752,11 +597,12 @@ impl Render for ProjectEditor {
                             .child(v_flex().w(px(200.)).gap_1().child(section("默认环境", "", cx)).child(Select::new(&self.default_env).small()))
                             .child(v_flex().w(px(200.)).gap_1().child(section("默认超时 ms", "", cx)).child(Input::new(&self.timeout).small())),
                     )
-                    .child(v_flex().gap_2().child(section("全局变量", "最低优先级：环境 / 集合 / 运行时依次覆盖", cx)).child(self.vars.clone()))
+                    .child(self.render_proxy(cx))
+                    .child(vars_summary("项目变量", "所有环境共享，优先级最低：环境 / 集合 / 运行时同名变量依次覆盖", &self.file, VarScope::Project, cx))
                     .child(
                         v_flex()
                             .gap_2()
-                            .child(section("工作流", "多阶段编排：步骤共享运行时变量，任一步骤失败即中止", cx))
+                            .child(section("流程", "多阶段编排：步骤共享运行时变量，任一步骤失败即中止", cx))
                             .child(self.render_workflows(cx)),
                     )
                     .child(render_problems(&self.file, cx)),

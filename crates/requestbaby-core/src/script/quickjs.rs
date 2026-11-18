@@ -12,8 +12,11 @@ use std::collections::BTreeMap;
 /// - 数据提取：JSON.stringify 后回传 Rust 解析
 /// - host 函数：仅无状态 crypto 工具
 /// - 每次执行新建 Runtime，杜绝跨用例状态泄漏
-#[derive(Debug, Default, Clone, Copy)]
-pub struct QuickJsHost;
+#[derive(Debug, Default, Clone)]
+pub struct QuickJsHost {
+    /// 脚本里 http.request 的代理规则（与用例请求一致）
+    proxy: crate::engine::proxy::ProxyPolicy,
+}
 
 /// wrapper 模板中用户脚本的首行行号（用于 stack 行号修正）：
 /// L1: (function() {
@@ -24,7 +27,11 @@ const USER_SCRIPT_LINE_OFFSET: usize = 3;
 
 impl QuickJsHost {
     pub fn new() -> Self {
-        Self
+        Self::default()
+    }
+
+    pub fn with_proxy(proxy: crate::engine::proxy::ProxyPolicy) -> Self {
+        Self { proxy }
     }
 
     /// Runtime 线程池化复用（创建开销 ~1ms/次，千用例规模显著）；
@@ -107,7 +114,7 @@ fn fix_stack_lines(stack: &str, offset: usize) -> String {
 }
 
 /// 安装公共设施：__logs / log / crypto / http
-fn install_common(ctx: &Ctx<'_>) -> Result<()> {
+fn install_common(ctx: &Ctx<'_>, proxy: &crate::engine::proxy::ProxyPolicy) -> Result<()> {
     ctx.eval::<(), _>(
         r#"globalThis.__logs = [];
             globalThis.log = (...a) => __logs.push(a.map(x => { try { return typeof x === 'object' ? JSON.stringify(x) : String(x) } catch(e) { return String(x) } }).join(' '));"#,
@@ -118,8 +125,9 @@ fn install_common(ctx: &Ctx<'_>) -> Result<()> {
         .map_err(|e| anyhow!("安装 crypto 失败: {e}"))?;
 
     // http.request：同步 curl（参数/返回均 JSON 字符串，规避 host 绑定复杂度）
-    let http_fn = Function::new(ctx.clone(), |opts_json: String| -> String {
-        do_curl(&opts_json)
+    let proxy = proxy.clone();
+    let http_fn = Function::new(ctx.clone(), move |opts_json: String| -> String {
+        do_curl(&opts_json, &proxy)
     })
     .map_err(|e| anyhow!("注册 __httpRequest 失败: {e}"))?;
     g.set("__httpRequest", http_fn)
@@ -145,7 +153,7 @@ fn install_common(ctx: &Ctx<'_>) -> Result<()> {
 }
 
 /// Rust 侧同步执行一次 curl（脚本级 http.request 后端）
-fn do_curl(opts_json: &str) -> String {
+fn do_curl(opts_json: &str, proxy: &crate::engine::proxy::ProxyPolicy) -> String {
     use crate::engine::{CurlTransport, ResolvedRequest};
     #[allow(unused_imports)]
     use crate::engine::Transport;
@@ -164,6 +172,8 @@ fn do_curl(opts_json: &str) -> String {
         retry: v["retry"].as_u64().unwrap_or(0) as u32,
         insecure: v["insecure"].as_bool().unwrap_or(false),
         follow_redirects: v["followRedirects"].as_bool().unwrap_or(false),
+        proxy: proxy.clone(),
+        ..Default::default()
     };
     let transport = CurlTransport::new();
     let resp = match crate::engine::Transport::execute(&transport, &req) {
@@ -389,7 +399,7 @@ impl ScriptHost for QuickJsHost {
         script: &str,
     ) -> Result<ScriptOutcome> {
         self.with_ctx(|ctx| {
-            install_common(ctx)?;
+            install_common(ctx, &self.proxy)?;
             inject_scope(ctx, vars, env)?;
             inject_req(ctx, &req)?;
             let err = Self::eval_user(ctx, script);
@@ -407,7 +417,7 @@ impl ScriptHost for QuickJsHost {
         script: &str,
     ) -> Result<ScriptOutcome> {
         self.with_ctx(|ctx| {
-            install_common(ctx)?;
+            install_common(ctx, &self.proxy)?;
             inject_scope(ctx, vars, env)?;
             inject_resp(ctx, resp)?;
             let err = Self::eval_user(ctx, script);
@@ -424,7 +434,7 @@ impl ScriptHost for QuickJsHost {
         script: &str,
     ) -> Result<ScriptOutcome> {
         self.with_ctx(|ctx| {
-            install_common(ctx)?;
+            install_common(ctx, &self.proxy)?;
             inject_scope(ctx, vars, env)?;
             let err = Self::eval_user(ctx, script);
             let mut out = extract(ctx, false)?;
@@ -441,7 +451,7 @@ impl ScriptHost for QuickJsHost {
         tests: &[String],
     ) -> Result<Vec<TestOutcome>> {
         self.with_ctx(|ctx| {
-            install_common(ctx)?;
+            install_common(ctx, &self.proxy)?;
             inject_scope(ctx, vars, env)?;
             inject_resp(ctx, resp)?;
             let mut results = vec![];
@@ -523,13 +533,7 @@ mod tests {
     use super::*;
 
     fn resp() -> RespData {
-        RespData {
-            status: 201,
-            time_ms: 45,
-            size: 58,
-            headers: vec![("Content-Type".into(), "application/json".into())],
-            body: r#"{"data":{"id":42,"sku":"A1"}}"#.into(),
-        }
+        RespData::http(201, 45, 58, vec![("Content-Type".into(), "application/json".into())], r#"{"data":{"id":42,"sku":"A1"}}"#.into())
     }
 
     #[test]

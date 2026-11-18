@@ -1,11 +1,15 @@
 pub mod case;
 pub mod collection;
 pub mod project;
+pub mod protocols;
+pub mod ui;
 pub mod vars_map;
 
-pub use case::{CasesSpec, TestCase};
-pub use collection::{Collection, EnvFile};
-pub use project::{Project, Workflow, WorkflowStep};
+pub use case::{enabled_kv, BodySpec, CasesSpec, DataRow, KvValue, MultipartValue, TestCase};
+pub use collection::{env_path, list_envs, load_env, local_env_path, Collection, EnvFile, LOCAL_SUFFIX};
+pub use project::{GrpcConfig, Project, ProxyConfig, Workflow, WorkflowStep};
+pub use protocols::{GrpcSpec, Protocol, WsAction, WsClose, WsSpec, WsStep};
+pub use ui::{AndroidSpec, CaptureSource, Locator, UiAction, UiState, UiStep, WebSpec};
 pub use vars_map::StringVars;
 
 use anyhow::{Context, Result};

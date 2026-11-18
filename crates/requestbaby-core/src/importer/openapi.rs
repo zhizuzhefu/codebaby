@@ -170,10 +170,9 @@ fn build_case(
         "name": format!("{method_upper} {}", if summary.is_empty() { &op_id } else { summary }),
         "tags": [safe_name(op.get("tags").and_then(Value::as_array).and_then(|a| a.first()).and_then(Value::as_str).unwrap_or("default"))],
         "request": request,
-        "tests": ["res.status > 0"],
     });
     if let Some(e) = expect {
-        case["expectStatus"] = e;
+        case["expect"] = json!({ "status": e });
     }
     if !path_params.is_empty() {
         sum.warnings.push(format!(

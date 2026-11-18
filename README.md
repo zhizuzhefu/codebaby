@@ -1,6 +1,6 @@
 # requestbaby
 
-> CLI 侧的 Postman —— curl 为引擎、文件目录为集合、AI 原生 JSON 配置、面向项目级接口自动化测试。
+> AI 交付的独立验收层，辅助人对 AI 交付的成果验收。在接口边界（HTTP / gRPC / WebSocket）和真实界面（Web / Android，每一步截图留证）核对行为，一个 JSON 文件一个用例；命令行给 AI 和 CI 跑，桌面端给人审、给人改，两边读写同一个目录，结论一致。
 
 ```
  ____                             _         _         ____
@@ -11,245 +11,148 @@
                |_|
 ```
 
-## 为什么
+## 它解决什么
 
-| 痛点 | requestbaby 的答案 |
-|------|-------------------|
-| Postman 集合是闭源 JSON 黑盒，无法 review | 纯 JSON 配置 + 目录树即集合，Git 原生管理 |
-| 接口测试框架要写代码、搭工程 | 一个 JSON 一个用例，`pre/post/tests` 脚本内嵌 |
-| 配置靠人手写易错 | **AI 原生**：`requestbaby schema` 导出 Schema 约束生成，`validate` + `--dry-run` 程序化校验闭环 |
-| HTTP 客户端轮子重 | 内嵌 libcurl 执行（静态链接、零运行时依赖），`-v` 打印等价 curl 命令可直接复现 |
-| 存量资产迁移难 | `import`：OpenAPI 3 / Swagger 2 / Postman v2.1 一键导入 |
+AI 交付得越来越快，人没法逐行审代码。requestbaby 是 AI 交付的**独立验收层**：不看实现，只在接口边界核对行为，辅助人对 AI 交付的成果做验收。
+
+- **独立**：用例只写「发什么请求、应得什么响应」，与实现代码分开；AI 改得了代码，绕不开接口行为
+- **人做决定**：用例是普通 JSON 文件，进 Git、能 review；人审几十行用例定下约定，不必逐行审实现
+- **结论可复现**：`requestbaby verify` 一条命令跑完全部用例与流程，退出码 0 / 1 / 2 就是结论；每次运行连同等价命令写进共享历史，CLI、桌面端、CI 看到同一份证据
+
+## 5 个概念
+
+| 概念 | 是什么 | 在哪 |
+|------|--------|------|
+| 用例 | 一个请求 + 它应得的响应 | `collections/**/NN-名称.json`，文件名序 = 执行序 |
+| 集合 | 一个目录；公共请求头、标签 | 目录里的 `collection.json`（可选） |
+| 环境 | 一组变量：`baseUrl`、账号 | `envs/<环境>.json` |
+| 断言 | 响应应该是什么样 | 用例的 `expect` |
+| 流程 | 按顺序跑几个集合 | `requestbaby.json` 的 `workflows` |
+
+## 看懂一个用例
+
+```json case
+{
+  "name": "登录",
+  "request": {
+    "method": "POST",
+    "url": "{{baseUrl}}/auth/login",
+    "body": { "json": { "username": "{{username}}", "password": "{{password}}" } }
+  },
+  "expect": {
+    "status": 200,
+    "body": {
+      "code": 0,
+      "data.token": { "type": "string" }
+    }
+  },
+  "capture": { "token": "data.token" }
+}
+```
+
+读法：向 `环境里的 baseUrl + /auth/login` 发 POST；期望状态码 200、响应体 `code` 等于 0、`data.token` 是字符串；
+把 `data.token` 存成变量 `token`，后面的用例写 `{{token}}` 就能用。失败时报告直接写明：`body.code = 0 → 期望 0，实际 4030001`。
+
+## HTTP、gRPC、WebSocket、Web、Android
+
+一个用例对应一种协议，请求部分五选一；断言、捕获、变量、集合、流程、报告完全一样。
+
+| 协议 | 请求写在 | `expect.status` | `expect.headers` | `expect.body` |
+|------|----------|-----------------|------------------|---------------|
+| HTTP | `request`：method、url、headers、body | 状态码 200 | 响应头 | 响应体 |
+| gRPC | `grpc`：target、method、message、metadata | `"OK"` / `"NOT_FOUND"`… | 响应元数据 | 响应消息（流式为数组） |
+| WebSocket | `ws`：url、headers、steps（发送 / 接收并断言 / 等到某条消息…） | 握手状态 101 | 握手响应头 | 收到的全部消息 |
+| Web | `web`：url、steps（点击 / 填写 / 断言…） | 页面的 HTTP 状态 | 页面响应头 | 结束时的 `{url, title}` |
+| Android | `android`：app、steps（点按 / 填写 / 滑动 / 断言…） | 无 | 无 | 结束时的 `{package, activity}` |
+
+gRPC 用服务端反射或项目里的 .proto 文件（`requestbaby.json` 的 `grpc.protos`），不需要生成代码；WebSocket 的每一步都能断言、捕获，
+后面的步骤直接用捕获的值。详见 `requestbaby guide grpc` / `requestbaby guide ws`。桌面端按协议切换各自的编辑界面与响应视图。
+
+Web / Android 用例按用户看得到的东西定位（`{"role": "button", "name": "登录"}`、`{"label": "手机号"}`），
+每一步自动等待、**自动截图**（点了哪里、验证到哪个元素都框出来），失败时另存页面结构、控制台、网络请求 / logcat；
+证据放在 `.requestbaby/runs/<运行 ID>/`，运行记录绑定代码提交，`run --report html` 生成带截图时间线的单文件报告。
+Web 直接驱动本机 Chrome / Edge（DevTools 协议，不需要 Playwright / Node），也能连 Docker / 云端的远程浏览器；Android 只需要 adb，远程模拟器 / 云手机写 `主机:端口` 自动连接；运行与判定不调用大模型、不消耗 token。
+详见 `requestbaby guide web` / `requestbaby guide android`。
+
+需要代理时一处设置、全部生效：`requestbaby proxy set socks5h://主机:端口`（或桌面端「项目设置 → 代理」），HTTP / gRPC / WebSocket / 浏览器 / adb 都经它，`proxy off` 一键直连。详见 `requestbaby guide proxy`。
+
+## 界面与文件一一对应
+
+| 桌面端 | 文件里 |
+|--------|--------|
+| 用例编辑器「请求」页 | `request`（方法、URL、参数、请求头、请求体） |
+| 「断言」页：状态码 / 响应体表 / 响应头表 | `expect.status` / `expect.body` / `expect.headers`（一行 = 一条） |
+| 「断言」页：捕获为变量 | `capture` |
+| 「脚本（进阶）」页 | `pre` / `post` / `tests`（JS，表格写不出的才用） |
+| 「高级」页 | `tags`、`skip`、超时、数据驱动 `cases` |
+| 侧栏「流程」/ 流程编辑器 | `requestbaby.json` 的 `workflows` |
+| 环境管理页 | `envs/*.json` |
+| 响应面板「字段」页：断言值 / 断言类型 / 捕获… | 往 `expect.body` / `capture` 里加一条 |
+
+每个操作都有等价命令（悬停查看或一键复制，如 `requestbaby send collections/demo/01-health.json -e dev`），保存的文件与 `requestbaby fmt` 的格式逐字节一致。
+在桌面端改、在编辑器里改、让 AI 改，是同一件事。
 
 ## 安装
 
-两个独立程序，共用同一个核心库（`crates/requestbaby-core`）、同一份项目目录与运行历史：
+```bash
+cargo install --locked --path crates/requestbaby-cli    # 命令行 requestbaby
+make mac-app && make install-mac                         # macOS 桌面端（本机签名）→ /Applications/requestbaby.app
+```
 
-| 程序 | 用途 |
-|------|------|
-| `requestbaby` | CLI 主体：AI / CI / 终端使用 |
-| `requestbaby-desktop` | 桌面端（GPUI）：给人观察与编辑用，读写同一项目目录 |
+构建需要 rustup 与 cmake（编译内嵌 libcurl）。运行时零外部依赖：libcurl 静态链接、TLS 用 rustls、证书走系统证书库。
+正式发布：`make mac-release`（universal + Developer ID 签名 + 公证 → dmg，需要钥匙串证书与 notarytool 凭证）。
+
+## 上手
 
 ```bash
-# 构建期依赖：rustup（rust-toolchain.toml 固定版本，首次自动下载）、cmake（编译内嵌 libcurl）
-# 桌面端在 macOS 另需 Xcode 命令行工具：xcode-select --install
-cargo install --path crates/requestbaby-cli        # → ~/.cargo/bin/requestbaby
-cargo install --path crates/requestbaby-desktop    # → ~/.cargo/bin/requestbaby-desktop
+requestbaby init myapi && cd myapi          # 项目骨架：dev / prod 环境 + 示例集合 + AGENTS.md
+requestbaby vars set baseUrl http://localhost:8080 -e dev
+requestbaby new case collections/orders 创建订单 -m post
+requestbaby send collections/orders/01-创建订单.json --suggest   # 看真实响应，照着生成 expect / capture
+requestbaby run                              # 跑全部用例
+requestbaby verify                           # 校验 → 全部用例 → 全部流程，一个结论
+requestbaby open                             # 在桌面端打开
 ```
 
-运行时零外部依赖：HTTP 引擎为 libcurl 官方 Rust binding（static-curl 静态链接进二进制），
-不 spawn curl 进程、不动态链接系统 libcurl。`requestbaby open` 会在同目录或 PATH 中查找桌面端。
+已有资产：`requestbaby new case <目录> --curl "curl …"`（浏览器 Copy as cURL）、`requestbaby import openapi.json`（OpenAPI 3 / Swagger 2 / Postman v2.1）。
 
-开发时不安装直接运行：`cargo run -p requestbaby -- run collections`、`cargo run -p requestbaby-desktop -- <项目目录>`。
+## 写偏了会被提醒
 
-## 快速开始
+`requestbaby validate` 除了报错，还给写法建议：长 JS 断言可以写成 expect、post 里的取值可以写成 capture、URL 写死了域名……
+带 `fixable` 的由 `requestbaby fmt --fix` 一键改写（语义不变，桌面端用例编辑器底部「一键改写」同一实现）。
 
-```bash
-requestbaby init myapi && cd myapi   # 生成脚手架
-requestbaby import openapi.json -o api/   # 从 spec 生成用例（OpenAPI3/Swagger2/Postman）
-requestbaby validate collections     # 结构 + 变量引用 + 脚本语法校验
-requestbaby run collections          # 跑整个集合
-requestbaby send collections/01-login.json   # 单用例调试面板（状态/响应头/美化响应体/断言）
-requestbaby watch collections        # 监听变更自动重跑
-requestbaby open                     # 在桌面端打开当前项目
-```
+## 和 AI 一起用
 
-## 命令全景
+告诉 AI：「接口测试用 requestbaby，先执行 `requestbaby guide`」。它会读到一张 6KB 的速查卡，读完就能写出一次通过校验的用例；
+需要时再看 `requestbaby guide <主题>`。`requestbaby init` 生成的 `AGENTS.md` / `CLAUDE.md` 已经写好这条约定。
 
-```bash
-requestbaby run [paths] [-e env] [--tag smoke] [--name login]
-                [--fail-fast] [--dry-run] [-v]
-                [-o outdir]           # 响应落盘（AI 自修复素材）
-                [--parallel 4]        # 独立用例并发
-                [--report term|json|html]
-                [--json-stream]       # NDJSON 运行事件（与桌面端同一协议）
-                [--no-history]        # 不写入 .requestbaby/runs/
-requestbaby workflow <name> [-e env] [--dry-run] [--report ...] [--json-stream]
-requestbaby send <case> [-e env]      # 单用例调试（不写历史）
-requestbaby watch <paths> [...]       # 变更自动重跑
-requestbaby validate [paths] [-e env] [--report json]
-requestbaby vars <case> [-e env]      # 变量解析预览：最终取值与来源层级
-requestbaby fmt [paths] [--check]     # 规范格式，公共请求头上提 collection.json
-requestbaby doctor                    # 环境自检
-requestbaby init [dir]
-requestbaby new case|collection|env   # 与桌面端新建同一模板
-requestbaby import <spec> [-o dir]    # OpenAPI3/Swagger2/Postman 导入
-requestbaby list [paths]
-requestbaby schema [--all]            # 导出 JSON Schema（喂给 AI）
-requestbaby history                   # 运行历史（CLI / 桌面端共享）
-requestbaby open [dir]                # 在桌面端打开
-```
+文档三层，都编译在二进制里、与所装版本一致：
 
-## 项目结构
+| 层 | 命令 | 内容 |
+|----|------|------|
+| 速查卡 | `requestbaby guide` | 5 个概念、典型用例、expect / capture、闭环命令、规矩 |
+| 场景配方 | `requestbaby guide <主题>` | `expect` `capture` `vars` `flow` `auth` `e2e` `data` `setup` `env` `grpc` `ws` `web` `android` `proxy` `scripts` `cli` |
+| 字段参考 | `requestbaby guide ref` | 由 JSON Schema 生成的全部字段（`requestbaby schema --all` 是原始 Schema） |
 
-```
-myapi/
-├── requestbaby.json            # 项目配置：全局变量/默认环境/默认超时
-├── envs/
-│   ├── dev.json                # { "vars": {...} }
-│   └── prod.json
-└── collections/
-    └── orders/                 # 目录即集合（无限嵌套，逐级继承）
-        ├── collection.json     # vars + headers + tags + setup/teardown
-        ├── 01-login.json       # 用例（文件名序 = 执行序）
-        ├── 02-create.json      #   支持 cases 数据驱动
-        └── data/users.csv
-```
+源文件在 [docs/guide/](docs/guide/)；其中每个示例都由测试真实执行（validate + dry-run），文中每条命令都由测试核对存在。
 
-## 用例配置
-
-```json
-{
-  "name": "create-order",
-  "tags": ["smoke", "order"],
-  "skip": false,
-  "expectStatus": [200, 201],
-  "request": {
-    "method": "POST",
-    "url": "{{baseUrl}}/orders",
-    "headers": { "Authorization": "Bearer {{token}}" },
-    "body": { "json": { "sku": "{{sku}}", "qty": "{{qty:number}}" } },
-    "timeoutMs": 5000
-  },
-  "pre":  "req.headers['X-Ts'] = String(Math.floor(Date.now()/1000))",
-  "post": "vars.orderId = res.json('data.id')",
-  "tests": [
-    "data.code === 0",
-    "data.data.sku === env.sku",
-    "res.timeMs < 1000"
-  ],
-  "cases": [
-    { "label": "A1", "sku": "A1" },
-    { "label": "B2", "sku": "B2" }
-  ]
-}
-```
-
-### 变量体系（四层，高覆盖低）
-
-```
-requestbaby.json vars  <  envs/<env>.json vars  <  collection.json vars  <  运行时 vars（脚本写入）
-```
-
-| 语法 | 说明 |
-|------|------|
-| `{{name}}` | 字符串替换 |
-| `{{name:number}}` / `{{name:bool}}` | 类型标注：JSON body 值位置连引号替换为裸值（int64 binding 场景） |
-| `{{%ENV_NAME}}` | 进程环境变量（CI 密钥不落盘） |
-
-### 变量定义（对象形态）
-
-```json
-{
-  "token":   { "value": "eyJ...", "secret": true },
-  "apiKey":  { "from": "env", "name": "MY_KEY" }
-}
-```
-
-- `secret: true`：所有输出（curl 命令/报告/日志/快照）自动脱敏为 `****`
-- `from: "env"`：运行时读进程环境变量，缺失报错；默认视为 secret
-
-### 脚本能力（QuickJS 沙箱，100% ES2020）
-
-| 对象 | 能力 |
-|------|------|
-| `req` | pre 中改写 method/url/headers/body，`req.setJson(obj)` |
-| `res` | `status/headers/timeMs/size/text()/json()/json('a.b.c')` 安全取值 |
-| `data` | `res.json()` 快照，`data.a.b.c` 代替长链 |
-| `vars` / `env` | 运行时变量读写 / 只读视图 |
-| `http.request/get/post` | 同步发任意请求（setup 造数/清数、脚本内联调用） |
-| `crypto` | md5 / sha256 / hmacSha256 / base64Encode / base64Decode |
-| `log()` | 调试输出 |
-
-脚本异常全透传：`name/message/stack`，stack 行号修正为脚本内相对行号；tests 区分「断言 false」（正常失败）与「表达式抛错」（配置问题，指出具体字段名与修复提示）。
-
-### 集合级配置（collection.json，逐级继承）
-
-```json
-{
-  "name": "orders",
-  "tags": ["order"],
-  "vars": { "sku": "A1" },
-  "headers": { "authorization": "Bearer {{token}}" },
-  "setup": "const r = http.post(env.baseUrl + '/tasks', {...}); vars.taskId = r.json().id",
-  "teardown": "http.delete(env.baseUrl + '/tasks/' + vars.taskId)"
-}
-```
-
-- headers/vars/tags：向下继承，用例级同名覆盖
-- setup：进入集合执行（造数，可发请求）；teardown：离开执行（清数，无论成败）
-
-### 工作流（多阶段编排）
-
-E2E 链路不再依赖外部脚本串联：`requestbaby.json` 声明步骤，runtime vars 跨阶段自动传递。
-
-```json
-{
-  "workflows": {
-    "e2e": {
-      "steps": [
-        { "run": "collections/10-teacher", "tags": ["login"] },
-        { "run": "collections/10-teacher", "tags": ["create", "verify"] },
-        { "run": "collections/20-student" },
-        { "run": "collections/10-teacher", "tags": ["poll", "send"] }
-      ]
-    }
-  }
-}
-```
-
-```bash
-requestbaby workflow e2e -e test    # 步骤失败即中止；支持 --dry-run/--report
-```
-
-### 数据驱动
-
-`"cases"` 内联行数组或 `{"file": "data.csv"}`（首行表头）；用例 × 每行 = 一个实例（`[label]` 标注），行变量优先级最高。
-
-### 断言语法糖
-
-- `expectStatus: 200` 或 `[200,409]`（幂等容忍）
-- `data.a.b.c`（隐式 res.json() 根）
-- `res.json('a.b.c')`（缺路径返回 undefined 不抛错）
-
-## AI 原生工作流
-
-```
-1. requestbaby schema > case.schema.json        # 配置契约
-2. AI 依 schema + 接口文档/OpenAPI 生成用例 JSON
-3. requestbaby validate collections             # 结构 + 变量 + 脚本语法
-4. requestbaby run collections --dry-run -v     # 审阅 curl 命令与最终 body
-5. requestbaby run collections -o out/          # 执行 + 响应落盘
-   ↳ 失败快照/脱敏报告/响应文件 → 喂回 AI 自修复 → 循环
-```
-
-## CI 集成
+## CI
 
 ```yaml
-- run: requestbaby run collections --fail-fast --report json > report.json
-# 或 --report html（写 report.html，artifact 挂载）；失败 exit 1
+- run: requestbaby verify -e ci --report json > verify.json   # 被测服务由 CI 先启动；exit 0 / 1 / 2
 ```
 
-## 测试与示例
+## 开发
 
-- 单元 + 集成测试：`cargo test`（内置 mini HTTP server 端到端）
-- **全特性示范项目**：[examples/golden](examples/golden)——捕获链/数据驱动/setup/secret/workflow，进 CI 活验证（文档即契约）
-- 可运行示例：[examples/demo-api](examples/demo-api)（httpbin）
-- 用户项目：`projects/`（gitignore，明文密钥属用户资产）
+```bash
+cargo test --workspace
+cargo clippy --workspace --all-targets -- -D warnings
+cargo run -p requestbaby -- run collections
+cargo run -p requestbaby-desktop -- <项目目录>
+```
 
-## 文档
-
-- **AI 用例生成指南**：[docs/AI-GUIDE.md](docs/AI-GUIDE.md)——字段全参考、变量系统、脚本沙箱 API、断言模式库、五种组织模式、生成工作流、错误修复对照表、自检清单
-- **AI 调度协议**：[docs/AI-NATIVE.md](docs/AI-NATIVE.md)——闭环、退出码语义、CI 门禁
-- 架构设计：[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)
-
-## Roadmap
-
-- [ ] native 引擎 feature（hyper 连接复用，大批量/压测档位）
-- [ ] TUI 集合浏览器
-- [ ] HAR / curl 命令导入
-- [ ] 响应 schema 契约校验
-- [ ] 执行历史与 `--compare last` 回归对比
+三个 crate：`requestbaby-core`（全部能力）、`requestbaby-cli`、`requestbaby-desktop`（GPUI）。每个能力只在 core 实现一次，两端都完整。
+架构：[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)。
 
 ## License
 

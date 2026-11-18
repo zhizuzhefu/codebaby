@@ -1,8 +1,0 @@
-{
-  "name": "orders",
-  "tags": ["demo"],
-  "vars": {
-    "sku": "A1",
-    "qty": 2
-  }
-}

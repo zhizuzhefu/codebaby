@@ -1,15 +1,20 @@
 pub mod discover;
 mod event;
+pub mod ui;
 
 pub use event::{CancelToken, EventHook, RunEvent};
+pub use ui::ArtifactsDir;
 
-use crate::config::{load_strict, Collection, Project, TestCase};
-use crate::engine::{CurlTransport, ResolvedRequest, Response, Transport};
+use crate::config::case::append_query;
+use crate::config::{enabled_kv, load_strict, BodySpec, Collection, MultipartValue, Project, Protocol, TestCase, WsAction};
+use crate::cookies::CookieJar;
+use crate::engine::{CurlTransport, FormPart, PartValue, ResolvedRequest, Response, Transport};
 use crate::script::{QuickJsHost, ReqData, RespData, ScriptHost, TestOutcome};
 use crate::vars::{VarVal, Vars};
-use anyhow::{Context, Result};
+use anyhow::Result;
 use std::collections::BTreeMap;
 use std::path::Path;
+use std::time::{Duration, Instant};
 
 /// 运行选项
 #[derive(Clone, Default)]
@@ -27,15 +32,69 @@ pub struct RunOptions {
     pub parallel: Option<usize>,
     /// 协作式取消（Desktop 停止按钮 / Ctrl-C）
     pub cancel: Option<CancelToken>,
+    /// 界面用例的证据目录（截图 / 失败现场）；None 时放到系统临时目录
+    pub artifacts: Option<ArtifactsDir>,
+    /// Web 用例显示浏览器窗口（--headed）
+    pub headed: bool,
 }
 
-/// 失败时的响应快照（进 --json 报告，辅助 AI 自修复）
+/// 响应快照（进报告与运行历史：失败用例保留 4000 字符辅助 AI 自修复，通过的保留 2000 字符供回看）
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct ResponseSnapshot {
     pub status: u16,
     pub headers: Vec<(String, String)>,
     pub body: String,
     pub duration_ms: u64,
+    /// body 被截断（完整响应需重新发送）
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub truncated: bool,
+    #[serde(default, skip_serializing_if = "Protocol::is_http")]
+    pub protocol: Protocol,
+    /// 消息时间线（WebSocket / gRPC；条数与每条长度有上限）
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub frames: Vec<crate::engine::Frame>,
+    /// 界面用例的证据：每一步的记录与截图（截图文件在证据目录里）
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub evidence: Option<crate::engine::ui::UiEvidence>,
+}
+
+/// 状态文字：HTTP / WebSocket 显示数字，gRPC 显示状态名，界面用例执行完为「完成」（Web 有页面状态码时显示数字）；没有响应为 -
+pub fn status_text(protocol: Protocol, status: u16, responded: bool) -> String {
+    match (protocol, responded) {
+        (_, false) => "-".into(),
+        (Protocol::Grpc, true) => crate::config::protocols::grpc_code_name(status),
+        (Protocol::Web, true) if status > 0 => status.to_string(),
+        (Protocol::Web | Protocol::Android, true) => "完成".into(),
+        _ => status.to_string(),
+    }
+}
+
+/// 状态是否异常
+pub fn status_is_bad(protocol: Protocol, status: u16, responded: bool) -> bool {
+    !responded
+        || match protocol {
+            Protocol::Http | Protocol::Web => status >= 400,
+            Protocol::Ws => status != 101,
+            Protocol::Grpc => status != 0,
+            Protocol::Android => false,
+        }
+}
+
+/// 一次交换的结果：统一成 RespData，后面的 capture / post / expect / tests 与协议无关
+struct Exchanged {
+    resp: RespData,
+    /// 交换过程中产生的断言（WebSocket 步骤里的 receive / waitFor / 步骤 capture）
+    outcomes: Vec<TestOutcome>,
+}
+
+/// 响应是否为二进制（图片 / 文件下载等）：按 Content-Type，或内容不是合法 UTF-8
+pub fn is_binary(headers: &[(String, String)], body: &[u8]) -> bool {
+    let ct = headers.iter().find(|(k, _)| k.eq_ignore_ascii_case("content-type")).map(|(_, v)| v.to_ascii_lowercase()).unwrap_or_default();
+    let binary_ct = ["image/", "audio/", "video/", "application/octet-stream", "application/pdf", "application/zip", "application/gzip", "font/"]
+        .iter()
+        .any(|p| ct.starts_with(p))
+        && !ct.starts_with("image/svg");
+    binary_ct || std::str::from_utf8(body).is_err()
 }
 
 /// 单用例执行结果
@@ -44,8 +103,13 @@ pub struct CaseResult {
     pub rel: String,
     pub name: String,
     pub tags: Vec<String>,
+    /// HTTP 方法；gRPC 为 GRPC，WebSocket 为 WS
     pub method: String,
+    /// HTTP / WebSocket 地址；gRPC 为「地址/包.服务/方法」
     pub url: String,
+    #[serde(default, skip_serializing_if = "Protocol::is_http")]
+    pub protocol: Protocol,
+    /// HTTP 状态码（WebSocket 为握手状态，成功 101）；gRPC 为 gRPC 状态码（0 = OK）
     pub status: u16,
     pub duration_ms: u64,
     pub skipped: bool,
@@ -59,6 +123,9 @@ pub struct CaseResult {
     pub response_snapshot: Option<ResponseSnapshot>,
     /// 完整响应（send 模式交互展示用）
     pub full_response: Option<crate::script::RespData>,
+    /// 二进制响应的原始字节（send 模式；图片预览 / 另存为）
+    #[serde(skip)]
+    pub raw_body: Option<std::sync::Arc<Vec<u8>>>,
     /// 脚本 console.log 输出（已脱敏）
     #[serde(default)]
     pub logs: Vec<String>,
@@ -69,6 +136,21 @@ impl CaseResult {
         !self.skipped && self.error.is_none() && self.tests.iter().all(|t| t.pass)
     }
 
+    /// 拿到了响应（gRPC 的 OK 是 0，不能用 status 是否为 0 判断）
+    pub fn responded(&self) -> bool {
+        self.response_snapshot.is_some() || self.full_response.is_some() || (matches!(self.protocol, Protocol::Http | Protocol::Ws) && self.status > 0)
+    }
+
+    /// 状态列文字：200 / 101 / OK / NOT_FOUND；没有响应时为 -
+    pub fn status_text(&self) -> String {
+        status_text(self.protocol, self.status, self.responded())
+    }
+
+    /// 状态是否算异常（标红）：没有响应、HTTP ≥ 400、WebSocket 握手没成功、gRPC 非 OK
+    pub fn status_is_bad(&self) -> bool {
+        status_is_bad(self.protocol, self.status, self.responded())
+    }
+
     /// 错误/占位构造器（统一 5 处样板）
     pub fn placeholder(rel: &str, name: &str, error: Option<String>) -> Self {
         Self {
@@ -77,6 +159,7 @@ impl CaseResult {
             tags: vec![],
             method: "-".into(),
             url: "-".into(),
+            protocol: Protocol::Http,
             status: 0,
             duration_ms: 0,
             skipped: false,
@@ -86,6 +169,7 @@ impl CaseResult {
             body_preview: None,
             response_snapshot: None,
             full_response: None,
+            raw_body: None,
             logs: vec![],
         }
     }
@@ -98,6 +182,28 @@ pub struct ProjectCtx {
     pub env_vars: BTreeMap<String, String>,
     /// 敏感变量值清单（输出层脱敏用）
     pub secret_values: Vec<String>,
+    /// 代理规则（requestbaby.json 的 proxy + REQUESTBABY_PROXY 覆盖）
+    pub proxy: crate::engine::proxy::ProxyPolicy,
+}
+
+/// 跨请求的会话状态：运行时捕获的变量 + Cookie。
+/// 一次运行内自动共享；Desktop 在本次会话内跨「发送」保持（[`Runner::seed`] / [`Runner::state`]）
+#[derive(Debug, Clone, Default)]
+pub struct SessionState {
+    pub vars: BTreeMap<String, VarVal>,
+    pub cookies: CookieJar,
+}
+
+impl SessionState {
+    pub fn is_empty(&self) -> bool {
+        self.vars.is_empty() && self.cookies.is_empty()
+    }
+
+    /// 后来者覆盖：同名变量 / 同一 Cookie 以 other 为准
+    pub fn merge(&mut self, other: &SessionState) {
+        self.vars.extend(other.vars.iter().map(|(k, v)| (k.clone(), v.clone())));
+        self.cookies.merge(&other.cookies);
+    }
 }
 
 /// 编排器：discover → filter → execute（顺序/并行）→ results
@@ -108,22 +214,38 @@ pub struct Runner {
     transport: CurlTransport,
     script: QuickJsHost,
     runtime_vars: BTreeMap<String, VarVal>,
+    cookies: CookieJar,
     /// 运行期事件回调（caseStarted / log / caseFinished / notice）
     hook: Option<EventHook>,
     /// 非用例级提示（teardown 失败等），由上层渲染
     notices: Vec<String>,
+    /// 界面用例共享的浏览器 / 已安装的 APK（一次运行内复用）
+    ui: std::sync::Arc<std::sync::Mutex<ui::UiResources>>,
 }
 
 impl Runner {
     pub fn new(ctx: ProjectCtx) -> Self {
         Self {
+            script: QuickJsHost::with_proxy(ctx.proxy.clone()),
             ctx,
             transport: CurlTransport::new(),
-            script: QuickJsHost::new(),
             runtime_vars: BTreeMap::new(),
+            cookies: CookieJar::default(),
             hook: None,
             notices: vec![],
+            ui: Default::default(),
         }
+    }
+
+    /// 以已有会话状态开始（Desktop 单发：带上之前捕获的 token / Cookie）
+    pub fn seed(&mut self, state: SessionState) {
+        self.runtime_vars = state.vars;
+        self.cookies = state.cookies;
+    }
+
+    /// 当前会话状态（运行结束后回传给 Desktop 会话）
+    pub fn state(&self) -> SessionState {
+        SessionState { vars: self.runtime_vars.clone(), cookies: self.cookies.clone() }
     }
 
     /// 安装事件回调（Desktop 进度 / CLI `--json-stream`）
@@ -257,10 +379,7 @@ impl Runner {
         let mut written: Vec<String> = vec![];
         for dc in cases {
             if let Ok(c) = load_strict::<TestCase>(&dc.path) {
-                for n in crate::validate::scan_var_writes(&c.pre)
-                    .into_iter()
-                    .chain(crate::validate::scan_var_writes(&c.post))
-                {
+                for n in c.var_writes() {
                     if !written.contains(&n) {
                         written.push(n);
                     }
@@ -268,14 +387,7 @@ impl Runner {
             }
         }
         let consumes_written = |c: &TestCase| -> bool {
-            let mut texts = vec![c.request.url.clone()];
-            texts.extend(c.request.headers.values().cloned());
-            if let Some(b) = &c.request.body {
-                texts.push(b.render());
-            }
-            texts.extend(c.tests.iter().cloned());
-            texts.push(c.pre.clone());
-            texts.push(c.post.clone());
+            let texts = c.referencing_texts();
             let mut found = false;
             for t in texts {
                 for w in &written {
@@ -305,7 +417,9 @@ impl Runner {
             if !Self::matches_filter(&all_tags, &name, &stem, opts) {
                 continue;
             }
-            let depends = !case.pre.is_empty() || !case.post.is_empty() || case.cases.is_some() || consumes_written(&case);
+            // 写变量的（脚本 / capture）与读这些变量的都串行，保证捕获先于引用
+            // 界面用例同样串行：共用一个浏览器 / 一台设备，截图证据按顺序可读
+            let depends = !case.pre.is_empty() || !case.post.is_empty() || !case.capture.is_empty() || case.cases.is_some() || consumes_written(&case) || case.protocol().is_ui();
             if depends {
                 serial.push(dc);
             } else {
@@ -326,43 +440,65 @@ impl Runner {
                 return Ok(results);
             }
         }
-        // 阶段2：独立用例并发（跳过 setup/teardown；fail_fast 不中断进行中批次）
-        for chunk in parallel.chunks(width) {
-            if Self::cancelled(opts) {
-                break;
-            }
-            let mut handles = vec![];
-            for dc in chunk {
-                let dc: discover::DiscoveredCase = (*dc).clone();
-                let runner = self.clone();
-                let o = RunOptions {
-                    verbose: opts.verbose,
-                    output_dir: opts.output_dir.clone(),
-                    cancel: opts.cancel.clone(),
-                    ..Default::default()
-                };
-                handles.push(std::thread::spawn(move || {
-                    let mut r = runner;
-                    let mut out: Vec<CaseResult> = vec![];
-                    let _ = r.run_serial(std::slice::from_ref(&dc), &o, &mut |x| out.push(x.clone()));
-                    out
-                }));
-            }
-            let mut chunk_failed = false;
-            for h in handles {
-                if let Ok(rs) = h.join() {
-                    for r in rs {
-                        if !r.passed() {
-                            chunk_failed = true;
-                        }
-                        sink(&r);
-                        results.push(r);
-                    }
+        // 阶段2：独立用例由 width 个工作线程领取执行（不按批等待：慢用例不拖住其他线程）；
+        // 结果按原顺序交给 sink。跳过 setup/teardown；fail_fast 时不再领取新用例
+        let jobs: Vec<discover::DiscoveredCase> = parallel.into_iter().cloned().collect();
+        let next = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let jobs = std::sync::Arc::new(jobs);
+        let (tx, rx) = std::sync::mpsc::channel::<(usize, Vec<CaseResult>)>();
+        let mut workers = vec![];
+        for _ in 0..width.min(jobs.len()) {
+            let (jobs, next, stop, tx) = (jobs.clone(), next.clone(), stop.clone(), tx.clone());
+            let mut runner = self.clone();
+            let o = RunOptions {
+                verbose: opts.verbose,
+                output_dir: opts.output_dir.clone(),
+                cancel: opts.cancel.clone(),
+                artifacts: opts.artifacts.clone(),
+                headed: opts.headed,
+                ..Default::default()
+            };
+            let fail_fast = opts.fail_fast;
+            workers.push(std::thread::spawn(move || loop {
+                if stop.load(std::sync::atomic::Ordering::Relaxed) || Self::cancelled(&o) {
+                    break;
                 }
+                let i = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                let Some(dc) = jobs.get(i) else { break };
+                let mut out: Vec<CaseResult> = vec![];
+                let _ = runner.run_serial(std::slice::from_ref(dc), &o, &mut |x| out.push(x.clone()));
+                if fail_fast && out.iter().any(|r| !r.passed()) {
+                    stop.store(true, std::sync::atomic::Ordering::Relaxed);
+                }
+                if tx.send((i, out)).is_err() {
+                    break;
+                }
+            }));
+        }
+        drop(tx);
+        // 按原顺序吐出：先到的乱序结果暂存，等前面的到齐
+        let mut pending: BTreeMap<usize, Vec<CaseResult>> = BTreeMap::new();
+        let mut emit = 0usize;
+        for (i, rs) in rx {
+            pending.insert(i, rs);
+            while let Some(rs) = pending.remove(&emit) {
+                for r in rs {
+                    sink(&r);
+                    results.push(r);
+                }
+                emit += 1;
             }
-            if opts.fail_fast && chunk_failed {
-                break;
+        }
+        // fail_fast / 取消时序号可能不连续：剩下的按序补上
+        for (_, rs) in pending {
+            for r in rs {
+                sink(&r);
+                results.push(r);
             }
+        }
+        for w in workers {
+            let _ = w.join();
         }
         Ok(results)
     }
@@ -461,7 +597,7 @@ impl Runner {
             let name = display_name(dc, &case);
 
             // ---- 数据驱动展开（用例 × 行）----
-            let rows: Vec<Option<BTreeMap<String, String>>> = match &case.cases {
+            let rows: Vec<Option<crate::config::DataRow>> = match &case.cases {
                 None => vec![None],
                 Some(spec) => {
                     let base = dc.path.parent().unwrap_or(std::path::Path::new("."));
@@ -489,7 +625,7 @@ impl Runner {
                 }
                 let inst_name = match (&case.cases, row) {
                     (Some(_), Some(r)) => {
-                        let label = r.get("label").cloned().unwrap_or_else(|| format!("#{}", i));
+                        let label = r.get("label").map(|v| v.to_render()).unwrap_or_else(|| format!("#{}", i));
                         format!("{name} [{label}]")
                     }
                     _ => name.clone(),
@@ -554,36 +690,24 @@ impl Runner {
             v.push_layer(self.runtime_vars.clone());
             v.env_snapshot()
         };
+        // 失败结果：文件 = 该 collection.json（相对项目根，点开即是集合配置），方法列显示 setup / teardown
+        let rel = discover::find_project_root(dir)
+            .and_then(|root| cfg_path.strip_prefix(&root).ok().map(|p| p.to_string_lossy().replace('\\', "/")))
+            .unwrap_or_else(|| cfg_path.display().to_string());
+        let failed = |error: String| {
+            let mut r = CaseResult::placeholder(&rel, &format!("集合 {kind}：{display_name}"), Some(error));
+            r.method = kind.to_string();
+            r.url = String::new();
+            r
+        };
         match self.script.run_scoped(&self.runtime_vars, &env, script) {
             Ok(out) => {
                 if let Some(e) = out.error {
-                    return Some(CaseResult {
-                        rel: format!("({kind}) {}", dir.display()),
-                        name: format!("({kind}) {display_name}"),
-                        tags: vec![],
-                        method: "-".into(),
-                        url: "-".into(),
-                        status: 0,
-                        duration_ms: 0,
-                        skipped: false,
-                                    error: Some(format!("{kind} 脚本失败: {e}")),
-                        tests: vec![],
-                        curl_cmd: None,
-                        body_preview: None,
-                        response_snapshot: None,
-                        full_response: None,
-                        logs: vec![],
-                    });
+                    return Some(failed(format!("{kind} 脚本失败: {e}")));
                 }
                 self.runtime_vars.extend(out.vars);
             }
-            Err(e) => {
-                return Some(CaseResult::placeholder(
-                    &format!("({kind}) {}", dir.display()),
-                    &format!("({kind}) {display_name}"),
-                    Some(format!("{kind} 宿主错误: {e:#}")),
-                ));
-            }
+            Err(e) => return Some(failed(format!("{kind} 宿主错误: {e:#}"))),
         }
         None
     }
@@ -595,6 +719,7 @@ impl Runner {
             tags: tags.to_vec(),
             method: "-".into(),
             url: "-".into(),
+            protocol: Protocol::Http,
             status: 0,
             duration_ms: 0,
             skipped: false,
@@ -604,6 +729,7 @@ impl Runner {
             body_preview: None,
             response_snapshot: None,
             full_response: None,
+            raw_body: None,
             logs: vec![],
         }
     }
@@ -614,20 +740,21 @@ impl Runner {
         case: &TestCase,
         tags: &[String],
         name: &str,
-        row: Option<&BTreeMap<String, String>>,
+        row: Option<&crate::config::DataRow>,
         opts: &RunOptions,
     ) -> CaseResult {
         let mut vars = self.vars_for(&dc.chain);
         // 数据驱动行变量：优先级最高
         if let Some(row) = row {
-            vars.push_str_layer(row.iter().map(|(k, v)| (k.clone(), v.clone())));
+            vars.push_layer(row.clone());
         }
         let mut result = CaseResult {
             rel: dc.rel.clone(),
             name: name.to_string(),
             tags: tags.to_vec(),
-            method: case.request.method.clone(),
-            url: case.request.url.clone(),
+            method: "-".into(),
+            url: "-".into(),
+            protocol: case.protocol(),
             status: 0,
             duration_ms: 0,
             skipped: case.skip,
@@ -637,6 +764,7 @@ impl Runner {
             body_preview: None,
             response_snapshot: None,
             full_response: None,
+            raw_body: None,
             logs: vec![],
         };
         if case.skip {
@@ -644,170 +772,32 @@ impl Runner {
         }
         self.emit(RunEvent::CaseStarted { file: dc.rel.clone(), name: name.to_string() });
 
-        // ---- 构建请求（变量替换 + headers 继承合并）----
-        let timeout = case.request.timeout_ms.unwrap_or(self.ctx.project.timeout_ms);
-        // 集合链 headers（浅→深）→ 用例 headers 覆盖（key 小写归一防重复发送）
-        let mut merged_headers: BTreeMap<String, (String, String)> = BTreeMap::new();
-        for c in &dc.chain {
-            for (k, v) in &c.headers {
-                merged_headers.insert(k.to_lowercase(), (k.clone(), v.clone()));
-            }
+        if let Some(e) = case.spec_error() {
+            result.error = Some(e);
+            return result;
         }
-        for (k, v) in &case.request.headers {
-            merged_headers.insert(k.to_lowercase(), (k.clone(), v.clone()));
-        }
-        let mut headers: Vec<(String, String)> = merged_headers
-            .values()
-            .map(|(k, v)| (k.clone(), vars.render(v)))
-            .collect();
-        let body_str = case.request.body.as_ref().map(|b| vars.render(&b.render()));
-        if body_str.is_some()
-            && case.request.body.as_ref().map(|b| b.is_json()).unwrap_or(false)
-            && !merged_headers.contains_key("content-type")
-        {
-            headers.push(("Content-Type".into(), "application/json".into()));
-        }
-        let mut req = ResolvedRequest {
-            method: case.request.method.clone(),
-            url: vars.render(&case.request.url),
-            headers,
-            body: body_str,
-            timeout_ms: timeout,
-            retry: case.request.retry.unwrap_or(0),
-            insecure: case.request.insecure.unwrap_or(false),
-            follow_redirects: case.request.follow_redirects.unwrap_or(false),
-        };
-
+        let protocol = case.protocol();
+        result.protocol = protocol;
         let env_view = vars.env_snapshot();
-
-        // ---- pre 脚本 ----
-        if !case.pre.is_empty() {
-            let req_data = ReqData {
-                method: req.method.clone(),
-                url: req.url.clone(),
-                headers: req.headers.iter().cloned().collect(),
-                body: req.body.clone(),
-            };
-            match self
-                .script
-                .run_pre(req_data, &self.runtime_vars, &env_view, &case.pre)
-            {
-                Ok(out) => {
-                    if let Some(e) = out.error {
-                        result.error = Some(format!("pre 脚本失败: {e}"));
-                        return result;
-                    }
-                    if let Some(rd) = out.req {
-                        req.method = rd.method;
-                        req.url = rd.url;
-                        req.headers = rd.headers.into_iter().collect();
-                        req.body = rd.body;
-                    }
-                    self.runtime_vars.extend(out.vars);
-                    self.collect_logs(&mut result, &dc.rel, &out.logs);
-                }
-                Err(e) => {
-                    result.error = Some(format!("pre 脚本宿主错误: {e:#}"));
-                    return result;
-                }
-            }
-            // pre 写入的新变量参与最终渲染
-            let vars2 = self.vars_for(&dc.chain);
-            req.url = vars2.render(&req.url);
-            req.headers = req
-                .headers
-                .iter()
-                .map(|(k, v)| (k.clone(), vars2.render(v)))
-                .collect();
-            if let Some(b) = &req.body {
-                req.body = Some(vars2.render(b));
-            }
-        }
-
-        result.url = req.url.clone();
-
-        // ---- 残留占位符检查：真实执行时未定义变量提前清晰报错 ----
-        // （dry-run 跳过：运行时捕获变量在前序未执行时残留属预期审阅内容）
-        if !opts.dry_run {
-            let mut texts = vec![req.url.clone()];
-            texts.extend(req.headers.iter().map(|(_, v)| v.clone()));
-            if let Some(b) = &req.body {
-                texts.push(b.clone());
-            }
-            let mut leftovers: Vec<String> = vec![];
-            for t in &texts {
-                for lo in scan_leftover_placeholders(t) {
-                    if !leftovers.contains(&lo) {
-                        leftovers.push(lo);
-                    }
-                }
-            }
-            if !leftovers.is_empty() {
-                let detail: Vec<String> = leftovers
-                    .iter()
-                    .map(|lo| {
-                        if let Some(name) = lo.strip_prefix("%") {
-                            format!(
-                                "环境变量 {name} 未设置（{{{{{lo}}}}} 依赖进程环境变量，请 export {name} 或经 run-e2e.sh 运行）"
-                            )
-                        } else {
-                            format!(
-                                "变量 {lo} 未定义（检查 requestbaby.json / envs / collection vars / 前序用例 post 捕获）"
-                            )
-                        }
-                    })
-                    .collect();
-                result.error = Some(format!("占位符未替换: {}", detail.join("; ")));
-                return result;
-            }
-        }
-
-        // ---- 编译 curl 命令展示（dry-run / -v）----
-        let inv = match self.transport.compile(&req) {
-            Ok(i) => i,
-            Err(e) => {
-                result.error = Some(format!("编译 curl 失败: {e:#}"));
-                return result;
-            }
+        let exchanged = match protocol {
+            Protocol::Http => self.exchange_http(dc, case, &vars, &env_view, &mut result, opts),
+            Protocol::Grpc => self.exchange_grpc(dc, case, &vars, &env_view, &mut result, opts),
+            Protocol::Ws => self.exchange_ws(dc, case, row, &vars, &env_view, &mut result, opts),
+            Protocol::Web => self.exchange_web(dc, case, row, &vars, &env_view, &mut result, opts),
+            Protocol::Android => self.exchange_android(dc, case, row, &vars, &env_view, &mut result, opts),
         };
-        result.curl_cmd = Some(inv.argv.join(" "));
+        let Some(Exchanged { resp: resp_data, outcomes: step_outcomes }) = exchanged else { return result };
+        result.status = resp_data.status;
+        result.duration_ms = resp_data.time_ms;
 
-        if opts.dry_run {
-            if let Some(content) = &inv.body {
-                let mut preview: String = content.chars().take(800).collect();
-                if content.len() > 800 {
-                    preview.push('…');
-                }
-                result.body_preview = Some(preview);
-            }
-            self.redact_result(&mut result);
-            return result;
+        let actual = crate::expect::Actual { status: resp_data.status, headers: &resp_data.headers, body: &resp_data.body, protocol };
+        // ---- capture：声明式捕获，先于 post 脚本（脚本里可直接用捕获到的变量）----
+        let mut outcomes: Vec<TestOutcome> = step_outcomes;
+        if !case.capture.is_empty() {
+            let captured = crate::expect::capture(&case.capture, &actual);
+            self.runtime_vars.extend(captured.vars);
+            outcomes.extend(captured.failures);
         }
-
-        // ---- 执行 ----
-        let resp: Response = match self.transport.execute(&req) {
-            Ok(r) => r,
-            Err(e) => {
-                result.error = Some(format!("{e:#}"));
-                return result;
-            }
-        };
-        result.status = resp.status;
-        result.duration_ms = resp.time_ms;
-
-        if let Some(e) = &resp.transport_error {
-            result.error = Some(format!("传输错误: {e}"));
-            self.redact_result(&mut result);
-            return result;
-        }
-
-        let resp_data = RespData {
-            status: resp.status,
-            time_ms: resp.time_ms,
-            size: resp.size,
-            headers: resp.headers.clone(),
-            body: resp.body_text(),
-        };
 
         // ---- post 脚本 ----
         if !case.post.is_empty() {
@@ -831,35 +821,596 @@ impl Runner {
             }
         }
 
-        // ---- tests ----
-        // expectStatus 语法糖 → 隐式首条断言（先于业务断言，快速失败）
-        let mut exprs: Vec<String> = vec![];
-        if let Some(es) = &case.expect_status {
-            let list = es.to_list();
-            exprs.push(format!(
-                "[{}].includes(res.status)",
-                list.iter().map(|x| x.to_string()).collect::<Vec<_>>().join(",")
-            ));
+        // ---- 断言：expect（声明式，含旧写法 expectStatus）→ tests（JS）----
+        let mut env_vars = self.vars_for(&dc.chain);
+        if let Some(row) = row {
+            env_vars.push_layer(row.clone());
         }
-        exprs.extend(case.tests.iter().cloned());
-        if !exprs.is_empty() {
-            let mut env_vars = self.vars_for(&dc.chain);
-            if let Some(row) = row {
-                env_vars.push_str_layer(row.iter().map(|(k, v)| (k.clone(), v.clone())));
-            }
+        let mut expect = case.expect.clone().unwrap_or_default();
+        if expect.status.is_none() {
+            expect.status = case.expect_status.clone();
+        }
+        if !expect.is_empty() {
+            let mut with_runtime = env_vars.clone();
+            with_runtime.push_layer(self.runtime_vars.clone());
+            outcomes.extend(crate::expect::evaluate(&expect, &actual, &with_runtime));
+        }
+        if !case.tests.is_empty() {
             let env_now = env_vars.env_snapshot();
             match self
                 .script
-                .eval_tests(&resp_data, &self.runtime_vars, &env_now, &exprs)
+                .eval_tests(&resp_data, &self.runtime_vars, &env_now, &case.tests)
             {
-                Ok(ts) => result.tests = ts,
+                Ok(ts) => outcomes.extend(ts),
                 Err(e) => result.error = Some(format!("tests 宿主错误: {e:#}")),
             }
         }
+        result.tests = outcomes;
 
         // ---- 收尾：send 快照 / 失败快照 / 响应落盘（-o）/ 输出脱敏 ----
         self.finalize_result(&mut result, dc, &resp_data, opts);
         result
+    }
+
+    /// HTTP：组装请求 → pre 脚本 → 残留占位符检查 → Cookie → 编译 curl（dry-run 到此）→ 发送
+    fn exchange_http(
+        &mut self,
+        dc: &discover::DiscoveredCase,
+        case: &TestCase,
+        vars: &Vars,
+        env_view: &BTreeMap<String, VarVal>,
+        result: &mut CaseResult,
+        opts: &RunOptions,
+    ) -> Option<Exchanged> {
+        // ---- 构建请求（变量替换 + headers 继承合并）----
+        let spec = case.request.as_ref().expect("HTTP 用例");
+        result.method = spec.method.clone();
+        result.url = spec.url.clone();
+        let timeout = spec.timeout_ms.unwrap_or(self.ctx.project.timeout_ms);
+        // 集合链 headers（浅→深）→ 用例 headers 覆盖（key 小写归一防重复发送）
+        let mut merged_headers: BTreeMap<String, (String, String)> = BTreeMap::new();
+        for c in &dc.chain {
+            for (k, v) in enabled_kv(&c.headers) {
+                merged_headers.insert(k.to_lowercase(), (k.clone(), v.to_string()));
+            }
+        }
+        for (k, v) in enabled_kv(&spec.headers) {
+            merged_headers.insert(k.to_lowercase(), (k.clone(), v.to_string()));
+        }
+        let mut headers: Vec<(String, String)> = merged_headers
+            .values()
+            .map(|(k, v)| (k.clone(), vars.render(v)))
+            .collect();
+        let body = spec.body.as_ref();
+        let body_str = body.and_then(|b| b.render_with(|t| vars.render(t)));
+        if let Some(ct) = body.and_then(|b| b.default_content_type()) {
+            if !merged_headers.contains_key("content-type") {
+                headers.push(("Content-Type".into(), ct.into()));
+            }
+        }
+        let case_dir = dc.path.parent().unwrap_or(std::path::Path::new("."));
+        let multipart = match body {
+            Some(BodySpec::Multipart { multipart }) => multipart
+                .iter()
+                .map(|(k, v)| FormPart {
+                    name: vars.render(k),
+                    value: match v {
+                        MultipartValue::Text(t) => PartValue::Text(vars.render(t)),
+                        MultipartValue::File { file, filename, content_type } => PartValue::File {
+                            path: case_dir.join(vars.render(file)),
+                            filename: filename.as_ref().map(|f| vars.render(f)),
+                            content_type: content_type.clone(),
+                        },
+                    },
+                })
+                .collect(),
+            _ => vec![],
+        };
+        let query: Vec<(String, String)> =
+            enabled_kv(&spec.query).map(|(k, v)| (vars.render(k), vars.render(v))).collect();
+        let mut req = ResolvedRequest {
+            method: spec.method.clone(),
+            url: append_query(&vars.render(&spec.url), &query),
+            headers,
+            body: body_str,
+            multipart,
+            timeout_ms: timeout,
+            retry: spec.retry.unwrap_or(0),
+            insecure: spec.insecure.unwrap_or(false),
+            follow_redirects: spec.follow_redirects.unwrap_or(false),
+            proxy: self.ctx.proxy.clone(),
+        };
+
+        // ---- pre 脚本 ----
+        if !case.pre.is_empty() {
+            let req_data = ReqData {
+                method: req.method.clone(),
+                url: req.url.clone(),
+                headers: req.headers.iter().cloned().collect(),
+                body: req.body.clone(),
+            };
+            if let Some(rd) = self.run_pre_script(dc, case, env_view, req_data, result)? {
+                req.method = rd.method;
+                req.url = rd.url;
+                req.headers = rd.headers.into_iter().collect();
+                req.body = rd.body;
+            }
+            // pre 写入的新变量参与最终渲染
+            let vars2 = self.vars_for(&dc.chain);
+            req.url = vars2.render(&req.url);
+            req.headers = req
+                .headers
+                .iter()
+                .map(|(k, v)| (k.clone(), vars2.render(v)))
+                .collect();
+            if let Some(b) = &req.body {
+                req.body = Some(vars2.render(b));
+            }
+            for part in &mut req.multipart {
+                match &mut part.value {
+                    PartValue::Text(t) => *t = vars2.render(t),
+                    PartValue::File { path, .. } => *path = vars2.render(&path.to_string_lossy()).into(),
+                }
+            }
+        }
+
+        result.url = req.url.clone();
+
+        // ---- 残留占位符检查：真实执行时未定义变量提前清晰报错 ----
+        // （dry-run 跳过：运行时捕获变量在前序未执行时残留属预期审阅内容）
+        if !opts.dry_run {
+            let mut texts = vec![req.url.clone()];
+            texts.extend(req.headers.iter().map(|(_, v)| v.clone()));
+            if let Some(b) = &req.body {
+                texts.push(b.clone());
+            }
+            for part in &req.multipart {
+                texts.push(match &part.value {
+                    PartValue::Text(t) => t.clone(),
+                    PartValue::File { path, .. } => path.to_string_lossy().into_owned(),
+                });
+            }
+            if let Some(e) = leftover_error(&texts) {
+                result.error = Some(e);
+                return None;
+            }
+        }
+
+        // ---- Cookie：自动带上之前响应设置的 Cookie（用例显式写了 Cookie 头则以用例为准）----
+        if self.ctx.project.cookies && !req.headers.iter().any(|(k, _)| k.eq_ignore_ascii_case("cookie")) {
+            if let Some(cookie) = self.cookies.header_for(&req.url, crate::history::now_ms()) {
+                req.headers.push(("Cookie".into(), cookie));
+            }
+        }
+
+        // ---- 编译 curl 命令展示（dry-run / -v）----
+        let inv = match self.transport.compile(&req) {
+            Ok(i) => i,
+            Err(e) => {
+                result.error = Some(format!("编译 curl 失败: {e:#}"));
+                return None;
+            }
+        };
+        result.curl_cmd = Some(inv.shell());
+
+        if opts.dry_run {
+            if let Some(content) = &inv.body {
+                let mut preview: String = content.chars().take(800).collect();
+                if content.len() > 800 {
+                    preview.push('…');
+                }
+                result.body_preview = Some(preview);
+            }
+            self.redact_result(result);
+            return None;
+        }
+
+        // ---- 执行 ----
+        let resp: Response = match self.transport.execute(&req) {
+            Ok(r) => r,
+            Err(e) => {
+                result.error = Some(format!("{e:#}"));
+                return None;
+            }
+        };
+        result.status = resp.status;
+        result.duration_ms = resp.time_ms;
+        if self.ctx.project.cookies && resp.status > 0 {
+            let set_cookies = resp.headers.iter().filter(|(k, _)| k.eq_ignore_ascii_case("set-cookie")).map(|(_, v)| v.as_str());
+            self.cookies.store(&req.url, set_cookies, crate::history::now_ms());
+        }
+
+        if let Some(e) = &resp.transport_error {
+            result.error = Some(format!("传输错误: {e}"));
+            self.redact_result(result);
+            return None;
+        }
+
+        let binary = is_binary(&resp.headers, &resp.body);
+        if opts.send_mode && binary {
+            result.raw_body = Some(std::sync::Arc::new(resp.body.clone()));
+        }
+        let resp_data = RespData::http(resp.status, resp.time_ms, resp.size, resp.headers.clone(), resp.body_text());
+        Some(Exchanged { resp: resp_data, outcomes: vec![] })
+    }
+
+    /// pre 脚本：Ok(Some) = 脚本改写后的请求；Err(()) = 失败（错误已写入 result）
+    fn run_pre_script(
+        &mut self,
+        dc: &discover::DiscoveredCase,
+        case: &TestCase,
+        env_view: &BTreeMap<String, VarVal>,
+        req: ReqData,
+        result: &mut CaseResult,
+    ) -> Option<Option<ReqData>> {
+        match self.script.run_pre(req, &self.runtime_vars, env_view, &case.pre) {
+            Ok(out) => {
+                if let Some(e) = out.error {
+                    result.error = Some(format!("pre 脚本失败: {e}"));
+                    return None;
+                }
+                self.runtime_vars.extend(out.vars);
+                self.collect_logs(result, &dc.rel, &out.logs);
+                Some(out.req)
+            }
+            Err(e) => {
+                result.error = Some(format!("pre 脚本宿主错误: {e:#}"));
+                None
+            }
+        }
+    }
+
+    /// 集合链 + 用例自己的请求头 / 元数据（浅 → 深，用例最后；键名不分大小写去重），值已替换变量
+    fn merged_headers(&self, dc: &discover::DiscoveredCase, own: &BTreeMap<String, crate::config::KvValue>, vars: &Vars, skip: &[&str]) -> Vec<(String, String)> {
+        let mut merged: BTreeMap<String, (String, String)> = BTreeMap::new();
+        for c in &dc.chain {
+            for (k, v) in enabled_kv(&c.headers) {
+                merged.insert(k.to_lowercase(), (k.clone(), v.to_string()));
+            }
+        }
+        for (k, v) in enabled_kv(own) {
+            merged.insert(k.to_lowercase(), (k.clone(), v.to_string()));
+        }
+        merged.into_iter().filter(|(lk, _)| !skip.iter().any(|s| lk == s || (s.ends_with('*') && lk.starts_with(s.trim_end_matches('*'))))).map(|(_, (k, v))| (k, vars.render(&v))).collect()
+    }
+
+    /// gRPC：组装调用 → pre 脚本 → 残留占位符检查 → 等价 grpcurl 命令（dry-run 到此，配置了 .proto 时离线校验方法与消息）→ 调用
+    fn exchange_grpc(
+        &mut self,
+        dc: &discover::DiscoveredCase,
+        case: &TestCase,
+        vars: &Vars,
+        env_view: &BTreeMap<String, VarVal>,
+        result: &mut CaseResult,
+        opts: &RunOptions,
+    ) -> Option<Exchanged> {
+        use crate::engine::grpc;
+        let spec = case.grpc.as_ref().expect("gRPC 用例");
+        result.method = "GRPC".into();
+        // 集合的公共请求头同样作为元数据发送（HTTP 专用的头跳过；gRPC 元数据名一律小写）
+        const RESERVED: [&str; 9] = ["content-type", "content-length", "user-agent", "host", "connection", "te", "accept", "accept-encoding", "grpc-*"];
+        let mut metadata: Vec<(String, String)> = self.merged_headers(dc, &spec.metadata, vars, &RESERVED).into_iter().map(|(k, v)| (k.to_lowercase(), v)).collect();
+        let mut target = vars.render(&spec.target);
+        let mut method = vars.render(&spec.method);
+        let streaming_input = spec.messages.is_some();
+        let mut messages: Vec<String> = spec.outgoing().iter().map(|m| vars.render(&serde_json::to_string(m).unwrap_or_default())).collect();
+
+        if !case.pre.is_empty() {
+            // 脚本里：req.url = 地址，req.method = 包.服务/方法，req.headers = 元数据，req.body = 消息 JSON（messages 时为数组）
+            let body = if streaming_input { format!("[{}]", messages.join(",")) } else { messages.first().cloned().unwrap_or_default() };
+            let req = ReqData { method: method.clone(), url: target.clone(), headers: metadata.iter().cloned().collect(), body: Some(body) };
+            if let Some(rd) = self.run_pre_script(dc, case, env_view, req, result)? {
+                target = rd.url;
+                method = rd.method;
+                metadata = rd.headers.into_iter().collect();
+                let body = rd.body.unwrap_or_default();
+                messages = match serde_json::from_str::<serde_json::Value>(&body) {
+                    Ok(serde_json::Value::Array(items)) if streaming_input => items.iter().map(|m| m.to_string()).collect(),
+                    _ => vec![body],
+                };
+            }
+            let vars2 = self.vars_for(&dc.chain);
+            target = vars2.render(&target);
+            method = vars2.render(&method);
+            metadata = metadata.into_iter().map(|(k, v)| (k, vars2.render(&v))).collect();
+            messages = messages.iter().map(|m| vars2.render(m)).collect();
+        }
+        result.url = format!("{}/{}", target.trim_end_matches('/'), method);
+
+        if !opts.dry_run {
+            let mut texts = vec![target.clone(), method.clone()];
+            texts.extend(metadata.iter().map(|(_, v)| v.clone()));
+            texts.extend(messages.iter().cloned());
+            if let Some(e) = leftover_error(&texts) {
+                result.error = Some(e);
+                return None;
+            }
+        }
+        let root = discover::find_project_root(&dc.path);
+        let source = match grpc::Source::from_config(root.as_deref().unwrap_or(Path::new(".")), &self.ctx.project.grpc) {
+            Ok(s) => s,
+            Err(e) => {
+                result.error = Some(format!("{e:#}"));
+                return None;
+            }
+        };
+        let call = grpc::GrpcCall {
+            target,
+            method,
+            messages,
+            metadata,
+            timeout_ms: spec.timeout_ms.unwrap_or(self.ctx.project.timeout_ms),
+            insecure: spec.insecure.unwrap_or(false),
+            source,
+            proxy: self.ctx.proxy.clone(),
+        };
+        result.curl_cmd = Some(grpc::grpcurl_command(&call, root.as_deref()));
+
+        if opts.dry_run {
+            result.body_preview = Some(clip_preview(&call.messages.join("\n")));
+            // 配置了 .proto：不连服务也能确认方法存在、消息字段写对了
+            if matches!(call.source, grpc::Source::Protos { .. }) && leftover_error(&call.messages).is_none() {
+                if let Err(e) = grpc::check_offline(&call.method, &call.messages, &call.source) {
+                    result.error = Some(format!("{e:#}"));
+                }
+            }
+            self.redact_result(result);
+            return None;
+        }
+
+        let reply = match grpc::call(&call) {
+            Ok(r) => r,
+            Err(e) => {
+                result.error = Some(format!("{e:#}"));
+                self.redact_result(result);
+                return None;
+            }
+        };
+        let mut frames: Vec<crate::engine::Frame> = reply.sent.iter().map(|m| crate::engine::Frame { sent: true, kind: "message".into(), data: m.to_string(), at_ms: 0 }).collect();
+        frames.extend(reply.messages.iter().map(|m| crate::engine::Frame { sent: false, kind: "message".into(), data: m.to_string(), at_ms: reply.time_ms }));
+        let resp = RespData {
+            status: reply.code,
+            time_ms: reply.time_ms,
+            size: reply.size,
+            headers: reply.metadata.clone(),
+            body: reply.body().to_string(),
+            protocol: Protocol::Grpc,
+            frames,
+            evidence: None,
+        };
+        Some(Exchanged { resp, outcomes: vec![] })
+    }
+
+    /// WebSocket：握手（被拒时以握手状态作为结果）→ 按步骤收发，receive / waitFor 的断言与捕获即时生效
+    #[allow(clippy::too_many_arguments)]
+    fn exchange_ws(
+        &mut self,
+        dc: &discover::DiscoveredCase,
+        case: &TestCase,
+        row: Option<&crate::config::DataRow>,
+        vars: &Vars,
+        env_view: &BTreeMap<String, VarVal>,
+        result: &mut CaseResult,
+        opts: &RunOptions,
+    ) -> Option<Exchanged> {
+        use crate::engine::ws;
+        let spec = case.ws.as_ref().expect("WebSocket 用例");
+        result.method = "WS".into();
+        let query: Vec<(String, String)> = enabled_kv(&spec.query).map(|(k, v)| (vars.render(k), vars.render(v))).collect();
+        let mut url = append_query(&vars.render(&spec.url), &query);
+        let mut headers = self.merged_headers(dc, &spec.headers, vars, &["content-type", "content-length"]);
+        if !case.pre.is_empty() {
+            let req = ReqData { method: "GET".into(), url: url.clone(), headers: headers.iter().cloned().collect(), body: None };
+            if let Some(rd) = self.run_pre_script(dc, case, env_view, req, result)? {
+                url = rd.url;
+                headers = rd.headers.into_iter().collect();
+            }
+            let vars2 = self.vars_for(&dc.chain);
+            url = vars2.render(&url);
+            headers = headers.into_iter().map(|(k, v)| (k, vars2.render(&v))).collect();
+        }
+        result.url = url.clone();
+        let http_url = ws::normalize_url(&url).map(|u| u.replacen("ws", "http", 1)).unwrap_or_default();
+        if !opts.dry_run {
+            let mut texts = vec![url.clone()];
+            texts.extend(headers.iter().map(|(_, v)| v.clone()));
+            if let Some(e) = leftover_error(&texts) {
+                result.error = Some(e);
+                return None;
+            }
+            if self.ctx.project.cookies && !headers.iter().any(|(k, _)| k.eq_ignore_ascii_case("cookie")) {
+                if let Some(cookie) = self.cookies.header_for(&http_url, crate::history::now_ms()) {
+                    headers.push(("Cookie".into(), cookie));
+                }
+            }
+        }
+        let conn = ws::WsConnect {
+            url,
+            headers,
+            subprotocols: spec.subprotocols.iter().map(|p| vars.render(p)).collect(),
+            timeout_ms: spec.timeout_ms.unwrap_or(self.ctx.project.timeout_ms),
+            insecure: spec.insecure.unwrap_or(false),
+            proxy: self.ctx.proxy.clone(),
+        };
+        let sends: Vec<String> = spec.steps.iter().filter_map(|s| s.send.as_ref().map(|v| render_ws_send(v, vars))).collect();
+        result.curl_cmd = Some(ws::websocat_command(&conn, &sends));
+        if opts.dry_run {
+            result.body_preview = Some(clip_preview(&spec.steps.iter().enumerate().map(|(i, s)| format!("#{} {}", i + 1, describe_ws_step(s, vars))).collect::<Vec<_>>().join("\n")));
+            self.redact_result(result);
+            return None;
+        }
+
+        let (mut session, hs) = match ws::connect(&conn) {
+            Ok(x) => x,
+            Err(e) => {
+                result.error = Some(format!("{e:#}"));
+                self.redact_result(result);
+                return None;
+            }
+        };
+        if self.ctx.project.cookies {
+            let set_cookies = hs.headers.iter().filter(|(k, _)| k.eq_ignore_ascii_case("set-cookie")).map(|(_, v)| v.as_str());
+            self.cookies.store(&http_url, set_cookies, crate::history::now_ms());
+        }
+        if hs.status != 101 {
+            // 握手被拒：结果就是这次 HTTP 响应（expect.status 写 401 / 403 可断言）
+            // 没写 expect.status 却握手失败：对话一步都没进行，不能算通过
+            let outcomes = if case.expected_status().is_none() {
+                let first = hs.body.lines().next().unwrap_or_default().trim().to_string();
+                vec![TestOutcome { expr: "握手 status = 101".into(), pass: false, detail: Some(format!("握手被拒：实际 {}{}", hs.status, if first.is_empty() { String::new() } else { format!("（{first}）") })) }]
+            } else {
+                vec![]
+            };
+            let resp = RespData { status: hs.status, time_ms: session.elapsed_ms(), size: hs.body.len() as u64, headers: hs.headers, body: hs.body, protocol: Protocol::Ws, frames: vec![], evidence: None };
+            return Some(Exchanged { resp, outcomes });
+        }
+
+        let mut outcomes: Vec<TestOutcome> = vec![];
+        let default_wait = conn.timeout_ms;
+        for (i, step) in spec.steps.iter().enumerate() {
+            if Self::cancelled(opts) {
+                break;
+            }
+            let n = i + 1;
+            let step_vars = || {
+                let mut v = self.vars_for(&dc.chain);
+                if let Some(row) = row {
+                    v.push_layer(row.clone());
+                }
+                v
+            };
+            let wait = Duration::from_millis(step.timeout_ms.unwrap_or(default_wait).max(1));
+            let fail = |expr: String, detail: String| TestOutcome { expr, pass: false, detail: Some(detail) };
+            let Some(action) = step.action() else {
+                outcomes.push(fail(format!("#{n} 步骤"), "每一步只能写一个动作：send / sendBinary / receive / waitFor / wait / close".into()));
+                break;
+            };
+            match action {
+                WsAction::Send | WsAction::SendBinary => {
+                    let v = step_vars();
+                    let text = match (&step.send, &step.send_binary) {
+                        (Some(val), _) => render_ws_send(val, &v),
+                        (_, Some(b)) => v.render(b),
+                        _ => unreachable!(),
+                    };
+                    let label = format!("#{n} {} {}", action.label(), clip_preview_short(&text));
+                    if let Some(e) = leftover_error(std::slice::from_ref(&text)) {
+                        outcomes.push(fail(label, e));
+                        break;
+                    }
+                    let sent = if action == WsAction::Send {
+                        session.send_text(&text)
+                    } else {
+                        use base64::Engine;
+                        match base64::engine::general_purpose::STANDARD.decode(text.trim()) {
+                            Ok(bytes) => session.send_binary(bytes),
+                            Err(e) => Err(anyhow::anyhow!("sendBinary 不是合法的 base64：{e}")),
+                        }
+                    };
+                    if let Err(e) = sent {
+                        outcomes.push(fail(label, format!("{e:#}")));
+                        break;
+                    }
+                }
+                WsAction::Receive | WsAction::WaitFor => {
+                    let matcher = if action == WsAction::Receive { step.receive.clone() } else { step.wait_for.clone() }.unwrap_or_default();
+                    let v = step_vars();
+                    let expect = crate::expect::Expect { body: matcher.clone(), ..Default::default() };
+                    let summary = if matcher.is_empty() { "任意消息".to_string() } else { crate::expect::describe_matchers(&matcher, &v) };
+                    let label = format!("#{n} {} {summary}", action.label());
+                    let started = Instant::now();
+                    let mut matched: Option<(usize, Vec<TestOutcome>)> = None;
+                    let mut last_fail: Vec<TestOutcome> = vec![];
+                    let mut why = String::new();
+                    loop {
+                        let left = wait.saturating_sub(started.elapsed());
+                        match session.recv(left) {
+                            Ok(ws::Recv::Message(idx)) => {
+                                let data = session.frames[idx].data.clone();
+                                let actual = crate::expect::Actual { status: 101, headers: &[], body: &data, protocol: Protocol::Ws };
+                                let checks = crate::expect::evaluate(&expect, &actual, &v);
+                                if checks.iter().all(|c| c.pass) {
+                                    matched = Some((idx, checks));
+                                    break;
+                                }
+                                if action == WsAction::Receive {
+                                    last_fail = checks;
+                                    break;
+                                }
+                            }
+                            Ok(ws::Recv::Closed) => {
+                                let (code, reason) = session.closed_by_server.clone().unwrap_or((1006, String::new()));
+                                why = format!("连接已被服务端关闭（{code}{}）", if reason.is_empty() { String::new() } else { format!(" {reason}") });
+                                break;
+                            }
+                            Ok(ws::Recv::Timeout) => {
+                                why = format!("{} ms 内没有收到{}的消息", wait.as_millis(), if action == WsAction::WaitFor { "满足条件" } else { "" });
+                                break;
+                            }
+                            Err(e) => {
+                                why = format!("{e:#}");
+                                break;
+                            }
+                        }
+                    }
+                    match matched {
+                        Some((idx, checks)) => {
+                            outcomes.push(TestOutcome { expr: label, pass: true, detail: None });
+                            let _ = checks;
+                            if !step.capture.is_empty() {
+                                let data = session.frames[idx].data.clone();
+                                let actual = crate::expect::Actual { status: 101, headers: &[], body: &data, protocol: Protocol::Ws };
+                                let captured = crate::expect::capture(&step.capture, &actual);
+                                self.runtime_vars.extend(captured.vars);
+                                let failed = !captured.failures.is_empty();
+                                outcomes.extend(captured.failures.into_iter().map(|mut f| {
+                                    f.expr = format!("#{n} {}", f.expr);
+                                    f
+                                }));
+                                if failed {
+                                    break;
+                                }
+                            }
+                        }
+                        None if !last_fail.is_empty() => {
+                            let detail = last_fail.iter().filter(|c| !c.pass).map(|c| format!("{} → {}", c.expr.replacen("body", "消息", 1), c.detail.clone().unwrap_or_default())).collect::<Vec<_>>().join("；");
+                            outcomes.push(fail(label, detail));
+                            break;
+                        }
+                        None => {
+                            outcomes.push(fail(label, why));
+                            break;
+                        }
+                    }
+                }
+                WsAction::Wait => {
+                    let _ = session.drain_for(Duration::from_millis(step.wait.unwrap_or(0)));
+                }
+                WsAction::Close => {
+                    let _ = session.close(step.close.as_ref().map(|c| c.code()).unwrap_or(1000));
+                }
+            }
+        }
+        if session.is_open() {
+            let _ = session.close(1000);
+        }
+        let received: Vec<serde_json::Value> = session.frames.iter().filter(|f| !f.sent && f.kind != "close").map(ws::frame_value).collect();
+        let mut headers = hs.headers;
+        if let Some((code, reason)) = &session.closed_by_server {
+            headers.push(("ws-close-code".into(), code.to_string()));
+            headers.push(("ws-close-reason".into(), reason.clone()));
+        }
+        let resp = RespData {
+            status: hs.status,
+            time_ms: session.elapsed_ms(),
+            size: session.received_bytes,
+            headers,
+            body: serde_json::Value::Array(received).to_string(),
+            protocol: Protocol::Ws,
+            frames: session.frames.clone(),
+            evidence: None,
+        };
+        Some(Exchanged { resp, outcomes })
     }
 
     fn finalize_result(
@@ -872,14 +1423,36 @@ impl Runner {
         if opts.send_mode {
             result.full_response = Some(resp_data.clone());
         }
-        if !result.passed() {
-            result.response_snapshot = Some(ResponseSnapshot {
-                status: resp_data.status,
-                headers: resp_data.headers.clone(),
-                body: resp_data.body.chars().take(4000).collect::<String>(),
-                duration_ms: resp_data.time_ms,
-            });
-        }
+        // 快照：失败的多留一些给 AI 自修复；通过的也留，历史里能回看「当时返回了什么」
+        let limit = if result.passed() { 2000 } else { 4000 };
+        let binary = is_binary(&resp_data.headers, resp_data.body.as_bytes()) || resp_data.body.contains('\u{FFFD}');
+        let body = if binary {
+            format!("<二进制响应 {} 字节，未保存到历史；发送该用例可预览 / 另存为>", resp_data.size)
+        } else {
+            resp_data.body.chars().take(limit).collect::<String>()
+        };
+        result.response_snapshot = Some(ResponseSnapshot {
+            status: resp_data.status,
+            headers: resp_data.headers.clone(),
+            truncated: !binary && resp_data.body.chars().count() > limit,
+            body,
+            duration_ms: resp_data.time_ms,
+            protocol: resp_data.protocol,
+            // 时间线进历史：最多 200 条，每条 500 字符
+            frames: resp_data
+                .frames
+                .iter()
+                .take(200)
+                .map(|f| {
+                    let mut f = f.clone();
+                    if f.data.chars().count() > 500 {
+                        f.data = format!("{}…", f.data.chars().take(500).collect::<String>());
+                    }
+                    f
+                })
+                .collect(),
+            evidence: resp_data.evidence.clone(),
+        });
         if let Some(dir) = &opts.output_dir {
             let file = dir.join(format!("{}.resp.json", dc.rel.trim_end_matches(".json")));
             if let Some(parent) = file.parent() {
@@ -892,8 +1465,10 @@ impl Runner {
                 "durationMs": resp_data.time_ms,
                 "headers": resp_data.headers,
                 "body": resp_data.body,
+                "frames": resp_data.frames,
+                "evidence": resp_data.evidence,
             });
-            let _ = std::fs::write(&file, serde_json::to_vec_pretty(&payload).unwrap_or_default());
+            let _ = crate::fsx::write(&file, serde_json::to_vec_pretty(&payload).unwrap_or_default());
         }
         self.redact_result(result);
     }
@@ -904,6 +1479,16 @@ impl Runner {
             let line = self.redact_str(l);
             self.emit(RunEvent::Log { file: rel.to_string(), line: line.clone() });
             result.logs.push(line);
+        }
+    }
+
+    /// 界面步骤描述里的敏感值（填写的密码等）
+    fn redact_evidence(&self, ev: &mut crate::engine::ui::UiEvidence) {
+        for s in &mut ev.steps {
+            s.title = self.redact_str(&s.title);
+            if let Some(d) = &mut s.detail {
+                *d = self.redact_str(d);
+            }
         }
     }
 
@@ -938,14 +1523,95 @@ impl Runner {
             for (_k, v) in &mut snap.headers {
                 *v = self.redact_str(v);
             }
+            if let Some(ev) = &mut snap.evidence {
+                self.redact_evidence(ev);
+            }
         }
         if let Some(fr) = &mut result.full_response {
             fr.body = self.redact_str(&fr.body);
             for (_k, v) in &mut fr.headers {
                 *v = self.redact_str(v);
             }
+            if let Some(ev) = &mut fr.evidence {
+                self.redact_evidence(ev);
+            }
+        }
+        for t in &mut result.tests {
+            t.expr = self.redact_str(&t.expr);
+            if let Some(d) = &mut t.detail {
+                *d = self.redact_str(d);
+            }
         }
     }
+}
+
+/// WebSocket 要发送的文本：字符串原样（替换变量），其余按 JSON 发送（`"{{id:number}}"` 输出裸数字）
+pub fn render_ws_send(v: &serde_json::Value, vars: &Vars) -> String {
+    match v {
+        serde_json::Value::String(s) => vars.render(s),
+        other => vars.render(&other.to_string()),
+    }
+}
+
+/// 步骤的一行描述（dry-run / 界面）
+pub fn describe_ws_step(s: &crate::config::WsStep, vars: &Vars) -> String {
+    match s.action() {
+        Some(WsAction::Send) => format!("发送 {}", clip_preview_short(&render_ws_send(s.send.as_ref().unwrap(), vars))),
+        Some(WsAction::SendBinary) => format!("发送二进制 {} 字节（base64）", s.send_binary.as_ref().map(|b| b.len()).unwrap_or(0)),
+        Some(a @ (WsAction::Receive | WsAction::WaitFor)) => {
+            let m = if a == WsAction::Receive { &s.receive } else { &s.wait_for };
+            let m = m.clone().unwrap_or_default();
+            let what = if m.is_empty() { "任意消息".into() } else { crate::expect::describe_matchers(&m, vars) };
+            let cap = if s.capture.is_empty() { String::new() } else { format!("，捕获 {}", s.capture.keys().cloned().collect::<Vec<_>>().join("、")) };
+            format!("{} {what}{cap}", a.label())
+        }
+        Some(WsAction::Wait) => format!("静候 {} ms", s.wait.unwrap_or(0)),
+        Some(WsAction::Close) => format!("关闭（{}）", s.close.as_ref().map(|c| c.code()).unwrap_or(1000)),
+        None => "（每一步只能写一个动作）".into(),
+    }
+}
+
+fn clip_preview(s: &str) -> String {
+    let mut preview: String = s.chars().take(800).collect();
+    if s.chars().count() > 800 {
+        preview.push('…');
+    }
+    preview
+}
+
+fn clip_preview_short(s: &str) -> String {
+    let one = s.replace('\n', " ");
+    if one.chars().count() > 60 {
+        format!("{}…", one.chars().take(60).collect::<String>())
+    } else {
+        one
+    }
+}
+
+/// 真实执行前的残留占位符检查：未定义变量提前清晰报错
+fn leftover_error(texts: &[String]) -> Option<String> {
+    let mut leftovers: Vec<String> = vec![];
+    for t in texts {
+        for lo in scan_leftover_placeholders(t) {
+            if !leftovers.contains(&lo) {
+                leftovers.push(lo);
+            }
+        }
+    }
+    if leftovers.is_empty() {
+        return None;
+    }
+    let detail: Vec<String> = leftovers
+        .iter()
+        .map(|lo| {
+            if let Some(name) = lo.strip_prefix('%') {
+                format!("环境变量 {name} 未设置（{{{{{lo}}}}} 依赖进程环境变量，请先 export {name}）")
+            } else {
+                format!("变量 {lo} 未定义（检查 requestbaby.json / envs / collection vars / 前序用例 capture）")
+            }
+        })
+        .collect();
+    Some(format!("占位符未替换: {}", detail.join("; ")))
 }
 
 /// 扫描文本中残留的 {{...}} 占位符（返回内部表达式，如 %ENV / name / name:number）
@@ -987,35 +1653,31 @@ pub fn load_project_ctx(start: &Path, env_name: &str) -> Result<ProjectCtx> {
         Some(r) => discover::project_file(r).and_then(|p| load_strict::<Project>(&p).ok()).unwrap_or_default(),
         None => Project::default(),
     };
-    let env_vars = match &root {
-        Some(r) => {
-            let env_path = r.join("envs").join(format!("{env_name}.json"));
-            if env_path.exists() {
-                let f = load_strict::<crate::config::EnvFile>(&env_path)
-                    .with_context(|| format!("环境文件 {env_name} 加载失败"))?;
-                f.vars.plain()
-            } else {
-                BTreeMap::new()
-            }
-        }
-        None => BTreeMap::new(),
+    let env = match &root {
+        Some(r) => crate::config::load_env(r, env_name)?,
+        None => None,
     };
+    let env_vars = env.as_ref().map(|e| e.vars.plain()).unwrap_or_default();
     let secret_values = match &root {
         Some(r) => {
             let mut s = load_strict::<Project>(&r.join(discover::PROJECT_FILE))
                 .map(|p| p.vars.secret_values())
                 .unwrap_or_default();
-            let env_path = r.join("envs").join(format!("{env_name}.json"));
-            if let Ok(f) = load_strict::<crate::config::EnvFile>(&env_path) {
-                s.extend(f.vars.secret_values());
-            }
+            s.extend(env.as_ref().map(|e| e.vars.secret_values()).unwrap_or_default());
             s
         }
         None => vec![],
+    };
+    let proxy = {
+        let mut v = crate::vars::Vars::new();
+        v.push_str_layer(project.vars.plain());
+        v.push_str_layer(env_vars.clone());
+        crate::engine::proxy::ProxyPolicy::resolve(project.proxy.as_ref(), |s| v.render(s))?
     };
     Ok(ProjectCtx {
         project,
         env_vars,
         secret_values,
+        proxy,
     })
 }

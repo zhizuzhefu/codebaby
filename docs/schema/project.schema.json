@@ -2,105 +2,145 @@
   "$schema": "http://json-schema.org/draft-07/schema#",
   "$id": "https://requestbaby.dev/schema/project.schema.json",
   "title": "requestbaby 项目配置",
-  "description": "requestbaby.json：项目根配置——全局变量、默认环境、超时与命名工作流。",
+  "description": "requestbaby.json：项目根配置——全局变量、默认环境、超时与命名流程。",
   "type": "object",
   "additionalProperties": false,
   "properties": {
-    "version": {
-      "type": "integer",
-      "description": "配置格式版本（当前 1）"
-    },
-    "defaultEnv": {
-      "type": "string",
-      "description": "默认环境名（未指定 -e 时使用，对应 envs/<name>.json）"
-    },
+    "version": { "type": "integer", "description": "配置格式版本（当前 1）" },
+    "defaultEnv": { "type": "string", "description": "默认环境名（未指定 -e 时使用，对应 envs/<name>.json）" },
     "vars": {
       "type": "object",
       "description": "变量表：标量直接字符串化；对象形态支持 secret 脱敏与外部来源",
       "additionalProperties": {
         "oneOf": [
-          {
-            "type": [
-              "string",
-              "number",
-              "boolean"
-            ]
-          },
+          { "type": ["string", "number", "boolean"] },
           {
             "type": "object",
             "additionalProperties": false,
             "properties": {
-              "value": {
-                "type": "string"
-              },
-              "secret": {
-                "type": "boolean",
-                "description": "所有输出层自动脱敏为 ****"
-              },
-              "from": {
-                "type": "string",
-                "enum": [
-                  "env"
-                ]
-              },
-              "name": {
-                "type": "string",
-                "description": "from:env 时的环境变量名（缺省用变量名）"
-              }
+              "value": { "type": "string" },
+              "secret": { "type": "boolean", "description": "所有输出层自动脱敏为 ****" },
+              "from": { "type": "string", "enum": ["env"] },
+              "name": { "type": "string", "description": "from:env 时的环境变量名（缺省用变量名）" }
             }
           }
         ]
       }
     },
-    "timeoutMs": {
-      "type": "integer",
-      "minimum": 1,
-      "description": "默认请求超时毫秒"
-    },
+    "timeoutMs": { "type": "integer", "minimum": 1, "description": "默认请求超时毫秒" },
     "workflows": {
       "type": "object",
-      "description": "命名工作流：多阶段编排，runtime vars 跨阶段自动传递（requestbaby workflow <name>）",
+      "description": "命名流程：多阶段编排，runtime vars 跨阶段自动传递（requestbaby workflow <name>）",
       "additionalProperties": {
         "type": "object",
         "additionalProperties": false,
-        "required": [
-          "steps"
-        ],
+        "required": ["steps"],
         "properties": {
-          "name": {
+          "name": { "type": "string", "description": "流程显示名" },
+          "env": {
             "type": "string",
-            "description": "工作流显示名"
+            "description": "固定运行环境（如本地 fixture 只能跑 local）：缺省跟随 -e / defaultEnv；显式 -e 其他环境会被拒绝；verify 在其他环境时跳过它（未执行）"
           },
           "steps": {
             "type": "array",
             "minItems": 1,
+            "description": "按顺序执行的步骤；某一步失败即停止，捕获的变量传给后续步骤",
             "items": {
               "type": "object",
               "additionalProperties": false,
-              "required": [
-                "run"
-              ],
+              "required": ["run"],
               "properties": {
-                "name": {
-                  "type": "string",
-                  "description": "步骤显示名"
-                },
-                "run": {
-                  "type": "string",
-                  "description": "运行目标（相对项目根的文件/目录）"
-                },
+                "name": { "type": "string", "description": "步骤显示名" },
+                "run": { "type": "string", "description": "运行目标（相对项目根的文件/目录）" },
                 "tags": {
                   "type": "array",
-                  "items": {
-                    "type": "string"
-                  }
+                  "items": { "type": "string" },
+                  "description": "只跑带这些标签的用例（同 run --tag）"
                 },
-                "nameFilter": {
-                  "type": "string"
-                }
+                "nameFilter": { "type": "string", "description": "只跑名称或文件名包含该文本的用例（同 run --name）" }
               }
             }
           }
+        }
+      }
+    },
+    "cookies": {
+      "type": "boolean",
+      "default": true,
+      "description": "自动管理 Cookie：保存响应的 Set-Cookie，后续同域请求自动携带（用例显式写 Cookie 头时以用例为准）。缺省开启"
+    },
+    "grpc": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "gRPC 接口描述来源：配置了 protos 就用 .proto 文件（validate / dry-run 能离线核对方法与消息），不配置则向服务端反射查询",
+      "properties": {
+        "protos": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": ".proto 文件或目录（目录下全部 .proto），相对项目根，如 [\"protos\"]"
+        },
+        "importPaths": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "import 搜索目录（相对项目根）；缺省 = protos 里的目录 + 各文件所在目录 + 项目根"
+        }
+      }
+    },
+    "proxy": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "代理：所有对外连接（HTTP / gRPC / WebSocket / 浏览器 / adb）经同一个代理；不写则跟随系统（环境变量 HTTPS_PROXY / ALL_PROXY → 系统代理设置）。本机地址始终直连",
+      "properties": {
+        "enabled": { "type": "boolean", "description": "是否使用代理（缺省 true）：false = 全部直连，也不读环境变量；保留 url 方便再打开" },
+        "url": { "type": "string", "description": "代理地址：socks5://主机:端口 / socks5h://（域名由代理解析）/ http://；可带 user:pass@，可写 {{变量}}（账号密码放 envs/<env>.local.json）" },
+        "noProxy": { "type": "array", "items": { "type": "string" }, "description": "不走代理的主机：example.com（含子域）/ *.corp / 10.0.0.0/8" }
+      }
+    },
+    "web": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Web 界面用例的浏览器设置",
+      "properties": {
+        "browser": {
+          "type": "string",
+          "description": "浏览器可执行文件（缺省自动查找本机 Chrome / Edge / Chromium）；环境变量 REQUESTBABY_BROWSER 优先"
+        },
+        "endpoint": {
+          "type": "string",
+          "pattern": "^(https?://|wss?://)?[^\\s/?#]+(:[0-9]+)?([/?#]\\S*)?$",
+          "description": "远程浏览器（Docker / 云浏览器 / 另一台机器上开了调试端口的 Chrome）：http://主机:9222 或 ws(s)://…；环境变量 REQUESTBABY_BROWSER_URL 优先。配了就不启动本机浏览器"
+        },
+        "headed": {
+          "type": "boolean",
+          "description": "显示浏览器窗口（缺省无界面运行；--headed / REQUESTBABY_HEADED=1 临时打开）"
+        },
+        "viewport": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["width", "height"],
+          "properties": {
+            "width": { "type": "integer", "minimum": 200, "description": "宽（CSS 像素）" },
+            "height": { "type": "integer", "minimum": 200, "description": "高（CSS 像素）" }
+          },
+          "description": "缺省视口（1280×800）"
+        },
+        "screenshots": {
+          "enum": ["steps", "failure"],
+          "description": "截图：steps（每一步，缺省）/ failure（只截失败、结束画面与 screenshot 步骤）"
+        }
+      }
+    },
+    "android": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Android 界面用例的设备设置",
+      "properties": {
+        "adb": { "type": "string", "description": "adb 路径（缺省 PATH / ANDROID_HOME）" },
+        "serial": { "type": "string", "description": "设备序列号（连接多台设备时必填；环境变量 ANDROID_SERIAL 优先）。远程模拟器 / 云手机写 主机:端口，没连上时自动 adb connect" },
+        "server": { "type": "string", "description": "远程 adb server（主机[:端口]，缺省端口 5037）：设备接在另一台机器上时用，相当于 adb -H -P" },
+        "screenshots": {
+          "enum": ["steps", "failure"],
+          "description": "截图：steps（每一步，缺省）/ failure（只截失败、结束画面与 screenshot 步骤）"
         }
       }
     }

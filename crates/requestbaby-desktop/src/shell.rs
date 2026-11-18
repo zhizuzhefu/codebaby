@@ -1,6 +1,8 @@
-//! 窗口外壳：持有当前项目的工作区；打开 / 新建 / 导入项目（core::scaffold / core::importer）。
-use crate::workspace::{Workspace, confirm_discard};
-use crate::{ImportSpec, NewProject, OpenProject, ToggleTheme};
+//! 窗口外壳：持有当前项目的工作区；打开 / 新建 / 导入 / 关闭项目（core::scaffold / core::importer）。
+use crate::dialogs::confirm_discard;
+use crate::workspace::Workspace;
+use crate::recent;
+use crate::{CloseProject, ImportSpec, InstallCli, NewProject, OpenProject, ToggleTheme};
 use gpui_kit::component::{
     ActiveTheme as _, Icon, IconName, Sizable as _, Theme, ThemeMode, TitleBar, WindowExt as _, h_flex,
     button::Button,
@@ -9,7 +11,8 @@ use gpui_kit::component::{
 };
 use gpui_kit::{
     AppContext as _, Context, Entity, FocusHandle, Focusable, FontWeight, InteractiveElement as _, IntoElement,
-    ParentElement as _, PathPromptOptions, Render, Styled as _, Subscription, Window, div, px,
+    ParentElement as _, PathPromptOptions, Render, StatefulInteractiveElement as _, Styled as _, Subscription, Window,
+    div, prelude::FluentBuilder as _, px,
 };
 use requestbaby_core::{importer, scaffold, session};
 use std::path::PathBuf;
@@ -19,6 +22,7 @@ pub enum ShellRequest {
     OpenProject,
     NewProject,
     ImportSpec,
+    CloseProject,
 }
 
 pub struct Shell {
@@ -46,11 +50,13 @@ impl Shell {
 
     fn open_project(&mut self, root: PathBuf, window: &mut Window, cx: &mut Context<Self>) {
         window.set_window_title(&format!("requestbaby — {}", root.display()));
+        recent::remember(&root);
         let ws = cx.new(|cx| Workspace::new(root, window, cx));
         self._subscription = Some(cx.subscribe_in(&ws, window, |this, _, req: &ShellRequest, window, cx| match req {
             ShellRequest::OpenProject => this.request(Self::prompt_open, window, cx),
             ShellRequest::NewProject => this.request(Self::prompt_new, window, cx),
             ShellRequest::ImportSpec => this.request(Self::prompt_import, window, cx),
+            ShellRequest::CloseProject => this.request(Self::close_project, window, cx),
         }));
         let focus = ws.focus_handle(cx);
         window.defer(cx, move |window, cx| focus.focus(window, cx));
@@ -69,6 +75,37 @@ impl Shell {
         confirm_discard(lost, window, cx, move |window, cx| {
             let _ = this.update(cx, |s, cx| f(s, window, cx));
         });
+    }
+
+    /// 回到欢迎页；没有打开项目时 ⌘W 关闭窗口（随即退出应用）
+    fn close_project(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.workspace.is_none() {
+            window.remove_window();
+            return;
+        }
+        self.workspace = None;
+        self._subscription = None;
+        window.set_window_title("requestbaby");
+        self.focus_handle.focus(window, cx);
+        cx.notify();
+    }
+
+    /// 安装命令行工具：后台执行（可能弹出系统授权对话框），结果以通知展示
+    fn install_cli(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let task = cx.background_spawn(async move { crate::cli_install::install() });
+        cx.spawn_in(window, async move |_, cx| {
+            let res = task.await;
+            let _ = cx.update(|window, cx| match res {
+                Ok(done) => {
+                    window.push_notification(Notification::success(done.message), cx);
+                    if let Some(w) = done.warning {
+                        window.push_notification(Notification::warning(w).autohide(false), cx);
+                    }
+                }
+                Err(e) => window.push_notification(Notification::error(format!("安装命令行工具失败：{e:#}")), cx),
+            });
+        })
+        .detach();
     }
 
     fn prompt_open(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -106,7 +143,7 @@ impl Shell {
                 Ok(entries) => {
                     let created = entries.iter().filter(|e| e.created).count();
                     window.push_notification(
-                        Notification::success(format!("已初始化 {}：新建 {created} 个文件（等价命令 requestbaby init）", dir.display())),
+                        Notification::success(format!("已初始化 {}：新建 {created} 个文件", dir.display())),
                         cx,
                     );
                     s.open_project(dir, window, cx);
@@ -180,12 +217,12 @@ impl Shell {
                         v_flex()
                             .items_center()
                             .gap_1()
-                            .child(div().text_xl().font_weight(FontWeight::SEMIBOLD).child("用测试用例证明代码是对的"))
+                            .child(div().text_xl().font_weight(FontWeight::SEMIBOLD).child("AI 交付的独立验收层"))
                             .child(
                                 div()
                                     .text_sm()
                                     .text_color(muted)
-                                    .child("项目即目录：CLI、AI 与桌面端读写同一份文件，运行历史共享于 .requestbaby/runs/"),
+                                    .child("辅助人验收 AI 交付的成果 · CLI、AI 与桌面端读写同一份文件，运行历史共享于 .requestbaby/runs/"),
                             ),
                     )
                     .child(
@@ -193,11 +230,41 @@ impl Shell {
                             .gap_4()
                             .items_stretch()
                             .child(action("welcome-open", IconName::FolderOpen, "打开项目", "选择包含 requestbaby.json 的目录（或其子目录）", Self::prompt_open))
-                            .child(action("welcome-new", IconName::Plus, "新建项目", "生成项目配置、dev / prod 环境与示例用例（requestbaby init）", Self::prompt_new))
-                            .child(action("welcome-import", IconName::Inbox, "导入", "从 OpenAPI / Swagger / Postman 生成完整项目（requestbaby import）", Self::prompt_import)),
+                            .child(action("welcome-new", IconName::Plus, "新建项目", "生成项目配置、dev / prod 环境与示例用例", Self::prompt_new))
+                            .child(action("welcome-import", IconName::Inbox, "导入", "从 OpenAPI / Swagger / Postman 生成完整项目", Self::prompt_import)),
                     )
+                    .child(self.render_recent(cx))
                     .child(div().text_xs().text_color(muted).child("也可在终端执行 requestbaby open 直接打开当前项目")),
             )
+    }
+}
+
+impl Shell {
+    fn render_recent(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let recent = recent::load();
+        let muted = cx.theme().muted_foreground;
+        v_flex()
+            .w(px(692.))
+            .gap_1()
+            .when(!recent.is_empty(), |this| {
+                this.child(div().text_xs().font_weight(FontWeight::MEDIUM).text_color(muted).child("最近打开"))
+            })
+            .children(recent.into_iter().enumerate().map(|(ix, root)| {
+                let name = root.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+                let path = root.display().to_string();
+                h_flex()
+                    .id(("recent", ix))
+                    .px_2()
+                    .py_1()
+                    .gap_3()
+                    .rounded(cx.theme().radius)
+                    .cursor_pointer()
+                    .hover(|d| d.bg(cx.theme().table_hover))
+                    .on_click(cx.listener(move |this, _, window, cx| this.open_project(root.clone(), window, cx)))
+                    .child(Icon::new(IconName::Folder).small().text_color(muted))
+                    .child(div().w(px(160.)).text_sm().font_weight(FontWeight::MEDIUM).child(name))
+                    .child(div().flex_1().min_w_0().overflow_hidden().text_ellipsis().text_xs().text_color(muted).child(path))
+            }))
     }
 }
 
@@ -214,6 +281,8 @@ impl Render for Shell {
             .on_action(cx.listener(|this, _: &OpenProject, window, cx| this.request(Self::prompt_open, window, cx)))
             .on_action(cx.listener(|this, _: &NewProject, window, cx| this.request(Self::prompt_new, window, cx)))
             .on_action(cx.listener(|this, _: &ImportSpec, window, cx| this.request(Self::prompt_import, window, cx)))
+            .on_action(cx.listener(|this, _: &CloseProject, window, cx| this.request(Self::close_project, window, cx)))
+            .on_action(cx.listener(|this, _: &InstallCli, window, cx| this.install_cli(window, cx)))
             .on_action(cx.listener(|_, _: &ToggleTheme, window, cx| {
                 let mode = if cx.theme().mode.is_dark() { ThemeMode::Light } else { ThemeMode::Dark };
                 Theme::change(mode, Some(window), cx);

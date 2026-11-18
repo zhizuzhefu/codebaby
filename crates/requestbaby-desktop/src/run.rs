@@ -1,11 +1,12 @@
-//! 运行控制：在后台线程执行 core 的 `session::run` / `workflow::run`，
+//! 运行控制：在后台线程执行 core 的 `session::run` / `workflow::run` / `verify::run`，
 //! 通过与 CLI `--json-stream` 相同的 [`RunEvent`] 协议把进度流回界面。
 use futures::StreamExt as _;
 use futures::channel::mpsc;
 use gpui_kit::{Context, EventEmitter, Task};
 use requestbaby_core::report::{CaseReport, RunReport, StepStatus};
-use requestbaby_core::runner::{CancelToken, CaseResult, EventHook, RunEvent};
+use requestbaby_core::runner::{CancelToken, CaseResult, EventHook, RunEvent, SessionState};
 use requestbaby_core::session::{self, RunRequest};
+use requestbaby_core::verify::{self, VerifySpec};
 use requestbaby_core::workflow::{self, WorkflowSpec};
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -19,8 +20,10 @@ pub enum RunJob {
     Run(RunRequest),
     /// 单用例调试发送：不写历史（与 CLI `send` 一致）
     Send { path: PathBuf, rel: String, env: String },
-    /// 命名工作流：写入共享历史
+    /// 命名流程：写入共享历史
     Workflow { name: String, env: String, dry_run: bool },
+    /// 完整验证（`requestbaby verify`）：写入共享历史
+    Verify { env: String },
 }
 
 impl RunJob {
@@ -29,6 +32,7 @@ impl RunJob {
             RunJob::Run(r) => r.command_line(),
             RunJob::Send { path, rel, env } => session::send_spec(path.clone(), rel, Some(env.clone()), "desktop", None).command,
             RunJob::Workflow { name, env, dry_run } => workflow::command_line(name, Some(env), *dry_run),
+            RunJob::Verify { env } => verify::command_line(Some(env), None),
         }
     }
 
@@ -52,7 +56,7 @@ pub struct LogLine {
     pub notice: bool,
 }
 
-/// 工作流步骤视图（运行中实时更新；历史运行从报告还原）
+/// 流程步骤视图（运行中实时更新；历史运行从报告还原）
 #[derive(Debug, Clone)]
 pub struct StepView {
     pub label: String,
@@ -82,9 +86,11 @@ pub enum ResultsSource {
 
 pub enum RunStateEvent {
     /// 一次运行结束（含取消）；send 不写历史
-    Finished { send: bool, workflow: Option<String>, failed: usize, total: usize, dry_run: bool },
+    Finished { send: bool, workflow: Option<String>, verify: bool, blocked: Option<String>, failed: usize, total: usize, dry_run: bool },
     /// 单用例完成（结果回填响应面板）
     CaseDone { file: String },
+    /// 单发前自动补跑了前置用例（core::session 的提示）
+    Prerequisite(String),
     Error(String),
 }
 
@@ -98,6 +104,8 @@ pub struct RunState {
     rows: Vec<CaseReport>,
     steps: Vec<StepView>,
     workflow: Option<String>,
+    /// 结果来自完整验证（steps 为各阶段）
+    verify: bool,
     source: ResultsSource,
     /// 结果表当前展示的报告（导出用）
     report: Option<RunReport>,
@@ -107,11 +115,16 @@ pub struct RunState {
     command: String,
     cancel: Option<CancelToken>,
     _task: Option<Task<()>>,
+    /// 本次会话：之前运行 / 发送捕获的变量与 Cookie，「发送」时带上（单独调试链路中的某一步）
+    session: SessionState,
 }
+
+/// 任务结果：用例结果 + 报告 + 结束时的会话状态（verify 不回传）
+type JobOutput = (Vec<CaseResult>, RunReport, Option<SessionState>);
 
 enum Msg {
     Event(RunEvent),
-    Done(anyhow::Result<(Vec<CaseResult>, RunReport)>),
+    Done(anyhow::Result<JobOutput>),
 }
 
 impl EventEmitter<RunStateEvent> for RunState {}
@@ -135,6 +148,8 @@ impl RunState {
             command: String::new(),
             cancel: None,
             _task: None,
+            verify: false,
+            session: SessionState::default(),
         }
     }
 
@@ -169,6 +184,19 @@ impl RunState {
 
     pub fn workflow(&self) -> Option<&str> {
         self.workflow.as_deref()
+    }
+
+    pub fn is_verify(&self) -> bool {
+        self.verify
+    }
+
+    pub fn session(&self) -> &SessionState {
+        &self.session
+    }
+
+    pub fn clear_session(&mut self, cx: &mut Context<Self>) {
+        self.session = SessionState::default();
+        cx.notify();
     }
 
     pub fn source(&self) -> &ResultsSource {
@@ -228,6 +256,7 @@ impl RunState {
             })
             .collect();
         self.workflow = meta.workflow.clone();
+        self.verify = meta.verify;
         self.source = ResultsSource::History(meta.id.clone());
         self.command = meta.command.clone();
         self.planned = report.total;
@@ -247,7 +276,7 @@ impl RunState {
         }
     }
 
-    /// 启动任务。`workflow_steps` 为工作流预置的步骤（开始前即可展示完整 stepper）
+    /// 启动任务。`workflow_steps` 为流程预置的步骤（开始前即可展示完整 stepper）
     pub fn start(&mut self, root: PathBuf, job: RunJob, workflow_steps: Vec<StepView>, cx: &mut Context<Self>) {
         if self.is_running() {
             return;
@@ -270,6 +299,7 @@ impl RunState {
                 RunJob::Workflow { name, .. } => Some(name.clone()),
                 _ => None,
             };
+            self.verify = matches!(job, RunJob::Verify { .. });
             self.steps = workflow_steps;
         }
         self.job = Some(job.clone());
@@ -279,15 +309,17 @@ impl RunState {
         let hook: EventHook = Arc::new(move |ev: &RunEvent| {
             let _ = event_tx.unbounded_send(Msg::Event(ev.clone()));
         });
+        let seed = (!self.session.is_empty()).then(|| self.session.clone());
         // libcurl 与 QuickJS 均为阻塞调用：独立线程执行，不占用 GPUI 执行器
         std::thread::spawn(move || {
             let out = match job {
-                RunJob::Run(req) => {
-                    session::run(&req.to_spec(&root, "desktop", true, Some(cancel)), Some(hook), |_, _, _| {}).map(|o| (o.results, o.report))
-                }
+                RunJob::Run(req) => session::run(&req.to_spec(&root, "desktop", true, Some(cancel)), Some(hook), |_, _, _| {})
+                    .map(|o| (o.results, o.report, Some(o.state))),
+                // 单发带上本次会话捕获的变量与 Cookie：可单独调试链路中的任意一步
                 RunJob::Send { path, rel, env } => {
-                    session::run(&session::send_spec(path, &rel, Some(env), "desktop", Some(cancel)), Some(hook), |_, _, _| {})
-                        .map(|o| (o.results, o.report))
+                    let mut spec = session::send_spec(path, &rel, Some(env), "desktop", Some(cancel));
+                    spec.seed = seed;
+                    session::run(&spec, Some(hook), |_, _, _| {}).map(|o| (o.results, o.report, Some(o.state)))
                 }
                 RunJob::Workflow { name, env, dry_run } => {
                     let spec = WorkflowSpec {
@@ -300,8 +332,21 @@ impl RunState {
                         source: "desktop".into(),
                         record_history: true,
                         cancel: Some(cancel),
+                        artifacts: None,
                     };
-                    workflow::run(&spec, Some(hook), |_| {}).map(|o| (o.results, o.report))
+                    workflow::run(&spec, Some(hook), |_| {}).map(|o| (o.results, o.report, Some(o.state)))
+                }
+                RunJob::Verify { env } => {
+                    let spec = VerifySpec {
+                        root,
+                        env: Some(env),
+                        output: None,
+                        send_mode: true,
+                        source: "desktop".into(),
+                        record_history: true,
+                        cancel: Some(cancel),
+                    };
+                    verify::run(&spec, Some(hook), |_| {}).map(|o| (o.results, o.report, None))
                 }
             };
             let _ = tx.unbounded_send(Msg::Done(out));
@@ -345,7 +390,12 @@ impl RunState {
                 }
                 RunEvent::CaseStarted { file, .. } => self.current = Some(file),
                 RunEvent::Log { file, line } => self.logs.push(LogLine { file, text: line, notice: false }),
-                RunEvent::Notice { message } => self.logs.push(LogLine { file: String::new(), text: message, notice: true }),
+                RunEvent::Notice { message } => {
+                    if send && message.starts_with("先运行前置用例") {
+                        cx.emit(RunStateEvent::Prerequisite(message.clone()));
+                    }
+                    self.logs.push(LogLine { file: String::new(), text: message, notice: true })
+                }
                 RunEvent::CaseFinished { result } => {
                     if !send {
                         self.rows.push(result);
@@ -366,8 +416,11 @@ impl RunState {
                     }
                 }
                 match out {
-                    Ok((results, report)) => {
+                    Ok((results, report, state)) => {
                         let dry_run = report.meta.as_ref().is_some_and(|m| m.dry_run);
+                        if let Some(state) = state.filter(|_| !dry_run) {
+                            self.session.merge(&state);
+                        }
                         let mut touched: Vec<String> = vec![];
                         let at = requestbaby_core::history::now_ms();
                         // dry-run 未发送请求：不覆盖响应面板中的真实响应
@@ -382,13 +435,22 @@ impl RunState {
                         }
                         self.phase = Phase::Finished;
                         let (failed, total) = (report.failed, report.total);
+                        let blocked = report.blocked.clone();
                         if !send {
                             self.report = Some(report);
                         }
                         for file in touched {
                             cx.emit(RunStateEvent::CaseDone { file });
                         }
-                        cx.emit(RunStateEvent::Finished { send, workflow: self.workflow.clone(), failed, total, dry_run });
+                        cx.emit(RunStateEvent::Finished {
+                            send,
+                            workflow: self.workflow.clone(),
+                            verify: self.verify,
+                            blocked,
+                            failed,
+                            total,
+                            dry_run,
+                        });
                     }
                     Err(e) => {
                         let msg = format!("{e:#}");

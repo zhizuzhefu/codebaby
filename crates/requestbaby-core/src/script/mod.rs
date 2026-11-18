@@ -18,11 +18,29 @@ pub struct ReqData {
 /// post/tests 脚本可见的响应视图
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct RespData {
+    /// HTTP / WebSocket：HTTP 状态码（握手成功 101）；gRPC：gRPC 状态码（0 = OK）
     pub status: u16,
     pub time_ms: u64,
     pub size: u64,
+    /// HTTP 响应头 / gRPC 响应元数据 / WebSocket 握手响应头
     pub headers: Vec<(String, String)>,
+    /// HTTP 响应体 / gRPC 响应消息（JSON；流式为数组）/ WebSocket 收到的消息数组（JSON）
     pub body: String,
+    #[serde(default, skip_serializing_if = "crate::config::Protocol::is_http")]
+    pub protocol: crate::config::Protocol,
+    /// 消息时间线：WebSocket 收发 / gRPC 请求与响应消息
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub frames: Vec<crate::engine::Frame>,
+    /// 界面用例（Web / Android）的证据：每一步的记录与截图
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub evidence: Option<crate::engine::ui::UiEvidence>,
+}
+
+impl RespData {
+    /// HTTP 响应（无消息时间线）
+    pub fn http(status: u16, time_ms: u64, size: u64, headers: Vec<(String, String)>, body: String) -> Self {
+        Self { status, time_ms, size, headers, body, protocol: crate::config::Protocol::Http, frames: vec![], evidence: None }
+    }
 }
 
 /// 单条断言结果

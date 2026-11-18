@@ -2,37 +2,120 @@
   "$schema": "http://json-schema.org/draft-07/schema#",
   "$id": "https://requestbaby.dev/schema/case.schema.json",
   "title": "requestbaby 用例配置",
-  "description": "单个 API 测试用例。由 AI 生成或人工编写，requestbaby validate 可校验。",
+  "description": "单个验收用例：HTTP / gRPC / WebSocket 接口，或 Web / Android 界面。由 AI 生成或人工编写，requestbaby validate 可校验。",
   "type": "object",
   "additionalProperties": false,
-  "required": ["request"],
+  "required": [],
   "properties": {
-    "name": {
-      "type": "string",
-      "description": "用例名（缺省用文件名去扩展名）"
-    },
+    "name": { "type": "string", "description": "用例名（缺省用文件名去扩展名）" },
     "tags": {
       "type": "array",
       "items": { "type": "string" },
       "description": "标签，run --tag 过滤；与所在集合 collection.json 的 tags 合并"
     },
-    "skip": {
-      "type": "boolean",
-      "default": false,
-      "description": "跳过该用例"
+    "skip": { "type": "boolean", "default": false, "description": "跳过该用例" },
+    "request": {
+      "$ref": "#/definitions/request",
+      "description": "HTTP 请求：method + url 必填，其余可选。request / grpc / ws 三选一，决定这个用例的协议"
     },
-    "expectStatus": {
-      "description": "期望状态码语法糖：200 或 [200,409]，等价于隐式首条断言 [200,409].includes(res.status)",
-      "oneOf": [
-        { "type": "integer", "minimum": 100, "maximum": 599 },
-        {
-          "type": "array",
-          "minItems": 1,
-          "items": { "type": "integer", "minimum": 100, "maximum": 599 }
+    "grpc": {
+      "$ref": "#/definitions/grpc",
+      "description": "gRPC 调用（与 request / ws 三选一）。expect.status 写 gRPC 状态（\"OK\" / \"NOT_FOUND\" 或 0–16），expect.headers 是响应元数据，expect.body 是响应消息（服务端流 / 双向流时是消息数组）"
+    },
+    "ws": {
+      "$ref": "#/definitions/ws",
+      "description": "WebSocket 对话（与 request / grpc 三选一）。expect.status 是握手状态（成功 101），expect.body 是收到的全部消息数组；对话过程写在 steps"
+    },
+    "web": {
+      "$ref": "#/definitions/web",
+      "description": "Web 界面验收（与 request / grpc / ws / android 五选一）：用本机 Chrome / Edge 打开页面按步骤操作，每一步截图留证。expect.status 是页面的 HTTP 状态，expect.body 是结束时的 {url, title}"
+    },
+    "android": {
+      "$ref": "#/definitions/android",
+      "description": "Android 应用验收（五选一）：adb + uiautomator 启动应用按步骤操作，每一步截图留证。expect.body 是结束时的 {package, activity}"
+    },
+    "expect": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "声明式断言（推荐，不用写 JS）。失败时报告写明「哪个字段、期望什么、实际是什么」。示例：{\"status\": 200, \"body\": {\"code\": 0, \"data.items[*].price\": {\"gt\": 0}}}",
+      "properties": {
+        "status": {
+          "oneOf": [
+            { "type": "integer", "minimum": 0, "maximum": 599 },
+            {
+              "type": "array",
+              "minItems": 1,
+              "items": { "type": "integer", "minimum": 0, "maximum": 599 }
+            },
+            { "type": "string", "pattern": "^\\{\\{[^{}]+\\}\\}$" },
+            {
+              "type": "string",
+              "enum": [
+                "OK",
+                "CANCELLED",
+                "UNKNOWN",
+                "INVALID_ARGUMENT",
+                "DEADLINE_EXCEEDED",
+                "NOT_FOUND",
+                "ALREADY_EXISTS",
+                "PERMISSION_DENIED",
+                "RESOURCE_EXHAUSTED",
+                "FAILED_PRECONDITION",
+                "ABORTED",
+                "OUT_OF_RANGE",
+                "UNIMPLEMENTED",
+                "INTERNAL",
+                "UNAVAILABLE",
+                "DATA_LOSS",
+                "UNAUTHENTICATED"
+              ]
+            },
+            {
+              "type": "array",
+              "minItems": 1,
+              "items": {
+                "type": "string",
+                "enum": [
+                  "OK",
+                  "CANCELLED",
+                  "UNKNOWN",
+                  "INVALID_ARGUMENT",
+                  "DEADLINE_EXCEEDED",
+                  "NOT_FOUND",
+                  "ALREADY_EXISTS",
+                  "PERMISSION_DENIED",
+                  "RESOURCE_EXHAUSTED",
+                  "FAILED_PRECONDITION",
+                  "ABORTED",
+                  "OUT_OF_RANGE",
+                  "UNIMPLEMENTED",
+                  "INTERNAL",
+                  "UNAVAILABLE",
+                  "DATA_LOSS",
+                  "UNAUTHENTICATED"
+                ]
+              }
+            }
+          ],
+          "description": "期望状态：HTTP 写状态码 200、[200, 201]；WebSocket 写握手状态（成功 101，被拒如 401）；gRPC 写状态名 \"OK\" / \"NOT_FOUND\" / [\"OK\", \"NOT_FOUND\"] 或数字 0–16；也可写数据驱动行里的变量 \"{{status}}\""
+        },
+        "headers": {
+          "type": "object",
+          "description": "响应头名称（不区分大小写）→ 期望值，如 {\"Content-Type\": {\"contains\": \"json\"}}。gRPC 是响应元数据（含 grpc-message）；WebSocket 是握手响应头，服务端关闭时另有 ws-close-code / ws-close-reason",
+          "additionalProperties": { "$ref": "#/definitions/matcher" }
+        },
+        "body": {
+          "type": "object",
+          "description": "响应体路径 → 期望值。路径用点号分段：data.user.name；数组下标 data.items[0] 或 data.items.0；data.items[*].id 表示每个元素都要满足；$ 表示整个响应体（非 JSON 响应可用 {\"$\": {\"contains\": \"ok\"}}）。gRPC：响应消息（流式为消息数组，用 [*] / [0] / $ 断言）；WebSocket：收到的全部消息数组",
+          "additionalProperties": { "$ref": "#/definitions/matcher" }
         }
-      ]
+      }
     },
-    "request": { "$ref": "#/definitions/request" },
+    "capture": {
+      "type": "object",
+      "description": "声明式捕获（推荐，不用写 post 脚本）：变量名 → 来源。来源是响应体路径（如 data.token、data.items[0].id），或 header:名称（如 header:X-Trace-Id）。捕获的变量后续用例可用 {{变量名}} 引用；取不到值时本用例失败",
+      "additionalProperties": { "type": "string", "minLength": 1 }
+    },
     "cases": {
       "description": "数据驱动：用例 × 每行数据 = 一个实例（[label] 标注），行变量优先级最高",
       "oneOf": [
@@ -49,9 +132,7 @@
           "type": "object",
           "required": ["file"],
           "additionalProperties": false,
-          "properties": {
-            "file": { "type": "string", "description": "CSV（首行表头）或 JSON 对象数组文件，相对用例文件" }
-          }
+          "properties": { "file": { "type": "string", "description": "CSV（首行表头）或 JSON 对象数组文件，相对用例文件" } }
         }
       ]
     },
@@ -61,12 +142,23 @@
     },
     "post": {
       "type": "string",
-      "description": "后置 JS 脚本：响应返回后、断言前执行。读 res.status/headers/timeMs/json()/json(path)/text()，写 vars.* 捕获传递给后续用例"
+      "description": "进阶：后置 JS 脚本，响应返回后、断言前执行（在 capture 之后）。简单取值请用 capture"
     },
     "tests": {
       "type": "array",
       "items": { "type": "string" },
-      "description": "断言：JS 表达式数组，逐条求值，真值为通过。可见 res/vars/env/crypto 与 data（=res.json() 快照，推荐 data.a.b.c 代替 res.json().a.b.c）。断言为 false 是正常失败；表达式抛错属配置问题，会给出具体字段名与修复提示"
+      "description": "进阶断言：JS 表达式数组，逐条求值，真值为通过（expect 表达不了的逻辑再用）。可见 res/vars/env/crypto 与 data（=res.json() 快照）"
+    },
+    "expectStatus": {
+      "oneOf": [
+        { "type": "integer", "minimum": 100, "maximum": 599 },
+        {
+          "type": "array",
+          "minItems": 1,
+          "items": { "type": "integer", "minimum": 100, "maximum": 599 }
+        }
+      ],
+      "description": "旧写法：期望状态码。新用例请写 expect.status（requestbaby fmt --fix 自动迁移）"
     }
   },
   "definitions": {
@@ -80,17 +172,39 @@
           "enum": ["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"],
           "description": "HTTP 方法（大写）"
         },
-        "url": {
-          "type": "string",
-          "description": "请求 URL，支持 {{var}} 替换，仅 http/https"
-        },
+        "url": { "type": "string", "description": "请求 URL，支持 {{var}} 替换，仅 http/https" },
         "headers": {
           "type": "object",
-          "additionalProperties": { "type": "string" },
-          "description": "请求头，值支持 {{var}}"
+          "additionalProperties": {
+            "oneOf": [
+              { "type": "string" },
+              {
+                "type": "object",
+                "required": ["value"],
+                "additionalProperties": false,
+                "properties": { "value": { "type": "string" }, "disabled": { "type": "boolean" } }
+              }
+            ]
+          },
+          "description": "请求头，值支持 {{var}}；写成 {\"value\": \"...\", \"disabled\": true} 则保留但不发送"
+        },
+        "query": {
+          "type": "object",
+          "additionalProperties": {
+            "oneOf": [
+              { "type": "string" },
+              {
+                "type": "object",
+                "required": ["value"],
+                "additionalProperties": false,
+                "properties": { "value": { "type": "string" }, "disabled": { "type": "boolean" } }
+              }
+            ]
+          },
+          "description": "查询参数：URL 编码后追加到 url（url 里已有的 ?a=1 保留）；值支持 {{var}} 与 disabled"
         },
         "body": {
-          "description": "请求体：{\"json\": <对象/数组>} 序列化为 JSON 并自动 Content-Type；{\"text\": \"字符串\"} 原样发送。变量语法：{{var}} 字符串替换；{{var:number}} / {{var:bool}} 类型标注——写在 JSON 值位置如 \"taskId\": \"{{taskId:number}}\"，渲染后连引号替换为裸数字/布尔（服务端 int64 binding 场景必需）",
+          "description": "请求体：{\"json\": <对象/数组>} 序列化为 JSON 并自动 Content-Type；{\"text\": \"字符串\"} 原样发送；{\"form\": {...}} 表单；{\"multipart\": {...}} 文件上传。变量语法：{{var}} 字符串替换；{{var:number}} / {{var:bool}} 类型标注——写在 JSON 值位置如 \"taskId\": \"{{taskId:number}}\"，渲染后连引号替换为裸数字/布尔（服务端 int64 binding 场景必需）",
           "oneOf": [
             {
               "type": "object",
@@ -103,6 +217,39 @@
               "required": ["text"],
               "additionalProperties": false,
               "properties": { "text": { "type": "string" } }
+            },
+            {
+              "type": "object",
+              "required": ["form"],
+              "additionalProperties": false,
+              "description": "application/x-www-form-urlencoded：逐字段 URL 编码，未设 Content-Type 时自动补",
+              "properties": { "form": { "type": "object", "additionalProperties": { "type": "string" } } }
+            },
+            {
+              "type": "object",
+              "required": ["multipart"],
+              "additionalProperties": false,
+              "description": "multipart/form-data（文件上传）：值为字符串=文本字段；{\"file\": \"相对用例文件的路径\", \"filename\"?, \"type\"?}=文件字段。Content-Type（含 boundary）自动生成，不要手写",
+              "properties": {
+                "multipart": {
+                  "type": "object",
+                  "additionalProperties": {
+                    "oneOf": [
+                      { "type": "string" },
+                      {
+                        "type": "object",
+                        "required": ["file"],
+                        "additionalProperties": false,
+                        "properties": {
+                          "file": { "type": "string" },
+                          "filename": { "type": "string" },
+                          "type": { "type": "string" }
+                        }
+                      }
+                    ]
+                  }
+                }
+              }
             }
           ]
         },
@@ -117,15 +264,300 @@
           "maximum": 10,
           "description": "传输层重试次数（curl --retry）"
         },
-        "insecure": {
-          "type": "boolean",
-          "default": false,
-          "description": "跳过 TLS 证书校验（curl -k）"
+        "insecure": { "type": "boolean", "default": false, "description": "跳过 TLS 证书校验（curl -k）" },
+        "followRedirects": { "type": "boolean", "default": false, "description": "跟随 3xx 重定向（curl -L）" }
+      }
+    },
+    "matcher": {
+      "description": "期望值。字面量（数字 / 字符串 / 布尔 / null / 数组）= 相等，数字按数值比较；对象且所有键都是运算符 = 运算符检查（多个运算符须同时满足）；其余对象 = 整体相等。字符串中的 {{var}} 会替换为变量值，整个值恰好是一个 {{var}} 时保留变量原类型（{{x:number}} 强制为数字）",
+      "anyOf": [
+        { "type": ["string", "number", "boolean", "null", "array"] },
+        {
+          "type": "object",
+          "minProperties": 1,
+          "additionalProperties": false,
+          "properties": {
+            "eq": { "description": "等于（与字面量相同，用于比较对象等含运算符名的值）" },
+            "ne": { "description": "不等于" },
+            "gt": { "type": ["number", "string"], "description": "大于（数字）" },
+            "gte": { "type": ["number", "string"], "description": "大于等于（数字）" },
+            "lt": { "type": ["number", "string"], "description": "小于（数字）" },
+            "lte": { "type": ["number", "string"], "description": "小于等于（数字）" },
+            "type": {
+              "enum": ["string", "number", "integer", "boolean", "null", "array", "object"],
+              "description": "类型"
+            },
+            "exists": { "type": "boolean", "description": "true = 字段必须存在（null 也算存在）；false = 字段必须不存在" },
+            "contains": { "description": "字符串包含子串 / 数组包含该元素 / 对象包含该键" },
+            "startsWith": { "type": "string", "description": "字符串以此开头" },
+            "endsWith": { "type": "string", "description": "字符串以此结尾" },
+            "matches": { "type": "string", "description": "字符串匹配正则" },
+            "len": { "description": "长度（字符串字符数 / 数组元素数 / 对象键数）：数字，或运算符对象如 {\"gte\": 1}" },
+            "oneOf": { "type": "array", "description": "等于其中之一" },
+            "values": {
+              "type": ["array", "string"],
+              "description": "依次等于：路径含 [*] 时收集到的全部值按顺序等于该数组（或逗号分隔的文本，如 \"{{expectedIds}}\"）；路径指向数组时比较其元素"
+            }
+          }
         },
-        "followRedirects": {
-          "type": "boolean",
-          "default": false,
-          "description": "跟随 3xx 重定向（curl -L）"
+        { "type": "object", "description": "整体相等比较的对象" }
+      ]
+    },
+    "grpc": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["target", "method"],
+      "properties": {
+        "target": {
+          "type": "string",
+          "description": "服务地址：host:port 或 grpc://host:port 为明文；grpcs://host:port（缺省端口 443）为 TLS；支持 {{var}}，通常写 {{grpcTarget}} 放进环境"
+        },
+        "method": {
+          "type": "string",
+          "description": "完整方法名：包.服务/方法，如 user.v1.UserService/GetUser（requestbaby grpc list 列出全部）"
+        },
+        "message": {
+          "description": "请求消息：protobuf 的 JSON 写法，字段名用 .proto 里的名字（lowerCamelCase 也接受）；int64 写数字或字符串都行；数字变量写 \"{{id:number}}\"。不写 = 空消息"
+        },
+        "messages": { "type": "array", "description": "客户端流 / 双向流：按顺序发送的多条消息（与 message 二选一）" },
+        "metadata": {
+          "type": "object",
+          "additionalProperties": {
+            "oneOf": [
+              { "type": "string" },
+              {
+                "type": "object",
+                "required": ["value"],
+                "additionalProperties": false,
+                "properties": { "value": { "type": "string" }, "disabled": { "type": "boolean" } }
+              }
+            ]
+          },
+          "description": "请求元数据（相当于请求头，名称小写），如 {\"authorization\": \"Bearer {{token}}\"}；集合 collection.json 的 headers 也会一起发送；写成 {\"value\": \"...\", \"disabled\": true} 保留但不发送"
+        },
+        "timeoutMs": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "超时毫秒（缺省用项目 timeoutMs），同时作为 grpc-timeout 告诉服务端"
+        },
+        "insecure": { "type": "boolean", "description": "TLS 时跳过证书校验（自签证书的测试环境）" }
+      }
+    },
+    "wsStep": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "一步只做一件事：send / sendBinary / receive / waitFor / wait / close 写其中一个",
+      "properties": {
+        "send": {
+          "description": "发送文本消息：字符串原样发送，对象 / 数组按 JSON 发送；支持 {{var}}（含前面步骤捕获的变量），数字写 \"{{id:number}}\""
+        },
+        "sendBinary": { "type": "string", "description": "发送二进制消息（base64）" },
+        "receive": {
+          "type": "object",
+          "additionalProperties": { "$ref": "#/definitions/matcher" },
+          "description": "接收下一条消息并断言：路径 → 期望（写法同 expect.body，$ = 整条消息）；{} = 只要收到。不满足即失败并停止对话"
+        },
+        "waitFor": {
+          "type": "object",
+          "additionalProperties": { "$ref": "#/definitions/matcher" },
+          "description": "一直等到满足条件的消息（心跳等其他消息跳过，仍记录在对话里）；超时失败"
+        },
+        "wait": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "静候毫秒数，期间收到的消息照常记录（用于 expect.body 断言收到了什么）"
+        },
+        "close": {
+          "oneOf": [{ "type": "boolean" }, { "type": "integer", "minimum": 1000, "maximum": 4999 }],
+          "description": "主动关闭连接：true（1000）或关闭码；步骤结束后会自动正常关闭，一般不用写"
+        },
+        "capture": {
+          "type": "object",
+          "additionalProperties": { "type": "string" },
+          "description": "只用于 receive / waitFor：从这条消息取值存为变量，如 {\"msgId\": \"data.id\"}，后续步骤与用例用 {{msgId}}"
+        },
+        "timeoutMs": { "type": "integer", "minimum": 1, "description": "本步等待超时毫秒（缺省用 ws.timeoutMs）" }
+      }
+    },
+    "ws": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["url"],
+      "properties": {
+        "url": {
+          "type": "string",
+          "description": "连接地址：ws://host/path 或 wss://host/path（http(s):// 也接受）；支持 {{var}}，通常写 {{wsBase}}/路径"
+        },
+        "headers": {
+          "type": "object",
+          "additionalProperties": {
+            "oneOf": [
+              { "type": "string" },
+              {
+                "type": "object",
+                "required": ["value"],
+                "additionalProperties": false,
+                "properties": { "value": { "type": "string" }, "disabled": { "type": "boolean" } }
+              }
+            ]
+          },
+          "description": "握手请求头，如 Authorization；集合 collection.json 的 headers 也会一起发送；同一主机的 Cookie 自动带上"
+        },
+        "query": {
+          "type": "object",
+          "additionalProperties": {
+            "oneOf": [
+              { "type": "string" },
+              {
+                "type": "object",
+                "required": ["value"],
+                "additionalProperties": false,
+                "properties": { "value": { "type": "string" }, "disabled": { "type": "boolean" } }
+              }
+            ]
+          },
+          "description": "查询参数（追加到 url）"
+        },
+        "subprotocols": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "子协议（Sec-WebSocket-Protocol），服务端要求时写"
+        },
+        "steps": {
+          "type": "array",
+          "items": { "$ref": "#/definitions/wsStep" },
+          "description": "对话步骤，按顺序执行；任一步失败即停止对话。全部完成后正常关闭"
+        },
+        "timeoutMs": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "连接与每次等待的默认超时毫秒（缺省用项目 timeoutMs）"
+        },
+        "insecure": { "type": "boolean", "description": "wss 时跳过证书校验" }
+      }
+    },
+    "locator": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "找元素：按用户看得到的东西写（role+name / label / text），CSS / testId 只作兜底",
+      "properties": {
+        "role": {
+          "type": "string",
+          "description": "无障碍角色：button / link / textbox / checkbox / radio / combobox / heading / tab / menuitem / cell …（Web 与 Android 都可用）"
+        },
+        "name": { "type": "string", "description": "无障碍名称（按钮文字、链接文字、输入框标签…），配合 role；缺省包含即可、忽略大小写" },
+        "label": {
+          "type": "string",
+          "description": "表单控件的标签（<label> / aria-label；没有标签时用占位文字）；Android 为输入框提示文字"
+        },
+        "text": { "type": "string", "description": "可见文字（包含即可）" },
+        "placeholder": { "type": "string", "description": "输入框占位文字（Web）" },
+        "testId": { "type": "string", "description": "data-testid（Web）" },
+        "css": { "type": "string", "description": "CSS 选择器（Web 兜底：依赖页面实现，改版容易失效）" },
+        "id": { "type": "string", "description": "resource-id（Android）：写全 com.x:id/phone 或只写 phone" },
+        "desc": { "type": "string", "description": "content-desc 无障碍描述（Android）" },
+        "exact": { "type": "boolean", "description": "名称 / 文字完全相等（缺省包含即可）" },
+        "nth": { "type": "integer", "minimum": 0, "description": "匹配到多个时取第几个（从 0 开始）；不写时匹配到多个即报错，避免点错" },
+        "url": { "type": "string", "description": "等待 / 断言：当前地址包含（Web）" },
+        "title": { "type": "string", "description": "等待 / 断言：页面标题包含（Web）" },
+        "activity": { "type": "string", "description": "等待 / 断言：当前 Activity 包含（Android）" },
+        "state": {
+          "enum": ["visible", "hidden", "enabled", "disabled", "checked", "unchecked"],
+          "description": "等待 / 断言：元素状态，缺省 visible"
+        },
+        "count": { "type": "integer", "minimum": 0, "description": "等待 / 断言：可见的匹配元素恰好这么多个" },
+        "value": { "type": "string", "description": "等待 / 断言：输入框的值（exact 时完全相等，否则包含）" },
+        "hasText": { "type": "string", "description": "元素的文字包含（操作时用来在多个匹配里筛选，断言时是要求）" },
+        "attr": { "type": "string", "description": "捕获：取元素的属性（如 href），缺省取文字（输入框取值）" },
+        "regex": { "type": "string", "description": "捕获：用正则从取到的文字里截取（有分组取第 1 组）" }
+      }
+    },
+    "uiStep": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "一步只做一件事：上面的动作恰好写一个",
+      "properties": {
+        "goto": { "type": "string", "description": "打开地址（Web）：绝对地址，或相对当前页面的路径" },
+        "click": { "$ref": "#/definitions/locator", "description": "点击元素（Web；Android 写 tap）" },
+        "tap": { "$ref": "#/definitions/locator", "description": "点按元素（Android；Web 写 click）" },
+        "longPress": { "$ref": "#/definitions/locator", "description": "长按元素（Android）" },
+        "hover": { "$ref": "#/definitions/locator", "description": "鼠标悬停（Web）" },
+        "fill": { "$ref": "#/definitions/locator", "description": "清空并输入 value" },
+        "select": { "$ref": "#/definitions/locator", "description": "下拉框选择 value（选项文字或值，Web）" },
+        "type": { "type": "string", "description": "往当前焦点输入文字（Android；中文需设备装 ADBKeyBoard）" },
+        "press": {
+          "type": "string",
+          "description": "按键：Enter / Tab / Escape / Backspace / ArrowDown / Control+a …；Android 还有 Back / Home / KEYCODE_*"
+        },
+        "swipe": { "enum": ["up", "down", "left", "right"], "description": "滑动屏幕，手指移动的方向（Android）" },
+        "back": { "const": true, "description": "返回上一页（浏览器后退 / Android 返回键）" },
+        "launch": { "const": true, "description": "（重新）启动应用（Android）；配合 clearData" },
+        "stop": { "const": true, "description": "关闭应用（Android）" },
+        "waitFor": {
+          "$ref": "#/definitions/locator",
+          "description": "一直等到条件满足（不满足则失败）：元素状态 / 地址 / 标题 / Activity"
+        },
+        "expect": { "$ref": "#/definitions/locator", "description": "断言：条件在超时内满足即通过，计入断言结果" },
+        "screenshot": { "type": "string", "description": "额外截一张图并命名（每一步本来就会自动截图）" },
+        "wait": { "type": "integer", "minimum": 0, "description": "静候毫秒数（尽量用 waitFor）" },
+        "value": { "type": "string", "description": "fill / select 的值；支持 {{var}}" },
+        "clearData": { "type": "boolean", "description": "launch 前清除应用数据" },
+        "capture": {
+          "type": "object",
+          "description": "本步完成后取值存为变量：变量名 → \"url\" / \"title\"（Web）/ \"activity\"（Android）或元素定位（可加 attr / regex）",
+          "additionalProperties": {
+            "oneOf": [{ "type": "string" }, { "$ref": "#/definitions/locator" }]
+          }
+        },
+        "timeoutMs": { "type": "integer", "minimum": 1, "description": "本步等待超时毫秒（缺省 10000）" },
+        "optional": { "type": "boolean", "description": "找不到目标时跳过本步而不失败（如可能出现的弹窗）" }
+      }
+    },
+    "web": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["url"],
+      "properties": {
+        "url": {
+          "type": "string",
+          "description": "首先打开的页面：http(s):// 完整地址；支持 {{var}}，通常写 {{webBase}}/路径"
+        },
+        "viewport": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["width", "height"],
+          "properties": {
+            "width": { "type": "integer", "minimum": 200, "description": "宽（CSS 像素）" },
+            "height": { "type": "integer", "minimum": 200, "description": "高（CSS 像素）" }
+          },
+          "description": "视口尺寸（缺省 1280×800）"
+        },
+        "timeoutMs": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "每一步等待的默认超时毫秒（缺省 10000）；打开页面用项目 timeoutMs"
+        },
+        "steps": {
+          "type": "array",
+          "items": { "$ref": "#/definitions/uiStep" },
+          "description": "操作与断言步骤，按顺序执行；任一步失败即停止。每一步自动等待、自动截图"
+        }
+      }
+    },
+    "android": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["app"],
+      "properties": {
+        "app": { "type": "string", "description": "应用包名，如 com.example.shop" },
+        "activity": { "type": "string", "description": "启动的 Activity（缺省用应用的启动入口）" },
+        "apk": { "type": "string", "description": "先安装这个 APK（相对项目根或绝对路径）；一次运行内只装一次" },
+        "clearData": { "type": "boolean", "description": "启动前清除应用数据（全新安装后的状态）" },
+        "timeoutMs": { "type": "integer", "minimum": 1, "description": "每一步等待的默认超时毫秒（缺省 10000）" },
+        "steps": {
+          "type": "array",
+          "items": { "$ref": "#/definitions/uiStep" },
+          "description": "操作与断言步骤，按顺序执行；任一步失败即停止。每一步自动等待、自动截图"
         }
       }
     }

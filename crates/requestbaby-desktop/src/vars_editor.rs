@@ -10,10 +10,11 @@ use gpui_kit::component::{
     v_flex,
 };
 use gpui_kit::{
-    AppContext as _, Context, Entity, EventEmitter, IntoElement, ParentElement as _, Render, SharedString, Styled as _,
+    AppContext as _, Context, Entity, Focusable as _, EventEmitter, IntoElement, ParentElement as _, Render, SharedString, Styled as _,
     Subscription, Window, div, prelude::FluentBuilder as _, px,
 };
 use serde_json::{Map, Value, json};
+use std::collections::HashMap;
 
 const KINDS: [&str; 3] = ["普通", "Secret", "环境变量"];
 
@@ -60,6 +61,8 @@ pub struct VarsEditor {
     next_id: usize,
     /// 是否允许 secret / 环境变量形态（集合 headers 之类的纯文本表不需要）
     rich: bool,
+    /// 变量名 → 行尾提示（如「被 环境 test 覆盖」）
+    hints: HashMap<String, SharedString>,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -89,7 +92,7 @@ fn text_of(v: &Value) -> String {
 
 impl VarsEditor {
     pub fn new(rich: bool) -> Self {
-        Self { rows: vec![], next_id: 0, rich, _subscriptions: vec![] }
+        Self { rows: vec![], next_id: 0, rich, hints: HashMap::new(), _subscriptions: vec![] }
     }
 
     fn push_row(&mut self, key: String, kind: Kind, text: String, original: Option<Value>, window: &mut Window, cx: &mut Context<Self>) {
@@ -171,8 +174,24 @@ impl VarsEditor {
     }
 
     fn add(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        self.push_row(String::new(), Kind::Plain, String::new(), None, window, cx);
+        self.add_named(String::new(), window, cx);
+    }
+
+    /// 新增一行（可预填变量名），并聚焦到待填写的输入框
+    pub fn add_named(&mut self, name: String, window: &mut Window, cx: &mut Context<Self>) {
+        let filled = !name.is_empty();
+        self.push_row(name, Kind::Plain, String::new(), None, window, cx);
+        if let Some(r) = self.rows.last() {
+            let target = if filled { &r.value } else { &r.key };
+            let focus = target.read(cx).focus_handle(cx);
+            window.defer(cx, move |window, cx| focus.focus(window, cx));
+        }
         cx.emit(VarsEditorEvent::Changed);
+        cx.notify();
+    }
+
+    pub fn set_hints(&mut self, hints: HashMap<String, SharedString>, cx: &mut Context<Self>) {
+        self.hints = hints;
         cx.notify();
     }
 
@@ -196,15 +215,31 @@ impl Render for VarsEditor {
                     .text_color(muted)
                     .child(div().w(px(200.)).child(if rich { "变量名" } else { "名称" }))
                     .when(rich, |this| this.child(div().w(px(112.)).child("类型")))
-                    .child(div().flex_1().child("值")),
+                    .child(div().flex_1().child("值"))
+                    .when(!self.hints.is_empty(), |this| this.child(div().w(px(180.)).child("与其他层的关系")))
+                    .child(div().w(px(24.))),
             )
             .children(self.rows.iter().map(|r| {
                 let id = r.id;
+                let hint = self.hints.get(r.key.read(cx).value().trim()).cloned();
                 h_flex()
                     .gap_2()
                     .child(div().w(px(200.)).child(Input::new(&r.key).small()))
                     .when(rich, |this| this.child(div().w(px(112.)).child(Select::new(&r.kind).small())))
                     .child(div().flex_1().child(Input::new(&r.value).small()))
+                    .when(!self.hints.is_empty(), |this| {
+                        this.child(
+                            div()
+                                .w(px(180.))
+                                .flex_shrink_0()
+                                .text_xs()
+                                .text_color(muted)
+                                .overflow_hidden()
+                                .text_ellipsis()
+                                .whitespace_nowrap()
+                                .children(hint),
+                        )
+                    })
                     .child(
                         Button::new(("remove-var", id))
                             .ghost()

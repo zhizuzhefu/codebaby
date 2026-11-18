@@ -82,7 +82,9 @@ fn import_items(items: &[Value], dir: &Path, idx: &mut usize, sum: &mut ImportSu
                     h.get("key").and_then(Value::as_str),
                     h.get("value").and_then(Value::as_str),
                 ) {
-                    headers.insert(k.to_string(), json!(v));
+                    // Postman 里停用的头：保留但不发送
+                    let disabled = h.get("disabled").and_then(Value::as_bool).unwrap_or(false);
+                    headers.insert(k.to_string(), if disabled { json!({ "value": v, "disabled": true }) } else { json!(v) });
                 }
             }
         }
@@ -109,17 +111,35 @@ fn import_items(items: &[Value], dir: &Path, idx: &mut usize, sum: &mut ImportSu
                 }
                 Some("urlencoded") => {
                     if let Some(arr) = b.get("urlencoded").and_then(Value::as_array) {
-                        let pairs: Vec<String> = arr
+                        let form: serde_json::Map<String, Value> = arr
                             .iter()
+                            .filter(|e| !e.get("disabled").and_then(Value::as_bool).unwrap_or(false))
+                            .filter_map(|e| Some((e.get("key")?.as_str()?.to_string(), json!(e.get("value").and_then(Value::as_str).unwrap_or("")))))
+                            .collect();
+                        body = Some(json!({ "form": form }));
+                    }
+                }
+                Some("formdata") => {
+                    if let Some(arr) = b.get("formdata").and_then(Value::as_array) {
+                        let parts: serde_json::Map<String, Value> = arr
+                            .iter()
+                            .filter(|e| !e.get("disabled").and_then(Value::as_bool).unwrap_or(false))
                             .filter_map(|e| {
-                                Some(format!(
-                                    "{}={}",
-                                    e.get("key").and_then(Value::as_str)?,
-                                    e.get("value").and_then(Value::as_str).unwrap_or("")
-                                ))
+                                let k = e.get("key")?.as_str()?.to_string();
+                                let v = if e.get("type").and_then(Value::as_str) == Some("file") {
+                                    let src = match e.get("src") {
+                                        Some(Value::String(s)) => s.clone(),
+                                        Some(Value::Array(a)) => a.first().and_then(Value::as_str).unwrap_or("").to_string(),
+                                        _ => String::new(),
+                                    };
+                                    json!({ "file": src })
+                                } else {
+                                    json!(e.get("value").and_then(Value::as_str).unwrap_or(""))
+                                };
+                                Some((k, v))
                             })
                             .collect();
-                        body = Some(json!({ "text": pairs.join("&") }));
+                        body = Some(json!({ "multipart": parts }));
                     }
                 }
                 _ => {}
@@ -140,7 +160,7 @@ fn import_items(items: &[Value], dir: &Path, idx: &mut usize, sum: &mut ImportSu
         let case = json!({
             "name": item_name,
             "request": request,
-            "tests": ["res.status > 0"],
+            "expect": { "status": 200 },
         });
 
         let file = format!("{:02}-{}", idx, safe_name(item_name));
@@ -150,7 +170,7 @@ fn import_items(items: &[Value], dir: &Path, idx: &mut usize, sum: &mut ImportSu
         // Postman 脚本（event）不迁移：pm.* API 不兼容
         if item.get("event").is_some() {
             sum.warnings
-                .push(format!("{item_name}: 含 Postman 脚本（event），需手工迁移为 pre/post/tests"));
+                .push(format!("{item_name}: 含 Postman 脚本（event），需手工迁移为 expect / capture（复杂逻辑用进阶的 pre / post / tests）"));
         }
     }
     Ok(())

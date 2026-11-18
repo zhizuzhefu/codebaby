@@ -6,17 +6,22 @@
   "type": "object",
   "additionalProperties": false,
   "properties": {
-    "name": {
-      "type": "string",
-      "description": "集合显示名（缺省用目录名）"
-    },
-    "vars": {
-      "$ref": "#/definitions/vars"
-    },
+    "name": { "type": "string", "description": "集合显示名（缺省用目录名）" },
+    "vars": { "$ref": "#/definitions/vars" },
     "headers": {
       "type": "object",
-      "additionalProperties": { "type": "string" },
-      "description": "集合级默认请求头，逐级继承，用例级同名覆盖（key 大小写不敏感归一）；值支持 {{var}}"
+      "additionalProperties": {
+        "oneOf": [
+          { "type": "string" },
+          {
+            "type": "object",
+            "required": ["value"],
+            "additionalProperties": false,
+            "properties": { "value": { "type": "string" }, "disabled": { "type": "boolean" } }
+          }
+        ]
+      },
+      "description": "集合级默认请求头，逐级继承，用例级同名覆盖（key 大小写不敏感归一）；值支持 {{var}}；{\"value\",\"disabled\":true} 停用"
     },
     "tags": {
       "type": "array",
@@ -27,10 +32,7 @@
       "type": "string",
       "description": "进入集合（首个存活用例前）执行：可写 vars、可 http.request/get/post 造数。dry-run 跳过；--tag 过滤后无存活用例则不执行"
     },
-    "teardown": {
-      "type": "string",
-      "description": "离开集合（最后用例后，无论成败）执行：清理数据"
-    }
+    "teardown": { "type": "string", "description": "离开集合（最后用例后，无论成败）执行：清理数据" }
   },
   "definitions": {
     "vars": {

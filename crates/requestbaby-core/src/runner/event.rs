@@ -1,7 +1,7 @@
 //! 运行期事件协议：CLI（`run --json-stream` 逐行 NDJSON）与 Desktop（进程内 channel）共用。
 //!
 //! 事件序列：`runStarted` → [`stepStarted`] (`caseStarted` → `log`* → `caseFinished`)* [`stepFinished`] … → `notice`* → `runFinished`
-//! （`stepStarted` / `stepFinished` 仅工作流运行出现）
+//! （`stepStarted` / `stepFinished` 仅流程 / verify 运行出现）
 use crate::report::{CaseReport, RunReport};
 use serde::{Deserialize, Serialize};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -12,7 +12,7 @@ use std::sync::Arc;
 pub enum RunEvent {
     #[serde(rename_all = "camelCase")]
     RunStarted { id: String, env: String, source: String, planned: usize },
-    /// 工作流步骤开始（index 从 0 起）
+    /// 流程步骤开始（index 从 0 起）
     #[serde(rename_all = "camelCase")]
     StepStarted { index: usize, total: usize, label: String, run: String, planned: usize },
     #[serde(rename_all = "camelCase")]

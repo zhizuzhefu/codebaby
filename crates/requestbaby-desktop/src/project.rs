@@ -18,6 +18,8 @@ pub struct CaseInfo {
     pub path: PathBuf,
     pub name: String,
     pub method: String,
+    /// 原始 URL 模板（搜索用）
+    pub url: String,
     pub parse_error: Option<String>,
 }
 
@@ -35,6 +37,8 @@ pub struct Project {
     envs: Vec<String>,
     cases: Vec<CaseInfo>,
     history: Vec<RunReport>,
+    /// 与 history 一一对应的文件（运行记录写入后不再改动：重载时只解析新文件）
+    history_paths: Vec<(PathBuf, u64)>,
 }
 
 impl Project {
@@ -45,6 +49,7 @@ impl Project {
             envs: vec![],
             cases: vec![],
             history: vec![],
+            history_paths: vec![],
         };
         project.reload_files();
         project.reload_history();
@@ -83,10 +88,6 @@ impl Project {
         self.root.join("collections")
     }
 
-    pub fn env_path(&self, name: &str) -> PathBuf {
-        self.root.join("envs").join(format!("{name}.json"))
-    }
-
     pub fn project_file(&self) -> PathBuf {
         self.root.join(discover::PROJECT_FILE)
     }
@@ -113,19 +114,7 @@ impl Project {
         self.config = discover::project_file(&self.root)
             .and_then(|p| load_strict::<ProjectConfig>(&p).ok())
             .unwrap_or_default();
-        let mut envs: Vec<String> = std::fs::read_dir(self.root.join("envs"))
-            .map(|rd| {
-                rd.flatten()
-                    .filter_map(|e| {
-                        let p = e.path();
-                        (p.extension().is_some_and(|x| x == "json"))
-                            .then(|| p.file_stem().map(|s| s.to_string_lossy().into_owned()))
-                            .flatten()
-                    })
-                    .collect()
-            })
-            .unwrap_or_default();
-        envs.sort();
+        let envs = requestbaby_core::config::list_envs(&self.root);
         self.envs = envs;
         self.cases = discover::discover(&[self.collections_dir()])
             .unwrap_or_default()
@@ -135,7 +124,21 @@ impl Project {
     }
 
     pub fn reload_history(&mut self) {
-        self.history = history::list(&self.root).into_iter().map(|e| e.report).collect();
+        let mut known: HashMap<(PathBuf, u64), RunReport> =
+            std::mem::take(&mut self.history_paths).into_iter().zip(std::mem::take(&mut self.history)).collect();
+        for path in history::list_paths(&self.root) {
+            let len = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
+            let key = (path, len);
+            let report = match known.remove(&key) {
+                Some(r) => r,
+                None => match history::load(&key.0) {
+                    Ok(r) => r,
+                    Err(_) => continue,
+                },
+            };
+            self.history_paths.push(key);
+            self.history.push(report);
+        }
     }
 
     /// 最近一次覆盖到该用例的运行结果
@@ -181,10 +184,11 @@ fn case_info(rel: String, path: PathBuf) -> CaseInfo {
         Ok(c) => CaseInfo {
             rel,
             name: if c.name.is_empty() { stem } else { c.name.clone() },
-            method: c.request.method.clone(),
+            method: c.summary().0,
+            url: c.summary().1,
             parse_error: None,
             path,
         },
-        Err(e) => CaseInfo { rel, path, name: stem, method: "-".into(), parse_error: Some(format!("{e:#}")) },
+        Err(e) => CaseInfo { rel, path, name: stem, method: "-".into(), url: String::new(), parse_error: Some(format!("{e:#}")) },
     }
 }

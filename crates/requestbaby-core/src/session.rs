@@ -5,7 +5,7 @@
 use crate::config::{load_strict, Project};
 use crate::history;
 use crate::report::{RunMeta, RunReport};
-use crate::runner::{self, discover, CancelToken, CaseResult, EventHook, RunEvent, RunOptions, Runner};
+use crate::runner::{self, discover, CancelToken, CaseResult, EventHook, RunEvent, RunOptions, Runner, SessionState};
 use anyhow::{bail, Result};
 use std::path::{Path, PathBuf};
 
@@ -24,6 +24,10 @@ pub struct RunRequest {
     pub parallel: Option<usize>,
     /// 响应落盘目录（相对 base）
     pub output: Option<String>,
+    /// 只重跑最近失败的用例（含其依赖的前置用例），范围仍受 paths / 过滤条件限制
+    pub failed: bool,
+    /// Web 用例显示浏览器窗口
+    pub headed: bool,
 }
 
 impl RunRequest {
@@ -57,6 +61,9 @@ impl RunRequest {
         if let Some(n) = self.name.as_ref().filter(|n| !n.is_empty()) {
             parts.push(format!("--name {}", quote(n)));
         }
+        if self.failed {
+            parts.push("--failed".into());
+        }
         if self.fail_fast {
             parts.push("--fail-fast".into());
         }
@@ -65,6 +72,9 @@ impl RunRequest {
         }
         if let Some(p) = self.parallel {
             parts.push(format!("--parallel {p}"));
+        }
+        if self.headed {
+            parts.push("--headed".into());
         }
         if let Some(o) = self.output.as_ref().filter(|o| !o.is_empty()) {
             parts.push(format!("-o {}", quote(o)));
@@ -95,10 +105,15 @@ impl RunRequest {
                 send_mode,
                 parallel: self.parallel,
                 cancel,
+                artifacts: None,
+                headed: self.headed,
             },
             source: source.to_string(),
             command: self.command_line(),
             record_history: true,
+            seed: None,
+            only_failed: self.failed,
+            prerequisites: false,
         }
     }
 }
@@ -116,6 +131,9 @@ pub fn send_spec(case: PathBuf, display: &str, env: Option<String>, source: &str
         source: source.to_string(),
         command,
         record_history: false,
+        seed: None,
+        only_failed: false,
+        prerequisites: true,
     }
 }
 
@@ -140,6 +158,12 @@ pub struct SessionSpec {
     pub command: String,
     /// 是否写入 `.requestbaby/runs/`（dry-run 永不写）
     pub record_history: bool,
+    /// 以已有会话状态开始（Desktop 单发：之前捕获的变量与 Cookie）
+    pub seed: Option<SessionState>,
+    /// 只跑最近失败的用例（+ 前置依赖）
+    pub only_failed: bool,
+    /// 单发：用到的运行时变量（如 token）会话里还没有时，先运行捕获它的前置用例
+    pub prerequisites: bool,
 }
 
 pub struct SessionOutcome {
@@ -150,6 +174,10 @@ pub struct SessionOutcome {
     pub report: RunReport,
     pub notices: Vec<String>,
     pub history_path: Option<PathBuf>,
+    /// 运行结束时的会话状态（捕获的变量 + Cookie）
+    pub state: SessionState,
+    /// 单发前自动补跑的前置用例（相对项目根）；results 里排在目标用例之前
+    pub prerequisites: Vec<String>,
 }
 
 /// 从第一个路径定位项目默认环境
@@ -168,30 +196,74 @@ pub fn run(spec: &SessionSpec, hook: Option<EventHook>, on_start: impl FnOnce(&s
     if let Some(missing) = spec.paths.iter().find(|p| !p.exists()) {
         bail!("路径不存在: {}", missing.display());
     }
-    let cases = discover::discover(&spec.paths)?;
+    let mut cases = discover::discover(&spec.paths)?;
     if cases.is_empty() {
         bail!("未发现用例（*.json，排除 requestbaby.json/collection.json/envs）");
     }
     let env = resolve_env(&spec.paths, spec.env.as_deref());
+    let root = discover::find_project_root(&spec.paths[0]);
+    if spec.only_failed {
+        let Some(root) = &root else { bail!("--failed 需要在项目内运行（未找到 requestbaby.json）") };
+        let failed = history::failed_files(root, &env);
+        if failed.is_empty() {
+            bail!("环境 {env} 没有最近失败的用例（运行历史 .requestbaby/runs/ 中最近一次结论都是通过）");
+        }
+        let keep = crate::inspect::with_prerequisites(root, &failed);
+        cases.retain(|c| keep.contains(&c.rel));
+        if cases.is_empty() {
+            bail!("最近失败的用例不在所选路径内：{}", failed.join(", "));
+        }
+    }
+    // 单发：缺运行时变量（token / 前面用例捕获的 id）时先跑捕获它的用例，否则必然「占位符未替换」
+    let mut prerequisites = vec![];
+    let mut pre_notices = vec![];
+    if let (true, false, [target], Some(root)) = (spec.prerequisites, spec.opts.dry_run, cases.as_slice(), &root) {
+        let known = spec.seed.as_ref().map(|s| s.vars.keys().cloned().collect()).unwrap_or_default();
+        let pre = crate::inspect::send_prerequisites(root, &target.path, &env, &known);
+        if !pre.is_empty() {
+            let all = discover::discover(&[root.join("collections")])?;
+            let mut run_first: Vec<_> = pre.iter().filter_map(|(rel, _)| all.iter().find(|d| &d.rel == rel).cloned()).collect();
+            for (rel, vars) in &pre {
+                pre_notices.push(format!("先运行前置用例 {rel}：它捕获了本用例要用的 {}", vars.join("、")));
+            }
+            prerequisites = run_first.iter().map(|d| d.rel.clone()).collect();
+            run_first.append(&mut cases);
+            cases = run_first;
+        }
+    }
+    // 对比基准：执行前读取（本次结果写入历史之前）
+    let baseline = root.as_ref().filter(|_| !spec.opts.dry_run).map(|r| history::last_status(r, &env));
     let ctx = runner::load_project_ctx(&spec.paths[0], &env)?;
     let timeout_ms = ctx.project.timeout_ms;
-    let started_at_ms = history::now_ms();
-    let id = history::new_run_id(&spec.source, started_at_ms);
     let emit = |ev: RunEvent| {
         if let Some(h) = &hook {
             h(&ev);
         }
     };
+    let started_at_ms = history::now_ms();
+    let id = history::new_run_id(&spec.source, started_at_ms);
+    let mut opts = spec.opts.clone();
+    if let (None, Some(root), false) = (&opts.artifacts, &root, opts.dry_run) {
+        opts.artifacts = Some(history::artifacts_for(root, &id, spec.record_history));
+    }
 
     on_start(&env, cases.len(), timeout_ms);
     emit(RunEvent::RunStarted { id: id.clone(), env: env.clone(), source: spec.source.clone(), planned: cases.len() });
 
+    for n in &pre_notices {
+        emit(RunEvent::Notice { message: n.clone() });
+    }
     let mut r = Runner::new(ctx);
+    if let Some(seed) = &spec.seed {
+        r.seed(seed.clone());
+    }
     if let Some(h) = &hook {
         r.set_hook(h.clone());
     }
-    let results = r.run(&cases, &spec.opts, |_| {})?;
-    let notices = r.take_notices();
+    let results = r.run(&cases, &opts, |_| {})?;
+    let mut notices = pre_notices;
+    notices.extend(r.take_notices());
+    let state = r.state();
 
     let meta = RunMeta {
         id,
@@ -203,15 +275,20 @@ pub fn run(spec: &SessionSpec, hook: Option<EventHook>, on_start: impl FnOnce(&s
         dry_run: spec.opts.dry_run,
         cancelled: spec.opts.cancel.as_ref().is_some_and(|c| c.is_cancelled()),
         workflow: None,
+        verify: false,
+        git: root.as_deref().filter(|_| !spec.opts.dry_run).and_then(history::git_info),
     };
-    let report = RunReport::new(&results, true, Some(meta));
-    let history_path = if spec.record_history && !spec.opts.dry_run {
-        discover::find_project_root(&spec.paths[0]).and_then(|root| history::save(&root, &report).ok())
-    } else {
-        None
+    let mut report = RunReport::new(&results, true, Some(meta));
+    report.compare = baseline.and_then(|b| history::compare(&b, &report));
+    if let (Some(c), Some(root)) = (report.compare.as_mut(), &root) {
+        c.flaky = history::flaky(root, &env, &RunReport::new(&results, false, report.meta.clone()));
+    }
+    let history_path = match &root {
+        Some(root) if spec.record_history && !spec.opts.dry_run => history::save(root, &report).ok(),
+        _ => None,
     };
     emit(RunEvent::RunFinished { report: report.clone() });
-    Ok(SessionOutcome { env, planned: cases.len(), timeout_ms, results, report, notices, history_path })
+    Ok(SessionOutcome { env, planned: cases.len(), timeout_ms, results, report, notices, history_path, state, prerequisites })
 }
 
 /// 项目根（路径向上查找 requestbaby.json）
