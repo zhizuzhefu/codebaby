@@ -38,7 +38,7 @@ gh auth status >/dev/null 2>&1 || fail "gh 未登录：gh auth login"
 git fetch -q origin main --tags
 [[ "$(git rev-parse HEAD)" == "$(git rev-parse origin/main)" ]] || fail "本地 main 与 origin/main 不一致：先 git push / git pull"
 git rev-parse -q --verify "refs/tags/$TAG" >/dev/null && fail "标签 $TAG 已存在：先在 Cargo.toml 提升版本号"
-[[ -n "$NOTES" ]] || fail "CHANGELOG.md 里没有「## $VERSION」一节（或为空）"
+[[ -n "$NOTES" ]] || fail "CHANGELOG.md 里没有「## ${VERSION}」一节（或为空）"
 gh release view "$TAG" >/dev/null 2>&1 && fail "GitHub 上已有 $TAG 的 Release"
 
 echo "    版本 $VERSION · 提交 $(git rev-parse --short HEAD)"
@@ -64,7 +64,7 @@ printf '%s\n' "$NOTES" > "$NOTES_FILE"
 gh release create "$TAG" "$DMG" "$DMG.sha256" --draft --title "$TAG" --notes-file "$NOTES_FILE"
 rm -f "$NOTES_FILE"
 
-echo "==> 推送标签 $TAG（CI 开始构建命令行）"
+echo "==> 推送标签 ${TAG}（CI 开始构建命令行）"
 git tag -a "$TAG" -m "requestbaby $VERSION"
 git push origin "$TAG"
 
@@ -82,4 +82,4 @@ if [[ "$N" -lt $((CLI_ASSETS + 2)) ]]; then
 fi
 
 gh release edit "$TAG" --draft=false --latest
-echo "✓ 已发布 $TAG：$(gh release view "$TAG" --json url --jq .url)"
+echo "✓ 已发布 ${TAG}：$(gh release view "$TAG" --json url --jq .url)"
