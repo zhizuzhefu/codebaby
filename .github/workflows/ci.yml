@@ -2,6 +2,8 @@ name: CI
 on:
   push:
     branches: [main, master]
+    # 推送 vX.Y.Z 标签触发发布任务（见 release 任务与 docs/RELEASING.md）
+    tags: ['v*']
   pull_request:
 
 env:
