@@ -5,7 +5,9 @@
 //! 文件监听让两端共享同一份事实：AI 改了文件 → 树与编辑器刷新；终端跑了一次 → 结果立刻出现。
 mod bottom;
 mod envs;
+mod proxy;
 mod sidebar;
+mod updates;
 
 use crate::case_editor::{CaseEditor, CaseEditorEvent};
 use crate::config_editors::{CollectionEditor, ConfigEditorEvent, ProjectEditor};
@@ -117,6 +119,9 @@ pub struct Workspace {
     /// 运行配置对话框上次的参数
     last_request: Option<RunRequest>,
     focus_handle: FocusHandle,
+    /// 检查到的新版本（状态栏提示）
+    update: Option<requestbaby_core::update::Release>,
+    update_busy: bool,
     _watcher: Option<notify::RecommendedWatcher>,
     _watch_task: Option<Task<()>>,
     _validate_task: Option<Task<()>>,
@@ -195,6 +200,8 @@ impl Workspace {
             validation: Validation::default(),
             last_request: None,
             focus_handle: cx.focus_handle(),
+            update: None,
+            update_busy: false,
             _watcher: None,
             _watch_task: None,
             _validate_task: None,
@@ -205,6 +212,7 @@ impl Workspace {
         this.rebuild_tree(cx);
         this.start_watching(window, cx);
         this.revalidate(cx);
+        this.auto_check_update(window, cx);
         // 启动时展示最近一次运行（无论来自 CLI 还是 Desktop）
         if let Some(latest) = this.project.history().first().cloned() {
             this.run.update(cx, |r, cx| r.show_report(&latest, cx));
@@ -1364,6 +1372,9 @@ impl Workspace {
                                     .item(menu_item(&view, "环境自检", IconName::Settings, |w, window, cx| w.run_doctor(window, cx)))
                                     .item(menu_item(&view, "项目设置", IconName::Settings2, |w, window, cx| w.open(Target::Project, window, cx)))
                                     .separator()
+                                    .item(Workspace::check_update_item(&view))
+                                    .item(Workspace::auto_update_item(&view))
+                                    .separator()
                                     .item(menu_item(&view, "复制用例写法速查（粘贴给 AI 对话）", IconName::Bot, |_, window, cx| {
                                         cx.write_to_clipboard(ClipboardItem::new_string(guide::quickstart()));
                                         window.push_notification(
@@ -1395,6 +1406,7 @@ impl Workspace {
                             .tooltip("环境管理：查看 / 切换 / 新建 / 重命名 / 复制 / 删除 / 设为默认")
                             .on_click(cx.listener(|this, _, window, cx| this.open(Target::Envs, window, cx))),
                     )
+                    .child(self.render_proxy_button(cx))
                     .child(
                         Button::new("open-vars")
                             .small()

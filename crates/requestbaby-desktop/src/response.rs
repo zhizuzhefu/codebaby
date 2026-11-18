@@ -1267,6 +1267,10 @@ impl Render for ResponsePanel {
 }
 
 /// 另存为的默认目录：~/Downloads（不存在则用户主目录）
+pub(crate) fn downloads_dir() -> std::path::PathBuf {
+    dirs_download()
+}
+
 fn dirs_download() -> std::path::PathBuf {
     let home = std::env::var_os("HOME").map(std::path::PathBuf::from).unwrap_or_else(|| ".".into());
     let dl = home.join("Downloads");

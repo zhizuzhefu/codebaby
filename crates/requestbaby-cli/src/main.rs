@@ -83,6 +83,12 @@ enum Cmd {
         #[command(subcommand)]
         action: AndroidCmd,
     },
+    /// 检查并升级到最新版本（下载 GitHub Release 的安装包，校验 SHA256 后替换自身）
+    Upgrade {
+        /// 只检查有没有新版本，不安装（有新版本时 exit 1，便于脚本判断）
+        #[arg(long)]
+        check: bool,
+    },
     /// 代理：所有对外连接（HTTP / gRPC / WebSocket / 浏览器 / adb）经同一个代理。不带参数显示当前设置并检查代理
     Proxy {
         #[command(subcommand)]
@@ -645,6 +651,7 @@ fn main() -> ExitCode {
         Cmd::Web { action } => cmd_web(action),
         Cmd::Android { action } => cmd_android(action),
         Cmd::Proxy { action } => cmd_proxy(action),
+        Cmd::Upgrade { check } => cmd_upgrade(check),
         Cmd::Env { action } => cmd_env(action.unwrap_or(EnvCmd::List { json: false })),
         Cmd::Case { action: CaseCmd::New(a) } => cmd_new(NewCmd::Case(a)),
         Cmd::Case { action } => cmd_item(action.into()),
@@ -870,6 +877,54 @@ fn cmd_web(action: WebCmd) -> u8 {
                 Err(e) => err(format!("{e:#}")),
             }
         }
+    }
+}
+
+fn cmd_upgrade(check: bool) -> u8 {
+    use requestbaby_core::update;
+    let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+    let root = session::project_root(&cwd);
+    let proxy = match protocols::default_proxy(root.as_deref()) {
+        Ok(p) => p,
+        Err(e) => return fatal(format!("{e:#}")),
+    };
+    let rel = match update::latest(&proxy) {
+        Ok(Some(r)) => r,
+        Ok(None) => {
+            println!("当前 {}；仓库 {} 还没有发布版本", update::CURRENT, update::repo());
+            return 0;
+        }
+        Err(e) => return err(format!("{e:#}")),
+    };
+    if !rel.is_newer() {
+        println!("\x1b[32m✓\x1b[0m 已是最新版本 {}", update::CURRENT);
+        return 0;
+    }
+    println!("有新版本 \x1b[1m{}\x1b[0m（当前 {}）  {}", rel.version, update::CURRENT, rel.page);
+    if !rel.notes.is_empty() {
+        for l in rel.notes.lines().take(12) {
+            println!("  \x1b[2m{l}\x1b[0m");
+        }
+    }
+    if check {
+        return 1;
+    }
+    let Some(asset) = rel.cli_asset() else {
+        return err(format!("这个系统（{} {}）没有现成的命令行安装包：到 {} 下载，或用 cargo install 从源码安装", std::env::consts::OS, std::env::consts::ARCH, rel.page));
+    };
+    if update::exe_in_app_bundle(&std::env::current_exe().unwrap_or_default()) {
+        return err("当前的 requestbaby 在 requestbaby.app 里：用 App 的「检查更新」或重新安装 DMG；命令行会随 App 一起更新");
+    }
+    println!("下载 {}（{:.1} MB）…", asset.name, asset.size as f64 / 1_048_576.0);
+    let dir = std::env::temp_dir().join(format!("requestbaby-download-{}", std::process::id()));
+    let result = update::download(&rel, asset, &dir, &proxy).and_then(|archive| update::install_cli(&archive, &rel.version));
+    let _ = std::fs::remove_dir_all(&dir);
+    match result {
+        Ok(exe) => {
+            println!("\x1b[32m✓\x1b[0m 已升级到 {}：{}", rel.version, exe.display());
+            0
+        }
+        Err(e) => err(format!("{e:#}")),
     }
 }
 

@@ -672,6 +672,7 @@ impl Workspace {
                     .gap_3()
                     .text_xs()
                     .text_color(muted)
+                    .when_some(self.render_update_badge(cx), |this, b| this.child(b))
                     .child(self.render_session(cx))
                     .when_some(last, |this, l| this.child(l))
                     .child(format!("libcurl {}", requestbaby_core::engine::libcurl_version())),

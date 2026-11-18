@@ -100,7 +100,7 @@ make mac-app && make install-mac                         # macOS 桌面端（本
 ```
 
 构建需要 rustup 与 cmake（编译内嵌 libcurl）。运行时零外部依赖：libcurl 静态链接、TLS 用 rustls、证书走系统证书库。
-正式发布：`make mac-release`（universal + Developer ID 签名 + 公证 → dmg，需要钥匙串证书与 notarytool 凭证）。
+升级：`requestbaby upgrade`（命令行）；桌面端启动时检查，状态栏提示「新版本」。发版流程见 [docs/RELEASING.md](docs/RELEASING.md)（`make release`：本机签名公证 DMG，发布到 GitHub Release）。
 
 ## 上手
 

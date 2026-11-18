@@ -1,4 +1,4 @@
-//! 最近打开的项目：桌面端唯一的应用级偏好。
+//! 最近打开的项目（应用级偏好之一；另一个是 updates.rs 的更新检查开关）。
 //!
 //! 不属于任何项目，不写入项目目录；存放在系统的应用配置目录：
 //! macOS `~/Library/Application Support/requestbaby/recent-projects.json`，其他平台 `$XDG_CONFIG_HOME/requestbaby/`。
@@ -6,14 +6,18 @@ use std::path::{Path, PathBuf};
 
 const MAX: usize = 10;
 
-fn file() -> Option<PathBuf> {
+/// 应用级配置目录
+pub fn app_dir() -> Option<PathBuf> {
     let home = std::env::var_os("HOME").map(PathBuf::from);
-    let dir = if cfg!(target_os = "macos") {
+    Some(if cfg!(target_os = "macos") {
         home?.join("Library/Application Support/requestbaby")
     } else {
         std::env::var_os("XDG_CONFIG_HOME").map(PathBuf::from).or_else(|| home.map(|h| h.join(".config")))?.join("requestbaby")
-    };
-    Some(dir.join("recent-projects.json"))
+    })
+}
+
+fn file() -> Option<PathBuf> {
+    Some(app_dir()?.join("recent-projects.json"))
 }
 
 /// 最近项目（新 → 旧），已不存在的目录自动略过

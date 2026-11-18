@@ -31,7 +31,7 @@ pub fn proxy(root: &Path, env: &str) -> Result<crate::engine::proxy::ProxyPolicy
 }
 
 /// 不分环境的操作（设备列表 / 界面快照）用缺省环境的代理规则；不在项目里时只看环境变量
-fn default_proxy(root: Option<&Path>) -> Result<crate::engine::proxy::ProxyPolicy> {
+pub fn default_proxy(root: Option<&Path>) -> Result<crate::engine::proxy::ProxyPolicy> {
     match root {
         Some(r) => proxy(r, &crate::session::resolve_env(&[r.to_path_buf()], None)),
         None => crate::engine::proxy::ProxyPolicy::resolve(None, |s| s.to_string()),

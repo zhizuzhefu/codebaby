@@ -24,10 +24,14 @@ jobs:
       - name: Release build
         run: cargo build --release --locked
 
+  # 发布：推送 vX.Y.Z 标签触发，只构建命令行并传到同名 GitHub Release（不需要任何密钥）。
+  # macOS 桌面端 DMG 的签名与公证在维护者本机完成（scripts/release.sh），Apple 凭据不进 CI。
   release:
     needs: test
     if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ${{ matrix.os }}
+    permissions:
+      contents: write
     strategy:
       matrix:
         include:
@@ -35,18 +39,29 @@ jobs:
             target: x86_64-unknown-linux-musl
           - os: macos-latest
             target: aarch64-apple-darwin
+          - os: macos-latest
+            target: x86_64-apple-darwin
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ matrix.target }}
       - uses: Swatinem/rust-cache@v2
+      - name: Install musl tools
+        if: matrix.target == 'x86_64-unknown-linux-musl'
+        run: sudo apt-get update && sudo apt-get install -y musl-tools cmake
       - name: Build release binary
-        run: cargo build --release --locked --target ${{ matrix.target }}
+        run: cargo build --release --locked -p requestbaby --target ${{ matrix.target }}
       - name: Package
         run: |
           cd target/${{ matrix.target }}/release
           tar czf ../../../requestbaby-${{ matrix.target }}.tar.gz requestbaby
+          cd ../../..
+          shasum -a 256 requestbaby-${{ matrix.target }}.tar.gz > requestbaby-${{ matrix.target }}.tar.gz.sha256
       - uses: softprops/action-gh-release@v2
         with:
-          files: requestbaby-${{ matrix.target }}.tar.gz
+          # 与 scripts/release.sh 先建的草稿同一个 Release；全部附件到齐后由脚本发布
+          draft: true
+          files: |
+            requestbaby-${{ matrix.target }}.tar.gz
+            requestbaby-${{ matrix.target }}.tar.gz.sha256

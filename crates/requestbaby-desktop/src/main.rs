@@ -15,6 +15,7 @@ mod run;
 mod run_dialog;
 mod shell;
 mod style;
+mod updates;
 mod vars_editor;
 mod vars_panel;
 mod kv_table;
