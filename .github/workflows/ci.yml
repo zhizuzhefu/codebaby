@@ -35,6 +35,7 @@ jobs:
     permissions:
       contents: write
     strategy:
+      fail-fast: false
       matrix:
         include:
           - os: ubuntu-latest
@@ -46,8 +47,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: ${{ matrix.target }}
+      # 仓库用 rust-toolchain.toml 固定了版本：目标平台要装到这个版本上（对 stable 安装的 targets 不生效）
+      - name: Add target
+        run: rustup target add ${{ matrix.target }}
       - uses: Swatinem/rust-cache@v2
       - name: Install musl tools
         if: matrix.target == 'x86_64-unknown-linux-musl'
