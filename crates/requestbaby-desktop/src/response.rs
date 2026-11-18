@@ -1279,7 +1279,7 @@ mod tests {
 
     #[test]
     fn path_and_query_strips_scheme_and_host() {
-        assert_eq!(path_and_query("http://127.0.0.1:18087/internal/api/v1/note?taskId=11&page=0"), "/internal/api/v1/note?taskId=11&page=0");
+        assert_eq!(path_and_query("http://127.0.0.1:18087/api/v1/items?id=11&page=0"), "/api/v1/items?id=11&page=0");
         assert_eq!(path_and_query("https://api.example.com"), "/");
         assert_eq!(path_and_query("/already/relative?x=1"), "/already/relative?x=1");
     }

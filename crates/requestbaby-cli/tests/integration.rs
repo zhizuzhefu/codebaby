@@ -11,7 +11,7 @@ fn write_project(dir: &std::path::Path) {
     fs::create_dir_all(dir.join("collections")).unwrap();
     fs::write(
         dir.join("requestbaby.json"),
-        r#"{"version":1,"defaultEnv":"test","vars":{"user":"admin","taskId":"738011164633133","flag":"true","secretKey":{"value":"rb-secret-42","secret":true}},"timeoutMs":5000,
+        r#"{"version":1,"defaultEnv":"test","vars":{"user":"admin","taskId":"123456789012345","flag":"true","secretKey":{"value":"rb-secret-42","secret":true}},"timeoutMs":5000,
            "workflows":{"chain":{"steps":[{"run":"collections/02-login.json"},{"run":"collections/03-me.json"}]}}}"#,
     )
     .unwrap();
@@ -76,7 +76,7 @@ fn write_project(dir: &std::path::Path) {
     "body": { "json": { "taskId": "{{taskId:number}}", "flag": "{{flag:bool}}", "name": "{{user}}" } }
   },
   "tests": [
-    "res.json().body === '{\"taskId\":738011164633133,\"flag\":true,\"name\":\"admin\"}'"
+    "res.json().body === '{\"taskId\":123456789012345,\"flag\":true,\"name\":\"admin\"}'"
   ]
 }"#,
     )
