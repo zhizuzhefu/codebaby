@@ -44,6 +44,22 @@ AI 交付的独立验收层，辅助人对 AI 交付的成果验收。
 - 判断通过与否不调用大模型，不消耗 token，同样的用例每次得到同样的结论
 - 单个可执行文件，运行时不依赖其他软件
 
+## 从 Postman 过来
+
+只想日常调接口也可以：桌面端用表单构造请求（任意方法、查询参数、请求头；Body 支持 JSON、表单、form-data 文件上传、raw），发送后看状态码、耗时、响应体、响应头和等价的 cURL；环境变量、token 传递、Cookie、集合、批量运行都有，不用先学 JSON。
+
+| Postman | requestbaby |
+|---------|-------------|
+| Collection / Folder | 集合：`collections/` 下的目录，一个用例一个 JSON 文件 |
+| Environment / Globals | 环境（dev / test / prod）与变量，写法同样是 `{{变量}}` |
+| Tests 里的断言 | 「断言」页：状态码、响应头、响应体任意字段 |
+| Pre-request / Tests 脚本 | 「脚本（进阶）」页：JS 脚本，API 与 `pm.*` 不同 |
+| Collection Runner / Newman | 「运行全部」，命令行 `requestbaby run` / `verify` |
+| Import | 导入 cURL、Postman、OpenAPI / Swagger（Postman 里的脚本不会迁移） |
+| Workspace 同步 | 用例是普通文件，用 git 共享和评审 |
+
+目前没有的：内置的 OAuth 2.0 / Digest / AWS 签名向导、`pm.*` 脚本的自动迁移、GraphQL 专用编辑器和 Socket.IO、Mock Server、定时监控、在线文档发布、云端团队空间、导出为 Postman 格式、多语言代码片段、Windows 版本。
+
 ## 运行起来是什么样
 
 接口用例失败时，直接告诉你差在哪：断言了什么、期望什么、实际是什么。
