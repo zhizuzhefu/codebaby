@@ -170,4 +170,4 @@ AI 依据报错自修复 → 循环直到通过
 ## 10. 支持矩阵
 
 - 协议：http/https、gRPC、WebSocket；界面：Web（Chrome / Edge / Chromium，本机或远程）、Android（adb，本机 / 网络设备 / 远程 adb server）
-- 平台：桌面端 macOS；命令行 macOS（Apple 芯片 / Intel）、Linux（x86_64 / arm64，musl 静态）；Linux 由 `scripts/build-cross.sh` 在 Docker 里交叉编译
+- 平台：桌面端 macOS；命令行 macOS（Apple 芯片 / Intel）。发布只提供 macOS 版；代码本身不依赖 macOS 专有 API，其他平台可自行从源码构建

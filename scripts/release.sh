@@ -6,12 +6,11 @@
 #
 # 流程：检查（main、工作区干净、与远端一致、标签未被占用）→ 测试 + clippy
 #       → 本机构建 universal DMG（Developer ID 签名 + 公证）与 macOS 命令行包（Apple 芯片 / Intel）
-#       → Docker 交叉编译 Linux（x86_64 / arm64）命令行包（scripts/build-cross.sh）
 #       → 建 GitHub Release 草稿，传齐全部附件 → 推送 vX.Y.Z 标签
 #       → 附件核对无误后发布（用户的「检查更新」此时才看到新版本）
 #
 # 全程在本机完成，不使用 CI。Apple 凭据只在本机钥匙串里（见 scripts/build-mac-release.sh），不进仓库。
-# 需要：gh（已登录且有仓库写权限）、cargo、create-dmg、公证 profile、Docker（交叉编译 Linux）。
+# 需要：gh（已登录且有仓库写权限）、cargo、create-dmg、公证 profile。只发布 macOS 版（桌面端 + 命令行）。
 
 set -euo pipefail
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -26,8 +25,7 @@ TAG="v$VERSION"
 DMG="build/mac/requestbaby-$VERSION.dmg"
 # 命令行包的目标平台（每个 2 个附件：tar.gz + .sha256），与 core::update::target() 的取值一致；加上 DMG 的 2 个附件
 CLI_TARGETS=(aarch64-apple-darwin x86_64-apple-darwin)
-CROSS_PACKAGES=2   # Linux x86_64 / Linux arm64，见 scripts/build-cross.sh
-EXPECTED_ASSETS=$(( (${#CLI_TARGETS[@]} + 1 + CROSS_PACKAGES) * 2 ))
+EXPECTED_ASSETS=$(( (${#CLI_TARGETS[@]} + 1) * 2 ))
 TARGET_DIR="${CARGO_TARGET_DIR:-$REPO_ROOT/target}"
 
 fail() { echo "✘ $*" >&2; exit 1; }
@@ -67,11 +65,6 @@ for t in "${CLI_TARGETS[@]}"; do
   ( cd build/mac && shasum -a 256 "$(basename "$PKG")" > "$(basename "$PKG").sha256" )
   ASSETS+=("$PKG" "$PKG.sha256")
 done
-
-echo "==> 交叉编译 Linux 命令行（Docker）"
-rm -rf build/cross
-scripts/build-cross.sh HEAD build/cross
-for f in build/cross/requestbaby-*; do ASSETS+=("$f"); done
 
 echo "==> 创建 Release 草稿并上传全部附件"
 # 更新说明由 GitHub 按提交自动生成（发布前可在草稿里改）

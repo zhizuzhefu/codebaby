@@ -9,12 +9,12 @@
    - 检查：在 main、工作区干净、与 origin/main 一致、标签未被占用
    - `cargo test` + `clippy -D warnings`
    - **本机**构建 universal DMG：Developer ID 签名 + 公证，生成 `.sha256`
-   - 打包 macOS 命令行（Apple 芯片 / Intel），在 Docker 里交叉编译 Linux（x86_64 / arm64）命令行（`scripts/build-cross.sh`），各带 `.sha256`；建 GitHub Release **草稿**并上传全部 10 个附件，推送 `vX.Y.Z` 标签
+   - 打包 macOS 命令行（Apple 芯片 / Intel），各带 `.sha256`；建 GitHub Release **草稿**并上传全部 6 个附件，推送 `vX.Y.Z` 标签
    - 附件数量核对无误后发布；此后用户的「检查更新」才会看到新版本
 
 `scripts/release.sh --dry-run` 只做检查。附件数量不对时草稿保留，核对后 `gh release edit vX.Y.Z --draft=false --latest` 手动发布。
 
-发布全程在本机完成，仓库不使用 CI（GitHub Actions）；测试与 clippy 由发布脚本在发布前跑。桌面端只有 macOS 版，命令行覆盖 macOS 和 Linux。给已发布的版本补平台包：`scripts/build-cross.sh <标签>` 后 `gh release upload <标签> build/cross/*`。
+发布全程在本机完成，仓库不使用 CI（GitHub Actions）；测试与 clippy 由发布脚本在发布前跑。只发布 macOS 版（桌面端与命令行）。
 
 ## 为什么签名公证在本机
 
