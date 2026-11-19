@@ -12,8 +12,8 @@
 #
 # 凭证（全部来自钥匙串，脚本不读写任何密钥文件）：
 #   签名：钥匙串中的 "Developer ID Application" 身份；有多个时用 DEVELOPER_ID_IDENTITY 指定
-#   公证：notarytool 钥匙串 profile，REQUESTBABY_NOTARY_PROFILE（缺省 requestbaby-notary）
-#         一次性创建：xcrun notarytool store-credentials requestbaby-notary
+#   公证：notarytool 钥匙串 profile，REQUESTBABY_NOTARY_PROFILE（缺省 zhizuzhefu-notary）
+#         与其他 Mac 产品共用 iCloud 钥匙串里的 zhizuzhefu-notary
 #
 # 产物：
 #   build/mac/requestbaby.app
@@ -31,7 +31,7 @@ CLI="requestbaby"
 BUNDLE_ID="${REQUESTBABY_BUNDLE_ID:-com.zhizuzhefu.app.requestbaby}"
 MIN_MACOS="12.0"
 ARCH="${MAC_ARCH:-universal}"
-NOTARY_PROFILE="${REQUESTBABY_NOTARY_PROFILE:-requestbaby-notary}"
+NOTARY_PROFILE="${REQUESTBABY_NOTARY_PROFILE:-zhizuzhefu-notary}"
 
 VERSION=$(awk -F'"' '/^\[workspace.package\]/{s=1} s && /^version/{print $2; exit}' Cargo.toml)
 BUILD_NUMBER=$(git rev-list --count HEAD)
