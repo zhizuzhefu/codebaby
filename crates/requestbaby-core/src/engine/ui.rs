@@ -186,6 +186,11 @@ impl UiEvidence {
     }
 }
 
+/// 截图文件的像素尺寸（只读文件头，不解码整张图）
+pub fn image_size(path: &Path) -> Option<(u32, u32)> {
+    image::image_dimensions(path).ok()
+}
+
 /// 截图上的标记
 #[derive(Debug, Clone, Copy)]
 pub struct Mark {

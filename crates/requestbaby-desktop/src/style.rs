@@ -6,8 +6,9 @@ use gpui_kit::component::{ActiveTheme as _, Theme, ThemeMode, ThemeSet};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::notification::Notification;
-use gpui_kit::component::{IconName, Sizable as _, WindowExt as _};
-use gpui_kit::{App, Axis, ClipboardItem, Div, ElementId, Hsla, IntoElement as _, ParentElement as _, SharedString, Styled as _, div, px, rgb};
+use gpui_kit::component::{IconName, Sizable as _, WindowExt as _, h_flex};
+use requestbaby_core::validate::{self, ValidationIssue};
+use gpui_kit::{AnyElement, App, Axis, Window, ClipboardItem, Div, ElementId, Hsla, IntoElement as _, ParentElement as _, SharedString, Styled as _, div, px, rgb};
 use std::rc::Rc;
 
 const THEME: &str = include_str!("../assets/theme.json");
@@ -102,6 +103,24 @@ pub fn gap_handle() -> ResizeHandleRenderer {
     })
 }
 
+/// 成功类提示的显示时长
+const BRIEF_TOAST: std::time::Duration = std::time::Duration::from_secs(2);
+
+struct BriefToast;
+
+/// 「已完成」类提示：2 秒后自动消失（通知组件自带的自动隐藏是固定的 5 秒，且带操作按钮的通知不会自动隐藏）
+pub fn push_brief(window: &mut Window, cx: &mut App, note: Notification) {
+    static NEXT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+    let key = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    window.push_notification(note.id1::<BriefToast>(key), cx);
+    window
+        .spawn(cx, async move |cx| {
+            cx.background_executor().timer(BRIEF_TOAST).await;
+            let _ = cx.update(|window, cx| window.remove_notification1::<BriefToast>(key, cx));
+        })
+        .detach();
+}
+
 /// 等价 CLI 命令按钮：不占版面，悬停看命令、点击复制（每个操作都能在终端 / CI / AI 里原样复现）
 pub fn cli_button(id: impl Into<ElementId>, command: impl Into<SharedString>) -> Button {
     let command: SharedString = command.into();
@@ -109,4 +128,41 @@ pub fn cli_button(id: impl Into<ElementId>, command: impl Into<SharedString>) ->
         cx.write_to_clipboard(ClipboardItem::new_string(command.to_string()));
         window.push_notification(Notification::success(format!("已复制：{command}")), cx);
     })
+}
+
+/// 校验里的「写法建议」：不影响验收结果，人不用逐条看；能自动改写的由「格式化 / 一键改写」处理，其余复制成修改指令交给 AI
+pub fn style_notice(id: &'static str, issues: &[ValidationIssue], env: &str, cx: &App) -> Option<AnyElement> {
+    let style: Vec<&ValidationIssue> = issues.iter().filter(|i| i.is_style()).collect();
+    let fixable = style.iter().filter(|i| i.fixable).count();
+    let for_ai = style.len() - fixable;
+    let text = match (fixable, for_ai) {
+        (0, 0) => return None,
+        (k, 0) => format!("另有 {k} 条写法建议，不影响验收结果，可以自动改写"),
+        (0, m) => format!("另有 {m} 条写法建议，不影响验收结果，交给 AI 处理"),
+        (k, m) => format!("另有 {} 条写法建议，不影响验收结果：{k} 条可以自动改写，{m} 条交给 AI 处理", k + m),
+    };
+    let brief = validate::ai_brief(issues, env);
+    Some(
+        h_flex()
+            .gap_2()
+            .items_center()
+            .text_xs()
+            .text_color(cx.theme().muted_foreground)
+            .child(div().flex_1().min_w_0().child(text))
+            .when(!brief.is_empty(), |this| {
+                this.child(
+                    Button::new(id)
+                        .xsmall()
+                        .outline()
+                        .icon(IconName::Bot)
+                        .label("复制给 AI")
+                        .tooltip("复制修改指令：粘贴到 AI 对话，它会逐条改好并复验（命令行：requestbaby validate --report json）")
+                        .on_click(move |_, window, cx| {
+                            cx.write_to_clipboard(ClipboardItem::new_string(brief.clone()));
+                            push_brief(window, cx, Notification::success("已复制修改指令：粘贴给 AI 即可"));
+                        }),
+                )
+            })
+            .into_any_element(),
+    )
 }

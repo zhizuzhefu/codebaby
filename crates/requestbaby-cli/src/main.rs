@@ -273,6 +273,23 @@ enum Cmd {
         #[arg(long)]
         headed: bool,
     },
+    /// 导出验收结果交给别人：缺省 = 全部用例的最新结果，一份 HTML（截图已嵌入，直接用浏览器打开）；也可导出某一次运行（与桌面端「导出结果」同一实现）
+    Export {
+        /// 运行 ID：只导出这一次运行（ID 见 requestbaby history）；缺省导出环境下每个用例的最新结果
+        id: Option<String>,
+        /// 环境名（缺省用 requestbaby.json 的 defaultEnv，再缺省 dev）；指定运行 ID 时忽略
+        #[arg(short, long)]
+        env: Option<String>,
+        /// 只导出这些集合（如 -c 03-布置作业 -c 04-布置测验，可省略 collections/，可多次）：每个用例的全部步骤与截图在同一份 HTML 里
+        #[arg(short, long)]
+        collection: Vec<String>,
+        /// 格式：html（缺省）/ json
+        #[arg(short, long, default_value = "html")]
+        format: String,
+        /// 输出文件或目录（缺省：当前目录下 验收报告-<项目>-<环境>.html）
+        #[arg(short, long)]
+        output: Option<String>,
+    },
     /// 在桌面端打开项目（需安装 requestbaby-desktop）
     Open {
         /// 项目目录（缺省当前目录）
@@ -719,6 +736,7 @@ fn main() -> ExitCode {
             let req = session::RunRequest { paths, env, tags: tag, name, failed, fail_fast, dry_run, verbose, parallel, output, headed };
             cmd_run(req, report.as_deref(), json_stream, no_history)
         }
+        Cmd::Export { id, env, collection, format, output } => cmd_export(id, env, collection, &format, output),
         Cmd::Open { path } => cmd_open(path.as_deref()),
         Cmd::History { action: Some(a), .. } => cmd_history_clean(a),
         Cmd::History { action: None, limit, json } => cmd_history(limit, json),
@@ -2094,6 +2112,45 @@ fn cmd_open(path: Option<&str>) -> u8 {
             1
         }
     }
+}
+
+fn cmd_export(id: Option<String>, env: Option<String>, collection: Vec<String>, format: &str, output: Option<String>) -> u8 {
+    use requestbaby_core::export;
+    let root = match project_root_or_err() {
+        Ok(r) => r,
+        Err(code) => return code,
+    };
+    let format = match export::Format::parse(format) {
+        Ok(f) => f,
+        Err(e) => return fatal(e),
+    };
+    if id.is_some() && !collection.is_empty() {
+        return fatal("运行 ID 与 --collection 不能同时指定：--collection 取的是该集合每个用例的最新结果");
+    }
+    let collection: Vec<String> = collection.iter().map(|c| export::normalize_collection(&root, c)).collect();
+    let scope = match id {
+        Some(id) => export::Scope::Run(id),
+        None => export::Scope::Latest { env: session::resolve_env(std::slice::from_ref(&root), env.as_deref()), collections: collection.clone() },
+    };
+    let report = match export::collect(&root, &scope) {
+        Ok(r) => r,
+        Err(e) => return fatal(format!("{e:#}")),
+    };
+    let name = export::file_name(&root, &report, format);
+    let path = match output.map(PathBuf::from) {
+        Some(p) if p.is_dir() => p.join(&name),
+        Some(p) => p,
+        None => PathBuf::from(&name),
+    };
+    if let Err(e) = requestbaby_core::fsx::write(&path, export::render(&report, &root, format)) {
+        return err(format!("写入 {} 失败: {e:#}", path.display()));
+    }
+    let overview = export::Overview::of(&report, &root, &collection);
+    println!("\x1b[32m✔\x1b[0m 已导出 {}（{}）", path.display(), overview.headline());
+    for note in overview.notes() {
+        println!("\x1b[33m!\x1b[0m {note}");
+    }
+    0
 }
 
 fn cmd_history(limit: usize, json: bool) -> u8 {

@@ -4,7 +4,7 @@
 #   scripts/release.sh            完整发布
 #   scripts/release.sh --dry-run  只做发布前检查，不构建、不发布
 #
-# 流程：检查（main、工作区干净、与远端一致、CHANGELOG 有本版本）→ 测试 + clippy
+# 流程：检查（main、工作区干净、与远端一致、标签未被占用）→ 测试 + clippy
 #       → 本机构建 universal DMG（Developer ID 签名 + 公证）与 macOS 命令行包（Apple 芯片 / Intel）
 #       → Docker 交叉编译 Linux（x86_64 / arm64）命令行包（scripts/build-cross.sh）
 #       → 建 GitHub Release 草稿，传齐全部附件 → 推送 vX.Y.Z 标签
@@ -29,8 +29,6 @@ CLI_TARGETS=(aarch64-apple-darwin x86_64-apple-darwin)
 CROSS_PACKAGES=2   # Linux x86_64 / Linux arm64，见 scripts/build-cross.sh
 EXPECTED_ASSETS=$(( (${#CLI_TARGETS[@]} + 1 + CROSS_PACKAGES) * 2 ))
 TARGET_DIR="${CARGO_TARGET_DIR:-$REPO_ROOT/target}"
-# 本版本的更新说明：CHANGELOG.md 里 "## <版本>" 到下一个 "## " 之间
-NOTES=$(awk -v v="$VERSION" '/^## /{f=($2==v)} f && !/^## /' CHANGELOG.md | sed '/./,$!d')
 
 fail() { echo "✘ $*" >&2; exit 1; }
 
@@ -42,12 +40,9 @@ gh auth status >/dev/null 2>&1 || fail "gh 未登录：gh auth login"
 git fetch -q origin main --tags
 [[ "$(git rev-parse HEAD)" == "$(git rev-parse origin/main)" ]] || fail "本地 main 与 origin/main 不一致：先 git push / git pull"
 git rev-parse -q --verify "refs/tags/$TAG" >/dev/null && fail "标签 $TAG 已存在：先在 Cargo.toml 提升版本号"
-[[ -n "$NOTES" ]] || fail "CHANGELOG.md 里没有「## ${VERSION}」一节（或为空）"
 gh release view "$TAG" >/dev/null 2>&1 && fail "GitHub 上已有 $TAG 的 Release"
 
 echo "    版本 $VERSION · 提交 $(git rev-parse --short HEAD)"
-echo "    更新说明："
-printf '%s\n' "$NOTES" | sed 's/^/      /'
 if [[ "$DRY_RUN" == "1" ]]; then
   echo "✓ 检查通过（--dry-run：未构建、未发布）"
   exit 0
@@ -79,10 +74,8 @@ scripts/build-cross.sh HEAD build/cross
 for f in build/cross/requestbaby-*; do ASSETS+=("$f"); done
 
 echo "==> 创建 Release 草稿并上传全部附件"
-NOTES_FILE=$(mktemp)
-printf '%s\n' "$NOTES" > "$NOTES_FILE"
-gh release create "$TAG" "${ASSETS[@]}" --draft --title "$TAG" --notes-file "$NOTES_FILE"
-rm -f "$NOTES_FILE"
+# 更新说明由 GitHub 按提交自动生成（发布前可在草稿里改）
+gh release create "$TAG" "${ASSETS[@]}" --draft --title "$TAG" --generate-notes
 
 echo "==> 推送标签 ${TAG}"
 git tag -a "$TAG" -m "requestbaby $VERSION"

@@ -23,6 +23,7 @@ use gpui_kit::{
     Stateful, StatefulInteractiveElement as _, Styled as _, Window, div, prelude::FluentBuilder as _, px, uniform_list,
 };
 use requestbaby_core::history;
+use requestbaby_core::validate::ValidationIssue;
 use requestbaby_core::report::{CaseReport, CompareMark, Comparison, RunReport};
 use std::path::PathBuf;
 
@@ -35,7 +36,7 @@ impl Workspace {
         let history = self.project.history().len();
         let v = &self.validation;
         let errors = v.issues.iter().filter(|i| i.level == "error").count();
-        let warns = v.issues.len() - errors;
+        let warns = v.issues.iter().filter(|i| i.level != "error" && !i.is_style()).count();
         let labels = [
             if failed > 0 { format!("结果 {rows} · {failed} 失败") } else { format!("结果 {rows}") },
             format!("日志 {logs}"),
@@ -86,7 +87,6 @@ impl Workspace {
         let steps = run.steps().to_vec();
         let workflow = run.workflow().map(String::from);
         let is_verify = run.is_verify();
-        let has_report = run.report().is_some();
         let dry_run = run.report().and_then(|r| r.meta.as_ref()).is_some_and(|m| m.dry_run);
         let compare = if running { None } else { run.report().and_then(|r| r.compare.clone()).filter(|c| !c.is_empty()) };
         let summary = if running { String::new() } else { run.report().map(|r| r.failure_text()).unwrap_or_default() };
@@ -169,26 +169,16 @@ impl Workspace {
             })
             .child(div().flex_1())
             .when(!command.is_empty(), |this| this.child(style::cli_button("results-cli", command.clone())))
-            .child({
-                let view = cx.entity().downgrade();
+            .child(
                 Button::new("export-report")
                     .xsmall()
                     .outline()
                     .icon(IconName::ExternalLink)
-                    .label("导出")
-                    .disabled(!has_report || running)
-                    .dropdown_menu(move |menu, _, _| {
-                        let (v1, v2) = (view.clone(), view.clone());
-                        menu.item(PopupMenuItem::new("HTML 报告").icon(IconName::Globe).on_click(move |_, window, cx| {
-                            let _ = v1.update(cx, |w, cx| w.export_report(true, window, cx));
-                        }))
-                        .item(PopupMenuItem::new("JSON 报告（requestbaby/run@1）").icon(IconName::FileText).on_click(
-                            move |_, window, cx| {
-                                let _ = v2.update(cx, |w, cx| w.export_report(false, window, cx));
-                            },
-                        ))
-                    })
-            });
+                    .label("导出结果")
+                    .tooltip("导出验收结果给别人（⌘E · requestbaby export）")
+                    .disabled(running)
+                    .on_click(cx.listener(|this, _, window, cx| this.open_export_dialog(window, cx))),
+            );
 
         let head = result_cols(
             h_flex()
@@ -561,8 +551,11 @@ impl Workspace {
     fn render_validate(&mut self, cx: &mut Context<Self>) -> AnyElement {
         let v = &self.validation;
         let muted = cx.theme().muted_foreground;
-        let errors = v.issues.iter().filter(|i| i.level == "error").count();
-        let warns = v.issues.len() - errors;
+        // 写法建议不算「警告」：不影响结论，不逐条给人看（见底部的提示行）
+        let shown: Vec<&ValidationIssue> = v.issues.iter().filter(|i| !i.is_style()).collect();
+        let errors = shown.iter().filter(|i| i.level == "error").count();
+        let warns = shown.len() - errors;
+        let notice = style::style_notice("copy-ai-brief", &v.issues, &self.env, cx);
         let command = format!("requestbaby validate -e {}", self.env);
         let toolbar = h_flex()
             .px_3()
@@ -608,7 +601,7 @@ impl Workspace {
 
         let body: AnyElement = if let Some(e) = &v.error {
             div().px_4().text_xs().text_color(cx.theme().danger).child(e.clone()).into_any_element()
-        } else if v.issues.is_empty() {
+        } else if shown.is_empty() {
             empty_state(
                 IconName::CircleCheck,
                 "结构、变量引用、脚本语法、流程目标全部通过".into(),
@@ -622,7 +615,7 @@ impl Workspace {
                 .min_h_0()
                 .overflow_y_scroll()
                 .px_2()
-                .children(v.issues.iter().enumerate().map(|(ix, i)| {
+                .children(shown.iter().enumerate().map(|(ix, i)| {
                     let color = if i.level == "error" { cx.theme().danger } else { cx.theme().warning };
                     let path = PathBuf::from(&i.file);
                     let rel = self.project.rel_of(&path);
@@ -644,7 +637,13 @@ impl Workspace {
                 }))
                 .into_any_element()
         };
-        v_flex().flex_1().min_h_0().child(toolbar).child(body).into_any_element()
+        v_flex()
+            .flex_1()
+            .min_h_0()
+            .child(toolbar)
+            .child(body)
+            .when_some(notice, |this, n| this.child(div().px_4().py_2().border_t_1().border_color(cx.theme().border).child(n)))
+            .into_any_element()
     }
 
     pub(super) fn render_status_bar(&self, cx: &mut Context<Self>) -> impl IntoElement {

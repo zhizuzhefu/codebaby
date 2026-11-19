@@ -6,7 +6,7 @@ AI 交付的独立验收层，辅助人对 AI 交付的成果验收。
 
 有命令行，也有 macOS 桌面端，两边读写同一个项目目录。
 
-[官网](https://apps.zhizuzhefu.com/requestbaby/) · [下载安装](#下载安装) · [快速上手](#快速上手) · [最新版本](https://github.com/zhizuzhefu/requestbaby/releases/latest) · [更新日志](CHANGELOG.md)
+[官网](https://apps.zhizuzhefu.com/requestbaby/) · [下载安装](#下载安装) · [快速上手](#快速上手) · [最新版本](https://github.com/zhizuzhefu/requestbaby/releases/latest)
 
 ![桌面端：左边是用例，中间编辑，右边是每一步的截图，下面是这次运行的结果](docs/images/desktop-web-steps.png)
 
@@ -38,6 +38,7 @@ AI 交付的独立验收层，辅助人对 AI 交付的成果验收。
 **结果与协作**
 
 - 命令行退出码就是结论，方便放进 CI；也可以输出 JSON 或 HTML 报告
+- 一键导出结果给别人：桌面端「导出结果」（⌘E），命令行 `requestbaby export`。默认是全部用例的最新结果，一份 HTML，截图已嵌入，对方用浏览器直接打开；导出前会提示哪些用例没跑过、哪些结果已是旧的
 - 保留运行历史，记录每次运行对应的代码提交；同一个提交上时过时不过的用例会标成「不稳定」
 - 桌面端可以可视化地编辑用例、看响应和截图，每个操作都有对应的命令
 - 所有对外连接可以统一走代理（socks5 / http），也可以一键关掉

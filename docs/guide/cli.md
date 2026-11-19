@@ -81,6 +81,7 @@ requestbaby proxy                         # 代理：查看并检查；proxy set
 requestbaby case cp collections/orders/02-创建.json 05-创建-vip    # 用例 / 集合：new / rename / cp / rm
 requestbaby collection rename collections/orders 订单
 requestbaby history                       # 运行历史；history rm / clear 清理
+requestbaby export                        # 导出结果交给别人：全部用例的最新结果 → 验收报告-<项目>-<环境>.html；export <运行ID> 导出某一次；-f json、-o 文件或目录、-e 环境
 requestbaby fmt                           # 字段排序、清理空字段、公共请求头上提 collection.json
 requestbaby open                          # 在桌面端打开当前项目
 ```

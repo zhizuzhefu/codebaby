@@ -4,9 +4,9 @@
 
 ## 一次发版
 
-1. 提升 `Cargo.toml` 的版本号，在 `CHANGELOG.md` 顶部加 `## X.Y.Z — 日期` 一节（一行一条，写用户能感知到的变化）。提交并推送到 `main`
+1. 提升 `Cargo.toml` 的版本号。提交并推送到 `main`
 2. `make release`（等同 `scripts/release.sh`），脚本依次：
-   - 检查：在 main、工作区干净、与 origin/main 一致、标签未被占用、CHANGELOG 有本版本
+   - 检查：在 main、工作区干净、与 origin/main 一致、标签未被占用
    - `cargo test` + `clippy -D warnings`
    - **本机**构建 universal DMG：Developer ID 签名 + 公证，生成 `.sha256`
    - 打包 macOS 命令行（Apple 芯片 / Intel），在 Docker 里交叉编译 Linux（x86_64 / arm64）命令行（`scripts/build-cross.sh`），各带 `.sha256`；建 GitHub Release **草稿**并上传全部 10 个附件，推送 `vX.Y.Z` 标签

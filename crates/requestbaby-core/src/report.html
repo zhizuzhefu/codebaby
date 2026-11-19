@@ -1,0 +1,267 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>requestbaby 验收报告</title>
+<style>
+:root{--bg:#0f172a;--panel:#111827;--line:#1e293b;--line2:#334155;--fg:#e2e8f0;--dim:#64748b;--ok:#4ade80;--bad:#f87171;--warn:#fbbf24;--accent:#60a5fa}
+*{box-sizing:border-box}
+html{scroll-behavior:smooth}
+body{margin:0;font-family:-apple-system,'PingFang SC','Microsoft YaHei',sans-serif;background:var(--bg);color:var(--fg);font-size:14px;line-height:1.5}
+.pass{color:var(--ok)}.fail{color:var(--bad)}.skip{color:var(--warn)}.dim{color:var(--dim)}
+button{font:inherit;color:var(--fg);background:#1e293b;border:1px solid var(--line2);border-radius:6px;padding:4px 12px;cursor:pointer}
+button:hover{background:#273449}button.on{background:#1d4ed8;border-color:#1d4ed8}
+header{padding:20px 28px 14px;border-bottom:1px solid var(--line)}
+h1{font-size:20px;margin:0 0 4px}
+.meta{font-size:12px}
+.bar{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-top:12px}
+.chip{font-size:13px;padding:2px 10px;border-radius:99px;background:#1e293b}
+.layout{display:flex;align-items:flex-start}
+nav{width:290px;flex:none;position:sticky;top:0;height:100vh;overflow:auto;padding:14px 10px 40px 16px;border-right:1px solid var(--line);font-size:13px}
+nav .grp{margin:14px 0 4px;font-weight:600;display:flex;justify-content:space-between;gap:8px}
+nav a{display:flex;gap:6px;padding:2px 6px;border-radius:5px;color:var(--fg);text-decoration:none}
+nav a:hover{background:#1e293b}
+nav a span.n{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+main{flex:1;min-width:0;padding:16px 28px 80px}
+details.case{border:1px solid var(--line);border-radius:10px;margin:0 0 14px;background:#0b1220}
+details.case.bad{border-color:#7f1d1d}
+details.case>summary{list-style:none;cursor:pointer;padding:10px 14px;display:flex;gap:10px;align-items:baseline;flex-wrap:wrap}
+details.case>summary::-webkit-details-marker{display:none}
+details.case>summary h2{font-size:15px;margin:0}
+.badge{font-size:11px;padding:0 6px;border-radius:4px;background:#1e293b;color:#94a3b8}
+.body{padding:0 14px 14px}
+.url{font-size:12px;word-break:break-all;margin-bottom:6px}
+pre{background:#1e293b;padding:8px;border-radius:6px;overflow:auto;font-size:12px;white-space:pre-wrap;margin:4px 0}
+.env{font-size:12px;margin:4px 0}.env span{margin-right:14px}
+.strip{display:flex;flex-wrap:wrap;gap:6px;margin:10px 0}
+.th{position:relative;width:132px;height:84px;border:2px solid var(--line2);border-radius:6px;overflow:hidden;cursor:zoom-in;background:#000;flex:none}
+.th.failed{border-color:var(--bad)}.th.skipped{border-color:var(--warn)}
+.th img{width:100%;height:100%;object-fit:cover;object-position:top;display:block}
+.th b{position:absolute;left:0;top:0;font-size:11px;font-weight:600;background:rgba(15,23,42,.85);padding:0 5px;border-bottom-right-radius:6px}
+.steps{display:flex;flex-direction:column;gap:10px;margin:10px 0}
+.step{display:flex;gap:14px;background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:8px}
+.step.failed{border-color:var(--bad)}
+.step img{width:420px;max-width:42vw;border-radius:4px;cursor:zoom-in;border:1px solid var(--line2);align-self:flex-start;flex:none}
+.step .t{font-size:14px}.step .d{font-size:12px;margin-top:4px;white-space:pre-wrap;word-break:break-word}
+.sub{margin:14px 0 4px;font-size:12px;color:var(--dim)}
+table.api{border-collapse:collapse;font-size:13px}
+table.api td{padding:2px 12px 2px 0}
+#lb{position:fixed;inset:0;background:#020617;display:none;flex-direction:column;z-index:10}
+#lb.on{display:flex}
+#lb .top,#lb .bottom{display:flex;gap:8px;align-items:center;padding:8px 14px;flex:none}
+#lb .cap{flex:1;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+#lb .stage{flex:1;min-height:0;overflow:auto;display:flex;cursor:zoom-in}
+#lb .stage.real{cursor:grab}
+#lb .stage img{margin:auto;display:block;max-width:100%;max-height:100%;user-select:none;-webkit-user-drag:none}
+#lb .stage.real img{max-width:none;max-height:none}
+#lb .film{display:flex;gap:6px;overflow-x:auto;padding:8px 14px;flex:none;border-top:1px solid var(--line)}
+#lb .film img{height:56px;border:2px solid var(--line2);border-radius:4px;cursor:pointer;opacity:.65;flex:none}
+#lb .film img.cur{opacity:1;border-color:var(--accent)}
+#lb .film img.failed{border-color:var(--bad)}
+#lb .hint{font-size:12px;color:var(--dim)}
+.th img:not([src]),.step img:not([src]){font-size:11px;color:var(--dim);padding:6px}
+.hide{display:none!important}
+@media print{nav,.bar,#lb{display:none!important}details.case{break-inside:avoid}}
+</style>
+</head>
+<body data-project="__PROJECT__">
+<header>
+  <h1 id="title">requestbaby 验收报告</h1>
+  <div class="meta dim" id="meta"></div>
+  <div class="bar" id="bar"></div>
+</header>
+<div class="layout">
+  <nav id="toc"></nav>
+  <main id="cases"></main>
+</div>
+<div id="lb">
+  <div class="top">
+    <div class="cap" id="lb-cap"></div>
+    <span class="dim" id="lb-pos"></span>
+    <button id="lb-prev" title="上一张（←）">◀</button>
+    <button id="lb-next" title="下一张（→）">▶</button>
+    <button id="lb-fit" title="适应窗口（0）">适应</button>
+    <button id="lb-real" title="原始大小：1 个图片像素 = 1 个屏幕像素（1）">原始大小</button>
+    <button id="lb-out" title="缩小（-）">－</button>
+    <span class="dim" id="lb-zoom" style="min-width:64px;text-align:center"></span>
+    <button id="lb-in" title="放大（+）">＋</button>
+    <button id="lb-close" title="关闭（Esc）">✕</button>
+  </div>
+  <div class="stage" id="lb-stage"><img id="lb-img" alt=""></div>
+  <div class="film" id="lb-film"></div>
+  <div class="bottom hint">← → 切换步骤 · 点击图片或按 1 / 0 在原始大小与适应窗口之间切换 · 放大后拖动平移 · ⌘/Ctrl + 滚轮缩放 · Esc 关闭</div>
+</div>
+<script>
+const R = __DATA__;
+const IMG = __IMAGES__;
+const esc = s => String(s == null ? '' : s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+const $ = id => document.getElementById(id);
+const secs = ms => (ms / 1000).toFixed(1) + 's';
+const project = document.body.dataset.project;
+if (project) { $('title').textContent = 'requestbaby 验收报告 · ' + project; document.title = '验收报告 · ' + project; }
+
+// ---------------------------------------------------------------- 概要
+const m = R.meta;
+if (m) {
+  const g = m.git ? ` · 代码 ${esc((m.git.branch ? m.git.branch + '@' : '') + m.git.commit.slice(0, 7))}${m.git.dirty ? '（有未提交改动）' : ''}` : '';
+  $('meta').innerHTML = `${esc(m.command)} · 环境 ${esc(m.env)} · ${new Date(m.startedAtMs).toLocaleString()}${g}`;
+}
+const flaky = new Set(((R.compare || {}).flaky || []).map(c => c.file + '\u0000' + c.name));
+const state = r => r.skipped ? 'skip' : (r.passed ? 'pass' : 'fail');
+const mark = r => r.skipped ? '⇣' : (r.passed ? '✔' : '✘');
+const bad = r => r.protocol === 'grpc' ? r.status_text !== 'OK' : r.protocol === 'ws' ? r.status !== 101 : r.protocol === 'android' ? false : (r.status >= 400 || (!r.status && r.protocol !== 'web'));
+const evOf = r => r.response && r.response.evidence;
+const shotKey = (ev, s) => s.screenshot ? ev.dir + '/' + s.screenshot : null;
+
+$('bar').innerHTML =
+  `<span class="chip">共 ${R.total} 个用例</span><span class="chip pass">✔ ${R.passed} 通过</span>` +
+  (R.failed ? `<span class="chip fail">✘ ${R.failed} 失败</span>` : '') +
+  (R.skipped ? `<span class="chip skip">⇣ ${R.skipped} 跳过</span>` : '') +
+  `<button id="f-fail">只看失败</button><button id="f-open">展开全部</button><button id="f-close">收起全部</button>`;
+
+// ---------------------------------------------------------------- 用例
+const groupOf = r => { const p = r.file.replace(/^collections\//, '').split('/'); p.pop(); return p.join('/') || '（根）'; };
+const groups = new Map();
+R.results.forEach((r, i) => { const k = groupOf(r); if (!groups.has(k)) groups.set(k, []); groups.get(k).push(i); });
+
+// 每个用例的截图序列（查看器按用例翻页）
+const shotsOf = R.results.map(r => {
+  const ev = evOf(r);
+  return ev ? ev.steps.filter(s => s.screenshot).map(s => ({ key: shotKey(ev, s), title: `#${s.index} ${s.title}`, detail: s.detail || '', status: s.status, at: s.atMs, dur: s.durationMs, case: r.name })) : [];
+});
+
+function stepsHtml(ci, ev) {
+  const env = (ev.environment || []).filter(([k]) => k !== 'User-Agent').map(([k, v]) => `<span><span class="dim">${esc(k)}</span> ${esc(v)}</span>`).join('');
+  let pos = -1;
+  const strip = ev.steps.filter(s => s.screenshot).map(s => { pos++; return `<a class="th ${s.status}" data-ci="${ci}" data-pos="${pos}" title="${esc('#' + s.index + ' ' + s.title)}"><b>${s.index}</b><img data-k="${esc(shotKey(ev, s))}" alt=""></a>`; }).join('');
+  pos = -1;
+  const steps = ev.steps.map(s => {
+    const st = s.status === 'failed' ? '<span class="fail">✘</span>' : s.status === 'skipped' ? '<span class="skip">⇣</span>' : '<span class="pass">✔</span>';
+    let img = '';
+    if (s.screenshot) { pos++; img = `<img data-k="${esc(shotKey(ev, s))}" data-ci="${ci}" data-pos="${pos}" class="shot" alt="">`; }
+    return `<div class="step ${s.status}" id="c${ci}s${s.index}">${img}<div><div class="t">${st} <span class="dim">#${s.index}</span> ${esc(s.title)}</div><div class="d dim">${secs(s.atMs)} · ${s.durationMs}ms</div>${s.detail ? `<div class="d ${s.status === 'failed' ? 'fail' : 'dim'}">${esc(s.detail)}</div>` : ''}</div></div>`;
+  }).join('');
+  const arts = (ev.artifacts || []).map(a => `<div>${esc(a.label)}：<span class="dim">${esc(ev.dir + '/' + a.file)}</span></div>`).join('');
+  return `<div class="env dim">${env}</div>` +
+    (strip ? `<div class="sub">全部截图（${shotsOf[ci].length} 张，点击放大查看）</div><div class="strip">${strip}</div>` : '') +
+    `<div class="sub">步骤明细（${ev.steps.length} 步）</div><div class="steps">${steps}</div>` +
+    (arts ? `<div class="sub">失败现场（未嵌入，保存在运行电脑的证据目录）</div><div class="env">${arts}</div>` : '');
+}
+
+$('cases').innerHTML = R.results.map((r, i) => {
+  const ev = evOf(r), st = state(r);
+  const tag = flaky.has(r.file + '\u0000' + r.name) ? ' <span class="badge skip">不稳定</span>' : '';
+  const fails = (r.error ? `<div class="fail">${esc(r.error)}</div>` : '') +
+    (r.tests || []).filter(x => !x.pass).map(x => `<div>✘ ${esc(x.expr)}<pre>${esc(x.detail || '')}</pre></div>`).join('');
+  const failedStep = ev && ev.steps.find(s => s.status === 'failed');
+  const jump = failedStep ? ` · <a class="fail" href="#c${i}s${failedStep.index}" onclick="event.stopPropagation()">跳到失败的一步 #${failedStep.index}</a>` : '';
+  const head = ev
+    ? `<span class="dim">${ev.steps.length} 步 · ${shotsOf[i].length} 张截图</span>`
+    : `<span class="${bad(r) ? 'fail' : 'pass'}">${esc(r.status_text || r.status || '-')}</span>`;
+  const open = (ev || st === 'fail') ? ' open' : '';
+  const api = ev ? '' : `<table class="api"><tr><td class="dim">请求</td><td>${esc(r.method)} ${esc(r.url)}</td></tr><tr><td class="dim">状态</td><td>${esc(r.status_text || r.status || '-')}</td></tr></table>`;
+  return `<details class="case ${st === 'fail' ? 'bad' : ''}" id="c${i}" data-state="${st}"${open}>` +
+    `<summary><span class="${st}">${mark(r)}</span><h2>${esc(r.name)}${tag}</h2><span class="badge">${esc(r.method)}</span>${head}<span class="dim">${r.duration_ms}ms</span></summary>` +
+    `<div class="body"><div class="url dim">${esc(r.file)}${ev ? ' · ' + esc(r.url) : ''}${jump}</div>${fails}${api}${ev ? stepsHtml(i, ev) : ''}</div></details>`;
+}).join('');
+
+$('toc').innerHTML = [...groups].map(([g, idx]) => {
+  const bad = idx.filter(i => !R.results[i].passed && !R.results[i].skipped).length;
+  return `<div class="grp"><span>${esc(g)}</span><span class="${bad ? 'fail' : 'pass'}">${bad ? bad + ' 失败' : '全部通过'}</span></div>` +
+    idx.map(i => `<a href="#c${i}" data-ci="${i}"><span class="${state(R.results[i])}">${mark(R.results[i])}</span><span class="n">${esc(R.results[i].name)}</span></a>`).join('');
+}).join('');
+
+// 图片：可见的优先载入；其余在后台分批全部载入（不会有「滚到了却没加载」的图，整页截图一次性解码又不会卡）
+function loadImg(t) {
+  if (t.dataset.done) return;
+  t.dataset.done = '1';
+  const u = IMG[t.dataset.k];
+  if (u) t.src = u; else t.alt = '截图已被清理，未能嵌入';
+}
+const io = new IntersectionObserver(es => es.forEach(e => { if (e.isIntersecting) { loadImg(e.target); io.unobserve(e.target); } }), { rootMargin: '1200px' });
+const pending = [...document.querySelectorAll('img[data-k]')];
+pending.forEach(t => io.observe(t));
+(function drain() {
+  let n = 0;
+  while (pending.length && n < 4) { loadImg(pending.shift()); n++; }
+  if (pending.length) setTimeout(drain, 60);
+})();
+
+// 点击缩略图 / 步骤截图 → 查看器
+$('cases').addEventListener('click', e => {
+  const t = e.target.closest('[data-pos]');
+  if (t) { e.preventDefault(); openLB(+t.dataset.ci, +t.dataset.pos); }
+});
+$('toc').addEventListener('click', e => { const a = e.target.closest('a[data-ci]'); if (a) { const d = $('c' + a.dataset.ci); if (d) d.open = true; } });
+
+// ---------------------------------------------------------------- 工具栏
+$('f-fail').onclick = e => {
+  const on = e.target.classList.toggle('on');
+  document.querySelectorAll('details.case').forEach(d => d.classList.toggle('hide', on && d.dataset.state === 'pass'));
+  document.querySelectorAll('#toc a').forEach(a => a.classList.toggle('hide', on && state(R.results[+a.dataset.ci]) === 'pass'));
+};
+$('f-open').onclick = () => document.querySelectorAll('details.case').forEach(d => d.open = true);
+$('f-close').onclick = () => document.querySelectorAll('details.case').forEach(d => d.open = false);
+
+// ---------------------------------------------------------------- 图片查看器
+const LB = { ci: 0, pos: 0, zoom: 0 }; // zoom 0 = 适应窗口；否则相对「原始大小」的倍数
+const lb = $('lb'), stage = $('lb-stage'), im = $('lb-img');
+const real = () => im.naturalWidth / (window.devicePixelRatio || 1);
+function shown() { return im.clientWidth / (real() || 1); }
+function applyZoom() {
+  stage.classList.toggle('real', LB.zoom > 0);
+  if (LB.zoom > 0) { im.style.width = real() * LB.zoom + 'px'; $('lb-zoom').textContent = Math.round(LB.zoom * 100) + '%'; }
+  else { im.style.width = ''; $('lb-zoom').textContent = '适应窗口'; }
+}
+function setZoom(z, cx, cy) {
+  const rect = stage.getBoundingClientRect();
+  const px = (cx == null ? rect.left + rect.width / 2 : cx) - rect.left, py = (cy == null ? rect.top + rect.height / 2 : cy) - rect.top;
+  const fx = (stage.scrollLeft + px) / Math.max(im.clientWidth, 1), fy = (stage.scrollTop + py) / Math.max(im.clientHeight, 1);
+  LB.zoom = z > 0 ? Math.min(Math.max(z, 0.1), 8) : 0;
+  applyZoom();
+  if (LB.zoom > 0) { stage.scrollLeft = fx * im.clientWidth - px; stage.scrollTop = fy * im.clientHeight - py; }
+}
+function renderLB() {
+  const list = shotsOf[LB.ci], s = list[LB.pos];
+  if (IMG[s.key]) im.src = IMG[s.key]; else { im.removeAttribute('src'); im.alt = '截图已被清理，未能嵌入'; }
+  const mk = s.status === 'failed' ? '<span class="fail">✘</span>' : s.status === 'skipped' ? '<span class="skip">⇣</span>' : '<span class="pass">✔</span>';
+  $('lb-cap').innerHTML = `${esc(s.case)} · ${mk} ${esc(s.title)} <span class="dim">${secs(s.at)}${s.detail ? ' · ' + esc(s.detail) : ''}</span>`;
+  $('lb-pos').textContent = `${LB.pos + 1} / ${list.length}`;
+  $('lb-prev').disabled = LB.pos === 0; $('lb-next').disabled = LB.pos === list.length - 1;
+  $('lb-film').innerHTML = list.map((x, i) => `<img data-i="${i}" class="${i === LB.pos ? 'cur ' : ''}${x.status === 'failed' ? 'failed' : ''}" src="${IMG[x.key] || ''}" title="${esc(x.title)}" alt="">`).join('');
+  const cur = $('lb-film').querySelector('.cur'); if (cur) cur.scrollIntoView({ inline: 'center', block: 'nearest' });
+  stage.scrollTo(0, 0);
+}
+function openLB(ci, pos) { LB.ci = ci; LB.pos = pos; LB.zoom = 0; applyZoom(); renderLB(); lb.classList.add('on'); document.body.style.overflow = 'hidden'; }
+function closeLB() { lb.classList.remove('on'); document.body.style.overflow = ''; }
+function go(d) { const n = LB.pos + d; if (n >= 0 && n < shotsOf[LB.ci].length) { LB.pos = n; renderLB(); applyZoom(); } }
+$('lb-close').onclick = closeLB;
+$('lb-prev').onclick = () => go(-1); $('lb-next').onclick = () => go(1);
+$('lb-fit').onclick = () => setZoom(0); $('lb-real').onclick = () => setZoom(1);
+$('lb-in').onclick = () => setZoom((LB.zoom > 0 ? LB.zoom : shown()) * 1.25);
+$('lb-out').onclick = () => setZoom((LB.zoom > 0 ? LB.zoom : shown()) / 1.25);
+$('lb-film').onclick = e => { const t = e.target.closest('img[data-i]'); if (t) { LB.pos = +t.dataset.i; renderLB(); applyZoom(); } };
+im.addEventListener('load', applyZoom);
+let drag = null, moved = false;
+stage.addEventListener('mousedown', e => { drag = { x: e.clientX, y: e.clientY, l: stage.scrollLeft, t: stage.scrollTop }; moved = false; });
+window.addEventListener('mousemove', e => { if (!drag || LB.zoom === 0) return; const dx = e.clientX - drag.x, dy = e.clientY - drag.y; if (Math.abs(dx) + Math.abs(dy) > 3) moved = true; stage.scrollLeft = drag.l - dx; stage.scrollTop = drag.t - dy; });
+window.addEventListener('mouseup', () => { drag = null; });
+im.addEventListener('click', e => { if (moved) return; if (LB.zoom === 0) setZoom(1, e.clientX, e.clientY); else setZoom(0); });
+stage.addEventListener('wheel', e => { if (!(e.ctrlKey || e.metaKey)) return; e.preventDefault(); setZoom((LB.zoom > 0 ? LB.zoom : shown()) * Math.exp(-e.deltaY * 0.01), e.clientX, e.clientY); }, { passive: false });
+window.addEventListener('keydown', e => {
+  if (!lb.classList.contains('on')) return;
+  const k = e.key;
+  if (k === 'Escape') closeLB();
+  else if (k === 'ArrowLeft' || k === 'PageUp') { go(-1); e.preventDefault(); }
+  else if (k === 'ArrowRight' || k === 'PageDown') { go(1); e.preventDefault(); }
+  else if (k === 'Home') { LB.pos = 0; renderLB(); applyZoom(); }
+  else if (k === 'End') { LB.pos = shotsOf[LB.ci].length - 1; renderLB(); applyZoom(); }
+  else if (k === '+' || k === '=') $('lb-in').click();
+  else if (k === '-') $('lb-out').click();
+  else if (k === '0') setZoom(0);
+  else if (k === '1') setZoom(1);
+});
+</script>
+</body>
+</html>

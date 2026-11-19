@@ -694,7 +694,7 @@ impl CaseEditor {
     fn render_header(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let rel = self.rel.clone().unwrap_or_default();
         let errors = self.issues.iter().filter(|i| i.level == "error").count();
-        let warns = self.issues.len() - errors;
+        let warns = self.issues.iter().filter(|i| i.level != "error" && !i.is_style()).count();
         h_flex()
             .px_4()
             .py_2()
@@ -1386,6 +1386,9 @@ impl CaseEditor {
 
     fn render_issues(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let fixable = self.issues.iter().filter(|i| i.fixable).count();
+        // 自动改写不了的写法建议：不逐条列给人，复制成修改指令交给 AI
+        let for_ai: Vec<ValidationIssue> = self.issues.iter().filter(|i| !i.fixable).cloned().collect();
+        let notice = style::style_notice("case-ai-brief", &for_ai, "", cx);
         v_flex()
             .px_4()
             .py_2()
@@ -1410,6 +1413,7 @@ impl CaseEditor {
                         ),
                 )
             })
+            .when_some(notice, |this, n| this.child(n))
             .when_some(self.error.clone(), |this, e| {
                 this.child(
                     h_flex()
@@ -1420,7 +1424,7 @@ impl CaseEditor {
                         .child(e),
                 )
             })
-            .children(self.issues.iter().enumerate().map(|(ix, i)| {
+            .children(self.issues.iter().filter(|i| !i.is_style()).enumerate().map(|(ix, i)| {
                 let color = if i.level == "error" { cx.theme().danger } else { cx.theme().warning };
                 h_flex()
                     .id(("issue", ix))

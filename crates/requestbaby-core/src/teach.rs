@@ -15,6 +15,17 @@ use crate::expect::{OPERATORS, is_operator_object};
 use serde_json::{Map, Value, json};
 use std::path::{Path, PathBuf};
 
+/// 写法建议的规则名：不影响验收结论，由 `fmt --fix` 或 AI 处理（Desktop 不当作「警告」列给人看）
+pub const STYLE_RULES: &[&str] = &[
+    "legacy-expect-status",
+    "prefer-expect",
+    "prefer-capture",
+    "long-js-test",
+    "hardcoded-base-url",
+    "redundant-number",
+    "env-guard-script",
+];
+
 /// 一条写法建议
 #[derive(Debug, Clone, PartialEq)]
 pub struct Advice {
@@ -162,12 +173,13 @@ fn prefer_expect(obj: &mut Map<String, Value>, out: &mut Vec<Advice>) {
             None => {
                 let len = src.chars().count();
                 if len > 120 || src.contains("function") || src.contains("return ") {
+                    let head: String = src.split_whitespace().collect::<Vec<_>>().join(" ").chars().take(50).collect();
                     out.push(advice(
                         "long-js-test",
                         false,
                         format!(
-                            "tests 第 {} 条是一段 {len} 字符的 JS 程序：能逐字段写的检查（等于 / 类型 / 长度 / 每个元素满足 [*]）改用 expect，只把需要计算的留在 tests，失败时才能看出是哪个字段（guide expect）",
-                            i + 1
+                            "tests 第 {n} 条（JSON 里 tests[{i}]，以「{head}…」开头，{len} 字符）是一段 JS 程序，失败时看不出哪个字段错了。修改：把其中能逐字段写的检查（等于 / 类型 / 长度 / 每个元素满足 [*]）改写进 expect.body，只把必须计算的留在 tests（语法见 guide expect）；改完运行 requestbaby validate 确认警告消失，再 requestbaby run 确认结论不变",
+                            n = i + 1
                         ),
                     ));
                 }

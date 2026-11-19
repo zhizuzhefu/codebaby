@@ -225,6 +225,58 @@ pub fn last_status(root: &Path, env: &str) -> BTreeMap<CaseRef, bool> {
     out
 }
 
+/// 把环境 `env` 下每个用例最近一次的结果汇成一份报告（逐个集合分别跑过的项目，一份文件就是全部结论）
+///
+/// `runs` 新 → 旧（[`list`] 的顺序）；dry-run、被取消的运行与跳过的用例不算。collections 非空 = 只汇总这些集合目录
+/// （如 `collections/03-布置作业`，含子目录）下的用例，时间范围也只看提供了这些结果的运行。没有可汇总的结果时 None。
+/// 汇总出的报告按用例文件序排列；证据（截图）仍指向各自那次运行的证据目录。
+pub fn merge_latest(runs: &[&RunReport], env: &str, collections: &[String]) -> Option<RunReport> {
+    let prefixes: Vec<String> = collections.iter().map(|c| format!("{}/", c.trim_end_matches('/'))).collect();
+    let mut seen: BTreeMap<CaseRef, &crate::report::CaseReport> = BTreeMap::new();
+    let mut from: Vec<&crate::report::RunMeta> = vec![];
+    for run in runs {
+        let Some(meta) = run.meta.as_ref().filter(|m| m.env == env && !m.dry_run && !m.cancelled) else { continue };
+        let before = seen.len();
+        for r in run.results.iter().filter(|r| !r.skipped && (prefixes.is_empty() || prefixes.iter().any(|p| r.file.starts_with(p.as_str())))) {
+            seen.entry(CaseRef { file: r.file.clone(), name: r.name.clone() }).or_insert(r);
+        }
+        if seen.len() > before {
+            from.push(meta);
+        }
+    }
+    let newest = *from.first()?;
+    let oldest_start = from.iter().map(|m| m.started_at_ms).min().unwrap_or(newest.started_at_ms);
+    // 各次运行在不同代码版本上时，不把某一个提交当作整份汇总的版本
+    let same_git = from.iter().all(|m| m.git == newest.git);
+    let meta = crate::report::RunMeta {
+        id: format!("latest-{env}"),
+        source: "history".into(),
+        command: format!("requestbaby export -e {env}{}", collections.iter().map(|c| format!(" -c {}", c.trim_end_matches('/'))).collect::<String>()),
+        env: env.into(),
+        started_at_ms: oldest_start,
+        finished_at_ms: newest.finished_at_ms,
+        git: if same_git { newest.git.clone() } else { None },
+        ..Default::default()
+    };
+    Some(RunReport::from_cases(seen.into_values().cloned().collect(), Some(meta)))
+}
+
+/// [`merge_latest`] 读取项目历史（CLI `history export` 用）
+pub fn latest_report(root: &Path, env: &str, collections: &[String]) -> Option<RunReport> {
+    let entries = list(root);
+    let runs: Vec<&RunReport> = entries.iter().map(|e| &e.report).collect();
+    merge_latest(&runs, env, collections)
+}
+
+/// 按运行 ID 读取一条历史报告（CLI `history export <ID>` 用）
+pub fn find(root: &Path, id: &str) -> Result<RunReport> {
+    let path = runs_dir(root).join(format!("{id}.json"));
+    if id.contains(['/', '\\']) || !path.is_file() {
+        anyhow::bail!("运行记录不存在: {id}（requestbaby history 查看 ID）");
+    }
+    load(&path)
+}
+
 /// 本次结果相对基准的变化；基准为空（从未运行过）时 None
 pub fn compare(baseline: &BTreeMap<CaseRef, bool>, report: &RunReport) -> Option<Comparison> {
     if baseline.is_empty() {
@@ -340,5 +392,62 @@ mod tests {
         assert_eq!(parse_duration_ms("12h").unwrap(), 12 * 3_600_000);
         assert_eq!(parse_duration_ms("3").unwrap(), 3 * day);
         assert!(parse_duration_ms("7w").is_err());
+    }
+
+    fn case_report(file: &str, passed: bool) -> crate::report::CaseReport {
+        crate::report::CaseReport {
+            file: file.into(),
+            name: file.into(),
+            tags: vec![],
+            method: "GET".into(),
+            url: String::new(),
+            protocol: Default::default(),
+            status: 200,
+            status_text: String::new(),
+            duration_ms: 1,
+            skipped: false,
+            passed,
+            error: None,
+            curl: None,
+            response: None,
+            tests: vec![],
+            logs: vec![],
+        }
+    }
+
+    fn run_of(env: &str, started: u64, cases: Vec<crate::report::CaseReport>) -> RunReport {
+        let meta = RunMeta { id: format!("r{started}"), env: env.into(), started_at_ms: started, finished_at_ms: started + 1, ..Default::default() };
+        RunReport::from_cases(cases, Some(meta))
+    }
+
+    #[test]
+    fn merge_latest_takes_newest_result_per_case_in_env() {
+        let newer = run_of("t", 30, vec![case_report("b.json", true)]);
+        let other_env = run_of("prod", 25, vec![case_report("a.json", true)]);
+        let mut dry = run_of("t", 20, vec![case_report("c.json", true)]);
+        dry.meta.as_mut().unwrap().dry_run = true;
+        let older = run_of("t", 10, vec![case_report("a.json", false), case_report("b.json", false)]);
+        let runs = [&newer, &other_env, &dry, &older];
+
+        let merged = merge_latest(&runs, "t", &[]).unwrap();
+        let got: Vec<(&str, bool)> = merged.results.iter().map(|r| (r.file.as_str(), r.passed)).collect();
+        // a 只在较早的运行里有（失败）；b 取较新的（通过）；其他环境与 dry-run 不算
+        assert_eq!(got, vec![("a.json", false), ("b.json", true)]);
+        assert_eq!((merged.total, merged.passed, merged.failed), (2, 1, 1));
+        let m = merged.meta.unwrap();
+        assert_eq!((m.started_at_ms, m.finished_at_ms, m.env.as_str()), (10, 31, "t"));
+        assert!(merge_latest(&runs, "nope", &[]).is_none());
+        // 只要某个集合：时间范围只看提供了这些结果的运行
+        let a = run_of("t", 5, vec![case_report("collections/x/1.json", true)]);
+        let b = run_of("t", 90, vec![case_report("collections/y/1.json", false)]);
+        let runs = [&b, &a];
+        let only_x = merge_latest(&runs, "t", &["collections/x".to_string()]).unwrap();
+        assert_eq!((only_x.total, only_x.meta.as_ref().unwrap().started_at_ms, only_x.meta.as_ref().unwrap().finished_at_ms), (1, 5, 6));
+        assert!(only_x.meta.unwrap().command.ends_with("-c collections/x"));
+        assert!(merge_latest(&runs, "t", &["collections/z".to_string()]).is_none());
+        // 多个集合一起：时间范围覆盖提供了结果的全部运行
+        let both = merge_latest(&runs, "t", &["collections/x".to_string(), "collections/y".to_string()]).unwrap();
+        assert_eq!((both.total, both.meta.as_ref().unwrap().started_at_ms), (2, 5));
+        assert!(both.meta.unwrap().command.ends_with("-c collections/x -c collections/y"));
     }
 }

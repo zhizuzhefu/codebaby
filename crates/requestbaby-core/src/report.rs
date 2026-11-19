@@ -333,7 +333,8 @@ impl RunReport {
     }
 }
 
-/// 单文件 HTML（内嵌协议数据 + 极简渲染）。root = 项目根：界面用例的截图以 data URI 内嵌，报告单独发给别人也能看
+/// 单文件 HTML 报告（模板见 report.html）：左侧目录 + 每个用例完整展开；界面用例的每一步与截图都在里面，
+/// 截图以 data URI 内嵌（root = 项目根），单独发给别人也能看，并带可翻页、可原始大小查看的图片查看器
 pub fn render_html(report: &RunReport, root: Option<&std::path::Path>) -> String {
     let data = render_json(report).replace("</", "<\\/");
     let mut images = serde_json::Map::new();
@@ -347,66 +348,17 @@ pub fn render_html(report: &RunReport, root: Option<&std::path::Path>) -> String
         }
     }
     let images = serde_json::Value::Object(images).to_string();
-    format!(
-        r#"<!DOCTYPE html><html lang="zh"><head><meta charset="utf-8"><title>requestbaby 验收报告</title>
-<style>
-body{{font-family:-apple-system,'PingFang SC',sans-serif;margin:24px;background:#0f172a;color:#e2e8f0}}
-table{{border-collapse:collapse;width:100%}}
-td,th{{padding:6px 10px;border-bottom:1px solid #1e293b;text-align:left;font-size:13px;vertical-align:top}}th{{white-space:nowrap}}
-.pass{{color:#4ade80}}.fail{{color:#f87171}}.skip{{color:#fbbf24}}.dim{{color:#64748b}}
-details{{margin:4px 0}}pre{{background:#1e293b;padding:8px;border-radius:6px;overflow:auto;font-size:12px;white-space:pre-wrap}}
-h1{{font-size:18px;margin-bottom:4px}}.meta{{font-size:12px;margin-bottom:16px}}
-.steps{{display:flex;flex-direction:column;gap:10px;margin:8px 0}}
-.step{{display:flex;gap:12px;background:#111827;border:1px solid #1e293b;border-radius:8px;padding:8px}}
-.step.failed{{border-color:#f87171}}
-.step img{{width:320px;max-width:40vw;border-radius:4px;cursor:zoom-in;border:1px solid #334155}}
-.step .t{{font-size:13px}}.step .d{{font-size:12px;margin-top:4px}}
-.env{{font-size:12px}}.env span{{margin-right:14px}}
-#zoom{{position:fixed;inset:0;background:rgba(0,0,0,.85);display:none;align-items:center;justify-content:center;cursor:zoom-out}}
-#zoom img{{max-width:95vw;max-height:95vh}}
-</style></head><body>
-<h1>requestbaby 验收报告</h1>
-<div class="meta dim" id="meta"></div>
-<table id="t"></table>
-<div id="zoom" onclick="this.style.display='none'"><img></div>
-<script>
-const R = {data};
-const IMG = {images};
-const t = document.getElementById('t');
-const m = R.meta;
-if (m) {{
-  const g = m.git ? ` · 代码 ${{esc((m.git.branch ? m.git.branch + '@' : '') + m.git.commit.slice(0, 7))}}${{m.git.dirty ? '（有未提交改动）' : ''}}` : '';
-  document.getElementById('meta').innerHTML = `${{esc(m.command)}} · 环境 ${{esc(m.env)}} · ${{new Date(m.startedAtMs).toLocaleString()}}${{g}} · ${{R.passed}}/${{R.total}} 通过`;
-}}
-const flaky = new Set(((R.compare||{{}}).flaky||[]).map(c => c.file + '\u0000' + c.name));
-const bad = r => r.protocol==='grpc' ? r.status_text!=='OK' : r.protocol==='ws' ? r.status!==101 : r.protocol==='android' ? false : (r.status>=400 || (!r.status && r.protocol!=='web'));
-t.innerHTML = '<tr><th>结果</th><th>用例</th><th>方法</th><th>地址</th><th>状态</th><th>耗时</th></tr>' +
-R.results.map(r => {{
-  const cls = r.skipped ? 'skip' : (r.passed ? 'pass' : 'fail');
-  const mark = r.skipped ? '⇣' : (r.passed ? '✔' : '✘');
-  const ev = r.response && r.response.evidence;
-  let detail = (r.error ? `<div class="fail">${{esc(r.error)}}</div>` : '') +
-    (r.tests||[]).filter(x=>!x.pass).map(x=>`<div>✘ ${{esc(x.expr)}}<pre>${{esc(x.detail||'')}}</pre></div>`).join('');
-  if (ev) detail += steps(ev);
-  const open = ev && !r.passed ? ' open' : '';
-  const tag = flaky.has(r.file + '\u0000' + r.name) ? ' <span class="skip">不稳定</span>' : '';
-  return `<tr><td class="${{cls}}">${{mark}}</td><td>${{esc(r.name)}}${{tag}}${{detail?`<details${{open}}><summary class="dim">${{ev ? '步骤与截图（' + ev.steps.length + '）' : '详情'}}</summary>${{detail}}</details>`:''}}</td><td class="dim">${{r.method}}</td><td>${{esc(r.url)}}</td><td class="${{bad(r)?'fail':'pass'}}">${{r.status_text||r.status||'-'}}</td><td class="dim">${{r.duration_ms}}ms</td></tr>`;
-}}).join('');
-function steps(ev) {{
-  const env = (ev.environment||[]).map(([k,v]) => `<span><span class="dim">${{esc(k)}}</span> ${{esc(v)}}</span>`).join('');
-  const arts = (ev.artifacts||[]).map(a => `<span>${{esc(a.label)}}：${{esc(ev.dir + '/' + a.file)}}</span>`).join('<br>');
-  return `<div class="env">${{env}}</div><div class="steps">` + ev.steps.map(s => {{
-    const src = s.screenshot && IMG[ev.dir + '/' + s.screenshot];
-    const img = src ? `<img src="${{src}}" onclick="zoom(this.src)">` : (s.screenshot ? `<span class="dim">${{esc(ev.dir + '/' + s.screenshot)}}</span>` : '');
-    const st = s.status === 'failed' ? '<span class="fail">✘</span>' : s.status === 'skipped' ? '<span class="skip">⇣</span>' : '<span class="pass">✔</span>';
-    return `<div class="step ${{s.status}}">${{img}}<div><div class="t">${{st}} <span class="dim">#${{s.index}}</span> ${{esc(s.title)}}</div><div class="d dim">${{(s.atMs/1000).toFixed(1)}}s · ${{s.durationMs}}ms</div>${{s.detail ? `<div class="d ${{s.status==='failed'?'fail':'dim'}}">${{esc(s.detail)}}</div>` : ''}}</div></div>`;
-  }}).join('') + `</div>` + (arts ? `<div class="env"><div class="dim">失败现场</div>${{arts}}</div>` : '') + `<div class="env dim">证据目录 ${{esc(ev.dir)}}</div>`;
-}}
-function zoom(src) {{ const z = document.getElementById('zoom'); z.querySelector('img').src = src; z.style.display = 'flex'; }}
-function esc(s){{return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;')}}
-</script></body></html>"#
-    )
+    let project = root
+        .and_then(|r| r.file_name())
+        .map(|n| n.to_string_lossy().replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;").replace('"', "&quot;"))
+        .unwrap_or_default();
+    // 先替换模板里的项目名，再依次嵌入数据（用户数据里即使出现占位符字样也不会被再次替换）
+    let (head, rest) = HTML_TEMPLATE.replacen("__PROJECT__", &project, 1).split_once("__DATA__").map(|(a, b)| (a.to_string(), b.to_string())).expect("report.html 缺 __DATA__");
+    let (mid, tail) = rest.split_once("__IMAGES__").expect("report.html 缺 __IMAGES__");
+    format!("{head}{data}{mid}{images}{tail}")
 }
+
+const HTML_TEMPLATE: &str = include_str!("report.html");
 
 /// 协议 JSON（`--report json`、Desktop 导出、历史文件同一形态）
 pub fn render_json(report: &RunReport) -> String {
@@ -459,5 +411,17 @@ mod tests {
         assert!(report.failure_text().contains("无法完成: 校验未通过"));
         let clean = RunReport::from_cases(vec![case("ok", "http://h/ok", true)], None);
         assert!(clean.failure_text().is_empty());
+    }
+
+    #[test]
+    fn html_embeds_data_and_has_no_leftover_placeholders() {
+        let tricky = case("含 </script> 与 __IMAGES__ 字样", "http://h/x", false);
+        let report = RunReport::from_cases(vec![tricky, case("ok", "http://h/ok", true)], None);
+        let html = render_html(&report, Some(std::path::Path::new("/p/我的<项目>")));
+        assert!(html.contains("const R = {") && html.contains("openLB"), "查看器与数据都在");
+        assert!(html.contains("data-project=\"我的&lt;项目&gt;\""));
+        // 用户数据里的 </script> 不会提前结束脚本；占位符字样只是数据，不被二次替换
+        assert!(!html.contains("含 </script>") && html.contains("含 <\\/script> 与 __IMAGES__ 字样"));
+        assert!(!html.contains("__DATA__") && !html.contains("__PROJECT__"));
     }
 }

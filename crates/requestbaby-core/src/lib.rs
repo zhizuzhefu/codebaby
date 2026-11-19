@@ -9,6 +9,7 @@ pub mod cookies;
 pub mod doctor;
 pub mod envs;
 pub mod expect;
+pub mod export;
 pub mod engine;
 pub mod fmt;
 pub mod fsx;

@@ -151,7 +151,7 @@ fn render_header(
     cx: &App,
 ) -> impl IntoElement {
     let errors = f.issues.iter().filter(|i| i.level == "error").count();
-    let warns = f.issues.len() - errors;
+    let warns = f.issues.iter().filter(|i| i.level != "error" && !i.is_style()).count();
     h_flex()
         .px_4()
         .py_2()
@@ -188,7 +188,7 @@ fn render_problems(f: &FileState, cx: &App) -> impl IntoElement {
     v_flex()
         .gap_1()
         .when_some(f.error.clone(), |this, e| this.child(div().text_xs().text_color(cx.theme().danger).child(e)))
-        .children(f.issues.iter().map(|i| {
+        .children(f.issues.iter().filter(|i| !i.is_style()).map(|i| {
             let color = if i.level == "error" { cx.theme().danger } else { cx.theme().warning };
             h_flex()
                 .gap_2()

@@ -8,12 +8,14 @@ mod config_editors;
 mod dialogs;
 mod new_case_dialog;
 mod expect_table;
+mod export_dialog;
 mod project;
 mod recent;
 mod response;
 mod run;
 mod run_dialog;
 mod shell;
+mod step_viewer;
 mod style;
 mod updates;
 mod vars_editor;
@@ -28,7 +30,7 @@ use std::path::PathBuf;
 
 actions!(
     requestbaby,
-    [SaveCase, SendCase, RunAll, RunWithOptions, Verify, StopRun, ToggleTheme, OpenProject, NewProject, ImportSpec, CloseProject, Quit, QuickOpen, FindInTree, InstallCli, ManageEnvs, OpenWebsite, OpenDocs, OpenChangelog, ReportIssue]
+    [SaveCase, SendCase, RunAll, RunWithOptions, Verify, StopRun, ToggleTheme, OpenProject, NewProject, ImportSpec, CloseProject, CopyProjectPath, ExportResults, Quit, QuickOpen, FindInTree, InstallCli, ManageEnvs, OpenWebsite, OpenDocs, ReportIssue]
 );
 
 fn main() {
@@ -50,6 +52,8 @@ fn main() {
             KeyBinding::new("cmd-shift-v", Verify, None),
             KeyBinding::new("cmd-o", OpenProject, None),
             KeyBinding::new("cmd-w", CloseProject, None),
+            KeyBinding::new("cmd-alt-c", CopyProjectPath, None),
+            KeyBinding::new("cmd-e", ExportResults, None),
             KeyBinding::new("cmd-.", StopRun, None),
             KeyBinding::new("cmd-q", Quit, None),
         ]);
@@ -57,7 +61,6 @@ fn main() {
         // 关于 / 帮助：不依赖当前打开的项目，欢迎页与工作区都可用
         cx.on_action(|_: &OpenWebsite, cx| cx.open_url(requestbaby_core::about::WEBSITE));
         cx.on_action(|_: &OpenDocs, cx| cx.open_url(requestbaby_core::about::DOCS));
-        cx.on_action(|_: &OpenChangelog, cx| cx.open_url(requestbaby_core::about::CHANGELOG));
         cx.on_action(|_: &ReportIssue, cx| cx.open_url(requestbaby_core::about::ISSUES));
         // 单窗口应用：窗口关闭即退出，不留下没有窗口的 Dock 图标
         cx.on_window_closed(|cx, _| {
@@ -81,6 +84,9 @@ fn main() {
                 MenuItem::separator(),
                 MenuItem::action("保存", SaveCase),
                 MenuItem::separator(),
+                MenuItem::action("导出结果…", ExportResults),
+                MenuItem::separator(),
+                MenuItem::action("复制项目路径", CopyProjectPath),
                 MenuItem::action("关闭项目", CloseProject),
             ]),
             Menu::new("运行").items([
@@ -101,7 +107,6 @@ fn main() {
             Menu::new("帮助").items([
                 MenuItem::action("官网与下载", OpenWebsite),
                 MenuItem::action("文档", OpenDocs),
-                MenuItem::action("更新日志", OpenChangelog),
                 MenuItem::separator(),
                 MenuItem::action("反馈问题…", ReportIssue),
             ]),

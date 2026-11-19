@@ -17,6 +17,33 @@ pub struct ValidationIssue {
     pub fixable: bool,
 }
 
+impl ValidationIssue {
+    /// 写法建议（不影响验收结论）：`fmt --fix` 能改的一键改写，其余交给 AI；人不需要逐条处理
+    pub fn is_style(&self) -> bool {
+        self.level == "warn" && crate::teach::STYLE_RULES.contains(&self.rule)
+    }
+}
+
+/// 给 AI 的修改指令：按文件列出每条建议与改法（粘贴到对话即可）；没有可交给 AI 的建议时为空。env 为空则命令里不带 -e
+pub fn ai_brief(issues: &[ValidationIssue], env: &str) -> String {
+    let todo: Vec<&ValidationIssue> = issues.iter().filter(|i| i.is_style() && !i.fixable).collect();
+    if todo.is_empty() {
+        return String::new();
+    }
+    let mut files: Vec<&str> = todo.iter().map(|i| i.file.as_str()).collect();
+    files.dedup();
+    let mut out = String::from("请修改 requestbaby 项目里下面这些用例的写法（路径相对项目根；只改写法，不改变验收的内容）。先读 `requestbaby guide` 了解写法。\n");
+    for f in files {
+        out.push_str(&format!("\n{f}\n"));
+        for i in todo.iter().filter(|i| i.file == f) {
+            out.push_str(&format!("- [{}] {}\n", i.rule, i.message));
+        }
+    }
+    let e = if env.is_empty() { String::new() } else { format!(" -e {env}") };
+    out.push_str(&format!("\n改完执行 `requestbaby validate{e}` 确认这些建议消失，再 `requestbaby run{e}` 确认结论没变。\n"));
+    out
+}
+
 pub const CASE_SCHEMA: &str = include_str!("../../../docs/schema/case.schema.json");
 pub const COLLECTION_SCHEMA: &str = include_str!("../../../docs/schema/collection.schema.json");
 pub const ENV_SCHEMA: &str = include_str!("../../../docs/schema/env.schema.json");
@@ -819,5 +846,28 @@ mod tests {
         assert_eq!(missing.level, "error");
         assert_eq!(missing.file, "envs/staging.json");
         assert!(validate_paths(&[dir.path().join("collections")], "dev").unwrap().iter().all(|i| i.rule != "env-missing"));
+    }
+
+    fn issue(file: &str, level: &'static str, rule: &'static str, fixable: bool) -> ValidationIssue {
+        ValidationIssue { file: file.into(), level, rule, message: format!("{rule} 的说明"), fixable }
+    }
+
+    #[test]
+    fn style_advice_is_for_ai_not_humans() {
+        let issues = vec![
+            issue("collections/a.json", "warn", "long-js-test", false),
+            issue("collections/a.json", "warn", "prefer-expect", true),
+            issue("collections/b.json", "warn", "undefined-var", false),
+            issue("collections/c.json", "error", "schema", false),
+        ];
+        // 写法建议不算警告；undefined-var 是真问题，人要看
+        assert_eq!(issues.iter().filter(|i| i.is_style()).count(), 2);
+        let brief = ai_brief(&issues, "dev");
+        // 只交代 AI 要改的（fmt --fix 能改的、真问题都不在里面），按文件分组
+        assert!(brief.contains("collections/a.json\n- [long-js-test]"), "{brief}");
+        assert!(!brief.contains("prefer-expect") && !brief.contains("undefined-var") && !brief.contains("schema"), "{brief}");
+        assert!(brief.contains("requestbaby validate -e dev"), "{brief}");
+        assert!(ai_brief(&issues[1..], "").is_empty());
+        assert!(ai_brief(&issues[..1], "").contains("`requestbaby validate`"));
     }
 }

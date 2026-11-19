@@ -7,9 +7,10 @@
 //!
 //! 复制约定（全面板一致）：**点击即复制，原位显示「已复制」**；右键给出其他格式（路径 / cURL / 「名称: 值」…）；
 //! 响应体是只读编辑器，选中片段可直接 ⌘C。
+use crate::step_viewer::{StepViewer, ViewerStep};
 use crate::style;
 use gpui_kit::component::{
-    ActiveTheme as _, Disableable as _, Icon, IconName, Selectable as _, Sizable as _, h_flex,
+    ActiveTheme as _, Icon, IconName, Selectable as _, Sizable as _, h_flex,
     button::{Button, ButtonGroup, ButtonVariants as _},
     input::{Editor, EditorState, Input, InputEvent, InputState},
     menu::{ContextMenuExt as _, PopupMenuItem},
@@ -21,7 +22,7 @@ use gpui_kit::component::{
     v_flex,
 };
 use gpui_kit::{
-    AppContext as _, ClipboardItem, Context, Entity, FontWeight, InteractiveElement as _, IntoElement, ParentElement as _,
+    AppContext as _, ClipboardItem, Context, Entity, Focusable as _, FontWeight, InteractiveElement as _, IntoElement, ParentElement as _,
     Render, SharedString, StatefulInteractiveElement as _, Styled as _, Subscription, Task, WeakEntity, Window, div,
     prelude::FluentBuilder as _, px,
 };
@@ -102,8 +103,6 @@ pub struct ResponsePanel {
     raw_body: bool,
     /// 项目根：界面用例的截图路径相对它
     root: Option<std::path::PathBuf>,
-    /// 「步骤」页放大查看的步骤（下标）
-    zoom: Option<usize>,
     /// 刚复制的目标（原位显示「已复制」）
     copied: Option<SharedString>,
     _copied_reset: Option<Task<()>>,
@@ -140,7 +139,6 @@ impl ResponsePanel {
             body,
             raw_body: false,
             root: None,
-            zoom: None,
             copied: None,
             _copied_reset: None,
             _subscriptions: vec![sub],
@@ -275,7 +273,6 @@ impl ResponsePanel {
             self.tab = RespTab::Body;
         }
         // 界面用例：先看步骤与截图（失败的那一步就在里面）
-        self.zoom = None;
         if shown.evidence.is_some() {
             self.tab = RespTab::Steps;
         } else if self.tab == RespTab::Steps {
@@ -998,6 +995,33 @@ impl ResponsePanel {
         cx.open_url(&format!("file://{}", path.display()));
     }
 
+    /// 大图查看器：全部截图在一个接近窗口大小的弹窗里，左侧步骤列表，右侧大图（可放大到原始大小）
+    fn open_viewer(&mut self, step_ix: usize, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(ev) = self.shown.as_ref().and_then(|s| s.evidence.clone()) else { return };
+        let dir = ev.abs_dir(self.root.as_deref());
+        let steps: Vec<ViewerStep> = ev
+            .steps
+            .iter()
+            .filter_map(|s| {
+                let file = dir.join(s.screenshot.as_ref()?);
+                Some(ViewerStep { index: s.index, title: s.title.clone(), status: s.status, detail: s.detail.clone(), at_ms: s.at_ms, duration_ms: s.duration_ms, size: requestbaby_core::engine::ui::image_size(&file), file })
+            })
+            .collect();
+        if steps.is_empty() {
+            return;
+        }
+        let start = ev.steps.get(step_ix).and_then(|s| steps.iter().position(|v| v.index == s.index)).unwrap_or(0);
+        let vp = window.viewport_size();
+        let (w, h) = (px((f32::from(vp.width) - 80.).max(900.)), px((f32::from(vp.height) - 190.).max(420.)));
+        let viewer = cx.new(|cx| StepViewer::new(steps, start, (w, h), window, cx));
+        let focus = viewer.clone();
+        window.open_dialog(cx, move |dialog, _, _| dialog.title("步骤截图").w(w + px(48.)).child(div().h(h).child(viewer.clone())));
+        window.defer(cx, move |window, cx| {
+            let handle = focus.read(cx).focus_handle(cx);
+            handle.focus(window, cx);
+        });
+    }
+
     /// 步骤：每一步一行（状态 · 描述 · 耗时 · 说明），左侧截图缩略图，点击放大；上方运行环境，下方失败现场
     fn render_steps(&self, s: &Shown, cx: &mut Context<Self>) -> impl IntoElement {
         use requestbaby_core::engine::ui::UiStepStatus;
@@ -1009,56 +1033,6 @@ impl ResponsePanel {
         let dir = ev.abs_dir(root.as_deref());
         let shots = ev.steps.iter().filter(|st| st.screenshot.is_some()).count();
         let env_line = ev.environment.iter().filter(|(k, _)| k != "User-Agent").map(|(k, v)| format!("{k} {v}")).collect::<Vec<_>>().join(" · ");
-        // 放大查看：一张大图 + 上一张 / 下一张
-        if let Some(ix) = self.zoom.filter(|ix| ev.steps.get(*ix).is_some_and(|st| st.screenshot.is_some())) {
-            let st = &ev.steps[ix];
-            let file = dir.join(st.screenshot.as_deref().unwrap_or_default());
-            let with_shot: Vec<usize> = ev.steps.iter().enumerate().filter(|(_, st)| st.screenshot.is_some()).map(|(i, _)| i).collect();
-            let pos = with_shot.iter().position(|i| *i == ix).unwrap_or(0);
-            let (prev, next) = (pos.checked_sub(1).map(|p| with_shot[p]), with_shot.get(pos + 1).copied());
-            let open = file.clone();
-            return v_flex()
-                .flex_1()
-                .min_h_0()
-                .p_3()
-                .gap_2()
-                .child(
-                    h_flex()
-                        .gap_2()
-                        .child(Button::new("zoom-back").xsmall().ghost().icon(IconName::ArrowLeft).label("全部步骤").on_click(cx.listener(|this, _, _, cx| {
-                            this.zoom = None;
-                            cx.notify();
-                        })))
-                        .child(div().flex_1().min_w_0().text_sm().overflow_hidden().text_ellipsis().whitespace_nowrap().child(format!("#{} {}", st.index, st.title)))
-                        .child(Button::new("zoom-prev").xsmall().ghost().icon(IconName::ChevronLeft).disabled(prev.is_none()).on_click(cx.listener(move |this, _, _, cx| {
-                            this.zoom = prev;
-                            cx.notify();
-                        })))
-                        .child(div().text_xs().text_color(muted).child(format!("{}/{}", pos + 1, with_shot.len())))
-                        .child(Button::new("zoom-next").xsmall().ghost().icon(IconName::ChevronRight).disabled(next.is_none()).on_click(cx.listener(move |this, _, _, cx| {
-                            this.zoom = next;
-                            cx.notify();
-                        })))
-                        .child(Button::new("zoom-open").xsmall().ghost().icon(IconName::ExternalLink).tooltip("用系统看图打开").on_click(cx.listener(move |_, _, _, cx| Self::open_file(open.clone(), cx)))),
-                )
-                .when_some(st.detail.clone(), |this, d| this.child(div().text_xs().text_color(if st.status == UiStepStatus::Failed { danger } else { muted }).child(d)))
-                .child(
-                    div()
-                        .id("zoom-image")
-                        .flex_1()
-                        .min_h_0()
-                        .overflow_scroll()
-                        .rounded(radius)
-                        .border_1()
-                        .border_color(border)
-                        .child(gpui_kit::img(file).max_w_full().cursor_pointer())
-                        .on_click(cx.listener(|this, _, _, cx| {
-                            this.zoom = None;
-                            cx.notify();
-                        })),
-                )
-                .into_any_element();
-        }
         let rows = ev.steps.iter().enumerate().map(|(ix, st)| {
             let (mark, color) = match st.status {
                 UiStepStatus::Passed => ("✔", success),
@@ -1077,11 +1051,8 @@ impl ResponsePanel {
                     .overflow_hidden()
                     .cursor_pointer()
                     .child({ use gpui_kit::StyledImage as _; gpui_kit::img(dir.join(f)).w(px(166.)).h(px(103.)).object_fit(gpui_kit::ObjectFit::Contain) })
-                    .tooltip(|window, cx| Tooltip::new("点击放大").build(window, cx))
-                    .on_click(cx.listener(move |this, _, _, cx| {
-                        this.zoom = Some(ix);
-                        cx.notify();
-                    }))
+                    .tooltip(|window, cx| Tooltip::new("点击查看大图").build(window, cx))
+                    .on_click(cx.listener(move |this, _, window, cx| this.open_viewer(ix, window, cx)))
                     .into_any_element(),
                 None => div().w(px(168.)).h(px(24.)).flex_shrink_0().text_xs().text_color(muted).child("（无截图）").into_any_element(),
             };
@@ -1117,7 +1088,11 @@ impl ResponsePanel {
             .p_3()
             .gap_2()
             .child(
-                self.toolbar(format!("{} 步 · {shots} 张截图 · 点击缩略图放大", ev.steps.len()), cx)
+                self.toolbar(format!("{} 步 · {shots} 张截图 · 点击缩略图查看大图", ev.steps.len()), cx)
+                    .when(shots > 0, |t| {
+                        let at = ev.failed_step().filter(|s| s.screenshot.is_some()).and_then(|f| ev.steps.iter().position(|s| s.index == f.index)).or_else(|| ev.steps.iter().position(|s| s.screenshot.is_some())).unwrap_or(0);
+                        t.child(Button::new("open-viewer").xsmall().outline().icon(IconName::Eye).label("大图浏览").tooltip("在大窗口里逐张查看全部截图，可放大到原始大小").on_click(cx.listener(move |this, _, window, cx| this.open_viewer(at, window, cx))))
+                    })
                     .child(Button::new("open-evidence").xsmall().ghost().icon(IconName::FolderOpen).label("打开证据目录").tooltip(ev.dir.clone()).on_click(cx.listener(move |_, _, _, cx| Self::open_file(open_dir.clone(), cx)))),
             )
             .when(!env_line.is_empty(), |this| this.child(div().text_xs().text_color(muted).child(env_line)))

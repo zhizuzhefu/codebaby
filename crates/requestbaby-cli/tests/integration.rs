@@ -719,6 +719,59 @@ fn verify_runs_everything_with_one_verdict() {
     assert_eq!(runs.as_array().unwrap().len(), 1, "{runs}");
 }
 
+/// 导出结果：缺省 = 全部用例的最新结果；也可按运行 ID 导出；没有结果、格式不对都是 exit 2
+#[test]
+fn export_writes_latest_results_or_one_run() {
+    let dir = TempDir::new().unwrap();
+    write_verify_project(dir.path(), spawn_echo());
+    let empty = run_cli(&["export"], dir.path());
+    assert_eq!(empty.status.code(), Some(2), "{}", String::from_utf8_lossy(&empty.stderr));
+    assert!(String::from_utf8_lossy(&empty.stderr).contains("还没有可导出的运行结果"));
+
+    assert_eq!(run_cli(&["run", "collections"], dir.path()).status.code(), Some(0));
+    let out_dir = dir.path().join("out");
+    std::fs::create_dir_all(&out_dir).unwrap();
+    let html = run_cli(&["export", "-o", out_dir.to_str().unwrap()], dir.path());
+    assert_eq!(html.status.code(), Some(0), "{}", String::from_utf8_lossy(&html.stderr));
+    let files: Vec<_> = std::fs::read_dir(&out_dir).unwrap().flatten().map(|e| e.file_name().to_string_lossy().to_string()).collect();
+    assert_eq!(files.len(), 1, "{files:?}");
+    assert!(files[0].starts_with("验收报告-") && files[0].ends_with(".html"), "{files:?}");
+    assert!(std::fs::read_to_string(out_dir.join(&files[0])).unwrap().contains("requestbaby 验收报告"));
+
+    let json_path = out_dir.join("r.json");
+    assert_eq!(run_cli(&["export", "-f", "json", "-o", json_path.to_str().unwrap()], dir.path()).status.code(), Some(0));
+    let v: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&json_path).unwrap()).unwrap();
+    assert_eq!(v["failed"], 0);
+    assert!(v["total"].as_u64().unwrap() >= 1);
+    assert_eq!(v["meta"]["source"], "history");
+
+    let h = run_cli(&["history", "--json"], dir.path());
+    let runs: serde_json::Value = serde_json::from_slice(&h.stdout).unwrap();
+    let id = runs[0]["meta"]["id"].as_str().unwrap().to_string();
+    let one = out_dir.join("one.json");
+    assert_eq!(run_cli(&["export", &id, "-f", "json", "-o", one.to_str().unwrap()], dir.path()).status.code(), Some(0));
+    let v: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&one).unwrap()).unwrap();
+    assert_eq!(v["meta"]["id"], id.as_str());
+
+    // 只导出一个集合：可以省略 collections/；该集合之外的用例不在里面
+    let site = out_dir.join("site.json");
+    assert_eq!(run_cli(&["export", "-c", "site", "-f", "json", "-o", site.to_str().unwrap()], dir.path()).status.code(), Some(0));
+    let v: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&site).unwrap()).unwrap();
+    assert!(v["results"].as_array().unwrap().iter().all(|r| r["file"].as_str().unwrap().starts_with("collections/site/")), "{v}");
+    assert!(v["meta"]["command"].as_str().unwrap().ends_with("-c collections/site"));
+    // 多个集合：-c 可重复；其中有没结果的集合要明说，不静默漏掉
+    let two = run_cli(&["export", "-c", "site", "-c", "collections/none", "-f", "json", "-o", site.to_str().unwrap()], dir.path());
+    assert_eq!(two.status.code(), Some(2));
+    assert!(String::from_utf8_lossy(&two.stderr).contains("collections/none"), "{}", String::from_utf8_lossy(&two.stderr));
+    let nope = run_cli(&["export", "-c", "collections/none"], dir.path());
+    assert_eq!(nope.status.code(), Some(2));
+    assert!(String::from_utf8_lossy(&nope.stderr).contains("没有运行结果"));
+    assert_eq!(run_cli(&["export", &id, "-c", "site"], dir.path()).status.code(), Some(2));
+
+    assert_eq!(run_cli(&["export", "-f", "pdf"], dir.path()).status.code(), Some(2));
+    assert_eq!(run_cli(&["export", "no-such-run"], dir.path()).status.code(), Some(2));
+}
+
 #[test]
 fn verify_blocked_by_validation_exits_2_with_reason() {
     let dir = TempDir::new().unwrap();
@@ -1429,7 +1482,7 @@ fn web_case_runs_in_real_browser_with_step_screenshots() {
     let out = run_cli(&["run", "collections/web/01-登录.json", "--report", "html"], d);
     assert!(out.status.success());
     let html = std::fs::read_to_string(d.join("report.html")).unwrap();
-    assert!(html.contains("data:image/jpeg;base64,") && html.contains("步骤与截图"));
+    assert!(html.contains("data:image/jpeg;base64,") && html.contains("步骤明细") && html.contains("openLB"));
 }
 
 /// 远程浏览器：另起一个开着调试端口的 Chrome（相当于 Docker / 另一台机器上的浏览器），用 web.endpoint 连接

@@ -23,7 +23,8 @@ use crate::style;
 use crate::run::{RunJob, RunState, RunStateEvent, StepState, StepView};
 use crate::run_dialog::{RunDialogInit, RunOptionsPanel};
 use crate::shell::ShellRequest;
-use crate::{FindInTree, ManageEnvs, QuickOpen, RunAll, RunWithOptions, SaveCase, SendCase, StopRun, ToggleTheme, Verify};
+use crate::export_dialog::{CollectionItem, ExportPanel, RunChoice, Selection};
+use crate::{CopyProjectPath, ExportResults, FindInTree, ManageEnvs, QuickOpen, RunAll, RunWithOptions, SaveCase, SendCase, StopRun, ToggleTheme, Verify};
 use futures::StreamExt as _;
 use futures::channel::mpsc;
 use gpui_kit::component::{
@@ -46,7 +47,7 @@ use notify::Watcher as _;
 use requestbaby_core::report::{CaseReport, RunReport};
 use requestbaby_core::session::RunRequest;
 use requestbaby_core::validate::ValidationIssue;
-use requestbaby_core::{doctor, fmt, guide, report, scaffold, validate, verify, workflow};
+use requestbaby_core::{doctor, export, fmt, guide, scaffold, validate, verify, workflow};
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -1121,24 +1122,98 @@ impl Workspace {
         fresh
     }
 
-    fn export_report(&mut self, html: bool, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(report) = self.run.read(cx).report().cloned() else {
-            window.push_notification(Notification::warning("当前没有可导出的运行报告"), cx);
+    fn copy_project_path(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let path = self.project.root().display().to_string();
+        cx.write_to_clipboard(ClipboardItem::new_string(path.clone()));
+        style::push_brief(window, cx, Notification::success(format!("已复制项目路径：{path}")));
+    }
+
+    /// 导出结果：先选范围（可勾选多个集合）与格式，并看清报告里有什么（`requestbaby export` 同一实现）
+    fn open_export_dialog(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let root = self.project.root().to_path_buf();
+        let env = self.env.clone();
+        let runs: Vec<&RunReport> = self.project.history().iter().collect();
+        let mut items = vec![];
+        if let Some(latest) = requestbaby_core::history::merge_latest(&runs, &env, &[]) {
+            for (dir, n) in export::collections(&latest) {
+                if let Some(r) = requestbaby_core::history::merge_latest(&runs, &env, std::slice::from_ref(&dir)) {
+                    items.push(CollectionItem::new(dir, n, &r, &root));
+                }
+            }
+        }
+        let run = self.run.read(cx);
+        let current = run.report().filter(|_| !run.is_running()).and_then(|report| {
+            let m = report.meta.as_ref().filter(|m| !m.dry_run)?;
+            let title = format!("当前显示的这一次运行（{}，{}）", m.command, relative_time(m.started_at_ms));
+            Some(RunChoice::new(title, report.clone(), &root, m.id.clone()))
+        });
+        if items.is_empty() && current.is_none() {
+            window.push_notification(Notification::warning("还没有可导出的运行结果：先运行一次（⌘R 运行全部）"), cx);
             return;
-        };
-        let id = report.meta.as_ref().map(|m| m.id.clone()).unwrap_or_else(|| "report".into());
-        let name = format!("requestbaby-{id}.{}", if html { "html" } else { "json" });
-        let rx = cx.prompt_for_new_path(self.project.root(), Some(&name));
+        }
+        let panel = cx.new(|_| ExportPanel::new(env.clone(), items, current));
+        let this = cx.entity().downgrade();
+        window.open_dialog(cx, move |dialog, _, _| {
+            let (panel_c, this, env) = (panel.clone(), this.clone(), env.clone());
+            dialog
+                .title("导出结果")
+                .w(px(680.))
+                .child(panel.clone())
+                .footer(
+                    h_flex()
+                        .gap_2()
+                        .justify_end()
+                        .child(Button::new("export-cancel").outline().label("取消").on_click(|_, window, cx| window.close_dialog(cx)))
+                        .child(Button::new("export-go").primary().icon(IconName::ExternalLink).label("导出…").on_click(move |_, window, cx| {
+                            let (selection, format) = match panel_c.read(cx).selection() {
+                                Ok(s) => s,
+                                Err(why) => {
+                                    window.push_notification(Notification::warning(why), cx);
+                                    return;
+                                }
+                            };
+                            window.close_dialog(cx);
+                            let env = env.clone();
+                            let _ = this.update(cx, |w, cx| {
+                                let report = match selection {
+                                    Selection::Run(r) => Some(*r),
+                                    Selection::Latest(dirs) => {
+                                        let runs: Vec<&RunReport> = w.project.history().iter().collect();
+                                        requestbaby_core::history::merge_latest(&runs, &env, &dirs)
+                                    }
+                                };
+                                match report {
+                                    Some(r) => w.export_to_file(r, format, window, cx),
+                                    None => window.push_notification(Notification::warning("选中的集合没有可导出的结果"), cx),
+                                }
+                            });
+                        })),
+                )
+        });
+    }
+
+    /// 选保存位置 → 生成报告（HTML 内嵌截图，放后台）→ 写文件 → 在 Finder 中选中
+    fn export_to_file(&mut self, report: RunReport, format: export::Format, window: &mut Window, cx: &mut Context<Self>) {
+        let name = export::file_name(self.project.root(), &report, format);
+        let rx = cx.prompt_for_new_path(&crate::response::downloads_dir(), Some(&name));
         let root = self.project.root().to_path_buf();
         cx.spawn_in(window, async move |_, cx| {
             let Ok(Ok(Some(path))) = rx.await else { return };
-            // HTML 内嵌界面用例的截图：报告单独发给别人也能看
-            let text = if html { report::render_html(&report, Some(&root)) } else { report::render_json(&report) };
-            let note = match requestbaby_core::fsx::write(&path, text) {
-                Ok(()) => Notification::success(format!("报告已导出：{}", path.display())),
-                Err(e) => Notification::error(format!("导出失败：{e}")),
-            };
-            let _ = cx.update(|window, cx| window.push_notification(note, cx));
+            let overview = export::Overview::of(&report, &root, &export::collections_of_command(&report));
+            let (root, out) = (root.clone(), path.clone());
+            let written = cx
+                .background_executor()
+                .spawn(async move { requestbaby_core::fsx::write(&out, export::render(&report, &root, format)).map(|_| out) })
+                .await;
+            let _ = cx.update(|window, cx| match written {
+                Ok(path) => {
+                    let size = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
+                    cx.reveal_path(&path);
+                    let text = format!("已导出 {}（{}，{}）", path.display(), overview.headline(), human_size(size));
+                    style::push_brief(window, cx, Notification::success(text));
+                }
+                Err(e) => window.push_notification(Notification::error(format!("导出失败：{e:#}")), cx),
+            });
         })
         .detach();
     }
@@ -1388,6 +1463,8 @@ impl Workspace {
                                     .item(menu_item(&view, "官网与文档", IconName::ExternalLink, |_, _, cx| cx.open_url(requestbaby_core::about::WEBSITE)))
                                     .item(menu_item(&view, "反馈问题…", IconName::ExternalLink, |_, _, cx| cx.open_url(requestbaby_core::about::ISSUES)))
                                     .separator()
+                                    .item(menu_item(&view, "导出结果…", IconName::ExternalLink, |w, window, cx| w.open_export_dialog(window, cx)))
+                                    .item(menu_item(&view, "复制项目路径", IconName::Copy, |w, window, cx| w.copy_project_path(window, cx)))
                                     .item(PopupMenuItem::new("在 Finder 中显示").icon(IconName::Folder).on_click(move |_, _, cx| cx.reveal_path(&root)))
                                     .separator()
                                     .item(menu_item(&view, "关闭项目", IconName::Close, |_, _, cx| cx.emit(ShellRequest::CloseProject)))
@@ -1464,6 +1541,15 @@ impl Workspace {
                         }
                     })
                     .child(
+                        Button::new("export-results")
+                            .small()
+                            .ghost()
+                            .icon(IconName::ExternalLink)
+                            .label("导出结果")
+                            .tooltip("导出验收结果给别人：HTML 报告（截图已嵌入）或 JSON（⌘E · requestbaby export）")
+                            .on_click(cx.listener(|this, _, window, cx| this.open_export_dialog(window, cx))),
+                    )
+                    .child(
                         Button::new("toggle-theme")
                             .small()
                             .ghost()
@@ -1510,6 +1596,8 @@ impl Render for Workspace {
                 focus.focus(window, cx);
             }))
             .on_action(cx.listener(|this, _: &RunAll, window, cx| this.run_all(window, cx)))
+            .on_action(cx.listener(|this, _: &CopyProjectPath, window, cx| this.copy_project_path(window, cx)))
+            .on_action(cx.listener(|this, _: &ExportResults, window, cx| this.open_export_dialog(window, cx)))
             .on_action(cx.listener(|this, _: &ManageEnvs, window, cx| this.open(Target::Envs, window, cx)))
             .on_action(cx.listener(|this, _: &Verify, window, cx| this.verify_all(window, cx)))
             .on_action(cx.listener(|this, _: &RunWithOptions, window, cx| this.open_run_dialog(None, window, cx)))
@@ -1574,6 +1662,14 @@ fn env_index(project: &Project, env: &str) -> Option<IndexPath> {
 fn run_origin(r: &RunReport) -> String {
     let m = r.meta.clone().unwrap_or_default();
     format!("{} · {}", m.source.to_uppercase(), relative_time(m.started_at_ms))
+}
+
+fn human_size(bytes: u64) -> String {
+    match bytes {
+        0..=1023 => format!("{bytes} B"),
+        1024..=1_048_575 => format!("{:.0} KB", bytes as f64 / 1024.),
+        _ => format!("{:.1} MB", bytes as f64 / 1_048_576.),
+    }
 }
 
 fn relative_time(ms: u64) -> String {
