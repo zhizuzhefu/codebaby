@@ -187,7 +187,7 @@ requestbaby open                                            # 在桌面端打开
 
 ## 和 AI 配合
 
-让 AI 写用例的话，先让它读 `requestbaby guide`，那是一页写法速查，读完就能写出能通过校验的用例。桌面端的项目菜单里有「复制用例写法速查」，可以直接贴进对话。`requestbaby init` 生成的 `AGENTS.md` 和 `CLAUDE.md` 也写好了这条约定，Claude Code、Codex 等工具在项目目录里会自动读到。
+让 AI 写用例的话，先让它读 `requestbaby guide`，那是一页写法速查，读完就能写出能通过校验的用例。桌面端右上角「⋯」菜单里有「复制用例写法速查」，可以直接贴进对话。`requestbaby init` 生成的 `AGENTS.md` 和 `CLAUDE.md` 也写好了这条约定，Claude Code、Codex 等工具在项目目录里会自动读到。
 
 AI 写完之后，`requestbaby validate` 会检查用例并给出写法建议，`requestbaby fmt --fix` 可以一键改写。
 

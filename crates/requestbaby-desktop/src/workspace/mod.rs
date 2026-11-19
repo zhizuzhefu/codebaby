@@ -1,4 +1,4 @@
-//! 工作区：标题栏 / 侧栏（集合树·流程·环境·项目）/ 中央编辑区 / 底部（结果·日志·历史·校验）/ 状态栏。
+//! 工作区：标题栏 / 侧栏（集合树·流程·环境·项目）/ 中央编辑区 / 底部（运行结果）/ 状态栏。
 //!
 //! 所有能力都调用 requestbaby-core，与 CLI 同一实现：运行走 `session` / `workflow`，
 //! 新建 / 重命名 / 删除走 `scaffold`，校验 / 格式化 / 自检走 `validate` / `fmt` / `doctor`。
@@ -52,16 +52,12 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
+/// 底部只有一个「运行结果」；脚本输出与配置问题仅在有内容时从结果页进入，随时可返回
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum BottomTab {
     Results,
     Logs,
-    History,
-    Validate,
-}
-
-impl BottomTab {
-    const ALL: [BottomTab; 4] = [BottomTab::Results, BottomTab::Logs, BottomTab::History, BottomTab::Validate];
+    Issues,
 }
 
 /// 中央编辑区可打开的文档
@@ -1060,8 +1056,26 @@ impl Workspace {
 
     fn on_run_event(&mut self, _: &Entity<RunState>, ev: &RunStateEvent, window: &mut Window, cx: &mut Context<Self>) {
         match ev {
+            // 界面用例每完成一步：响应面板跟到这一步（打开的就是这个用例，或批量运行时没有手动选别的结果行）
+            RunStateEvent::LiveStep { file, send } => {
+                let follow = self.editor.read(cx).rel() == Some(file.as_str()) || (!*send && self.selected_row.is_none());
+                if follow {
+                    if let Some(live) = self.run.read(cx).live().cloned() {
+                        self.response.update(cx, |p, cx| p.show_live(&live, window, cx));
+                    }
+                }
+            }
+            // 批量运行里一个用例结束：面板还停在它的「进行中」就换成最终结论
+            RunStateEvent::CaseFinished { file } => {
+                if self.response.read(cx).is_live_for(file) {
+                    let row = self.run.read(cx).rows().iter().rev().find(|r| r.file == *file).cloned();
+                    if let Some(row) = row {
+                        self.response.update(cx, |p, cx| p.show_report(&row, "本次运行", window, cx));
+                    }
+                }
+            }
             RunStateEvent::CaseDone { file } => {
-                if self.editor.read(cx).rel() == Some(file.as_str()) {
+                if self.editor.read(cx).rel() == Some(file.as_str()) || self.response.read(cx).is_live_for(file) {
                     self.show_session_response(&file.clone(), window, cx);
                 }
             }
@@ -1413,7 +1427,6 @@ impl Workspace {
 
     fn render_title_bar(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let running = self.run.read(cx).is_running();
-        let dark = cx.theme().mode.is_dark();
         let view = cx.entity().downgrade();
         let root = self.project.root().to_path_buf();
         TitleBar::new()
@@ -1439,31 +1452,7 @@ impl Workspace {
                                         cx.emit(ShellRequest::ImportSpec)
                                     }))
                                     .separator()
-                                    .item(menu_item(&view, "校验项目", IconName::CircleCheck, |w, _, cx| {
-                                        w.bottom_tab = BottomTab::Validate;
-                                        w.revalidate(cx);
-                                    }))
-                                    .item(menu_item(&view, "格式化项目", IconName::FileText, |w, window, cx| w.format_project(window, cx)))
-                                    .item(menu_item(&view, "环境自检", IconName::Settings, |w, window, cx| w.run_doctor(window, cx)))
                                     .item(menu_item(&view, "项目设置", IconName::Settings2, |w, window, cx| w.open(Target::Project, window, cx)))
-                                    .separator()
-                                    .item(Workspace::check_update_item(&view))
-                                    .item(Workspace::auto_update_item(&view))
-                                    .separator()
-                                    .item(menu_item(&view, "复制用例写法速查（粘贴给 AI 对话）", IconName::Bot, |_, window, cx| {
-                                        cx.write_to_clipboard(ClipboardItem::new_string(guide::quickstart()));
-                                        window.push_notification(
-                                            Notification::success(
-                                                "已复制用例写法速查卡：粘贴到 ChatGPT / Claude 等对话里，AI 就会按 requestbaby 的格式写用例",
-                                            ),
-                                            cx,
-                                        );
-                                    }))
-                                    .separator()
-                                    .item(menu_item(&view, "官网与文档", IconName::ExternalLink, |_, _, cx| cx.open_url(requestbaby_core::about::WEBSITE)))
-                                    .item(menu_item(&view, "反馈问题…", IconName::ExternalLink, |_, _, cx| cx.open_url(requestbaby_core::about::ISSUES)))
-                                    .separator()
-                                    .item(menu_item(&view, "导出结果…", IconName::ExternalLink, |w, window, cx| w.open_export_dialog(window, cx)))
                                     .item(menu_item(&view, "复制项目路径", IconName::Copy, |w, window, cx| w.copy_project_path(window, cx)))
                                     .item(PopupMenuItem::new("在 Finder 中显示").icon(IconName::Folder).on_click(move |_, _, cx| cx.reveal_path(&root)))
                                     .separator()
@@ -1478,27 +1467,6 @@ impl Workspace {
                     .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
                     .child(div().text_xs().text_color(cx.theme().muted_foreground).child("环境"))
                     .child(div().w(px(120.)).child(Select::new(&self.env_select).small()))
-                    .child(
-                        Button::new("manage-envs")
-                            .small()
-                            .ghost()
-                            .icon(IconName::Globe)
-                            .tooltip("环境管理：查看 / 切换 / 新建 / 重命名 / 复制 / 删除 / 设为默认")
-                            .on_click(cx.listener(|this, _, window, cx| this.open(Target::Envs, window, cx))),
-                    )
-                    .child(self.render_proxy_button(cx))
-                    .child(
-                        Button::new("open-vars")
-                            .small()
-                            .ghost()
-                            .icon(IconName::Settings2)
-                            .label("变量")
-                            .tooltip("变量面板：按层（项目 / 环境 / 集合）查看与编辑")
-                            .on_click(cx.listener(|this, _, window, cx| {
-                                let scope = VarScope::Env(this.env.clone());
-                                this.open(Target::Vars(Some(scope)), window, cx)
-                            })),
-                    )
                     .map(|this| {
                         if running {
                             this.child(
@@ -1511,16 +1479,6 @@ impl Workspace {
                             )
                         } else {
                             this.child(
-                                Button::new("verify")
-                                    .small()
-                                    .primary()
-                                    .rounded(style::PILL)
-                                    .icon(IconName::CircleCheck)
-                                    .label("验证")
-                                    .tooltip("完整验证：校验 → 全部用例 → 全部流程（requestbaby verify，⇧⌘V）")
-                                    .on_click(cx.listener(|this, _, window, cx| this.verify_all(window, cx))),
-                            )
-                            .child(
                                 Button::new("run-all")
                                     .small()
                                     .ghost()
@@ -1530,33 +1488,68 @@ impl Workspace {
                                     .on_click(cx.listener(|this, _, window, cx| this.run_all(window, cx))),
                             )
                             .child(
-                                Button::new("run-options")
+                                Button::new("verify")
                                     .small()
-                                    .ghost()
-                                    .icon(IconName::Settings2)
-                                    .label("运行配置")
-                                    .tooltip("选择目标、标签、并发、dry-run…（⇧⌘R）")
-                                    .on_click(cx.listener(|this, _, window, cx| this.open_run_dialog(None, window, cx))),
+                                    .primary()
+                                    .rounded(style::PILL)
+                                    .icon(IconName::CircleCheck)
+                                    .label("完整验证")
+                                    .tooltip("先检查配置，再跑全部用例和流程，给出最终结论（requestbaby verify，⇧⌘V）")
+                                    .on_click(cx.listener(|this, _, window, cx| this.verify_all(window, cx))),
                             )
                         }
                     })
-                    .child(
-                        Button::new("export-results")
-                            .small()
-                            .ghost()
-                            .icon(IconName::ExternalLink)
-                            .label("导出结果")
-                            .tooltip("导出验收结果给别人：HTML 报告（截图已嵌入）或 JSON（⌘E · requestbaby export）")
-                            .on_click(cx.listener(|this, _, window, cx| this.open_export_dialog(window, cx))),
-                    )
-                    .child(
-                        Button::new("toggle-theme")
-                            .small()
-                            .ghost()
-                            .icon(if dark { IconName::Sun } else { IconName::Moon })
-                            .on_click(|_, window, cx| window.dispatch_action(Box::new(ToggleTheme), cx)),
-                    ),
+                    .child(self.render_more_menu(cx)),
             )
+    }
+
+    /// 标题栏右侧的「⋯」：不常用的操作都收在这里（与菜单栏同源，菜单栏里也能找到）
+    fn render_more_menu(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let view = cx.entity().downgrade();
+        let proxy = self.proxy_mode();
+        let style_brief = {
+            let b = validate::ai_brief(&self.validation.issues, &self.env);
+            (!b.is_empty()).then_some(b)
+        };
+        Button::new("more-menu").small().ghost().icon(IconName::Ellipsis).tooltip("更多").dropdown_menu(move |menu, _, _| {
+            let menu = menu
+                .item(menu_item(&view, "运行配置…（选范围、标签、并发）", IconName::Settings2, |w, window, cx| w.open_run_dialog(None, window, cx)))
+                .item(menu_item(&view, "导出结果…", IconName::ExternalLink, |w, window, cx| w.open_export_dialog(window, cx)))
+                .separator()
+                .item(menu_item(&view, "环境管理…", IconName::Globe, |w, window, cx| w.open(Target::Envs, window, cx)))
+                .item(menu_item(&view, "变量…", IconName::Settings2, |w, window, cx| {
+                    let scope = VarScope::Env(w.env.clone());
+                    w.open(Target::Vars(Some(scope)), window, cx)
+                }));
+            let menu = Workspace::proxy_menu_items(menu, &view, proxy)
+                .separator()
+                .item(menu_item(&view, "检查项目配置", IconName::CircleCheck, |w, _, cx| {
+                    w.bottom_tab = BottomTab::Issues;
+                    w.revalidate(cx);
+                }))
+                .item(menu_item(&view, "整理用例格式", IconName::FileText, |w, window, cx| w.format_project(window, cx)))
+                .item(menu_item(&view, "运行环境自检", IconName::Settings, |w, window, cx| w.run_doctor(window, cx)))
+                .separator()
+                .item(menu_item(&view, "复制用例写法速查（粘贴给 AI 对话）", IconName::Bot, |_, window, cx| {
+                    cx.write_to_clipboard(ClipboardItem::new_string(guide::quickstart()));
+                    window.push_notification(
+                        Notification::success("已复制用例写法速查卡：粘贴到 ChatGPT / Claude 等对话里，AI 就会按 requestbaby 的格式写用例"),
+                        cx,
+                    );
+                }));
+            let menu = match style_brief.clone() {
+                Some(brief) => menu.item(PopupMenuItem::new("复制写法修改指令（给 AI）").icon(IconName::Bot).on_click(move |_, window, cx| {
+                    cx.write_to_clipboard(ClipboardItem::new_string(brief.clone()));
+                    style::push_brief(window, cx, Notification::success("已复制修改指令：粘贴给 AI 即可"));
+                })),
+                None => menu,
+            };
+            menu.separator()
+                .item(Workspace::check_update_item(&view))
+                .item(Workspace::auto_update_item(&view))
+                .separator()
+                .item(PopupMenuItem::new("切换深色 / 浅色").icon(IconName::Moon).on_click(|_, window, cx| window.dispatch_action(Box::new(ToggleTheme), cx)))
+        })
     }
 
     fn render_center(&self, cx: &mut Context<Self>) -> impl IntoElement {

@@ -23,7 +23,7 @@ use gpui_kit::component::{
 };
 use gpui_kit::{
     AppContext as _, ClipboardItem, Context, Entity, Focusable as _, FontWeight, InteractiveElement as _, IntoElement, ParentElement as _,
-    Render, SharedString, StatefulInteractiveElement as _, Styled as _, Subscription, Task, WeakEntity, Window, div,
+    Render, ScrollHandle, SharedString, StatefulInteractiveElement as _, Styled as _, Subscription, Task, WeakEntity, Window, div,
     prelude::FluentBuilder as _, px,
 };
 use requestbaby_core::config::Protocol;
@@ -82,6 +82,8 @@ struct Shown {
     logs: Vec<String>,
     /// 来源说明：本次发送 / 历史运行 id
     origin: String,
+    /// 界面用例还在运行：只有已完成的步骤（一步步增加），没有最终结论
+    live: bool,
 }
 
 /// 字段页的写回请求（由工作区写入用例：编辑器已打开则进编辑器，否则直接写文件）
@@ -103,6 +105,8 @@ pub struct ResponsePanel {
     raw_body: bool,
     /// 项目根：界面用例的截图路径相对它
     root: Option<std::path::PathBuf>,
+    /// 「步骤」页的滚动位置（进行中时跟到最新一步）
+    steps_scroll: ScrollHandle,
     /// 刚复制的目标（原位显示「已复制」）
     copied: Option<SharedString>,
     _copied_reset: Option<Task<()>>,
@@ -139,6 +143,7 @@ impl ResponsePanel {
             body,
             raw_body: false,
             root: None,
+            steps_scroll: ScrollHandle::new(),
             copied: None,
             _copied_reset: None,
             _subscriptions: vec![sub],
@@ -215,8 +220,32 @@ impl ResponsePanel {
             curl: r.curl_cmd.clone(),
             logs: r.logs.clone(),
             origin: origin.to_string(),
+            live: false,
         };
         self.set(shown, window, cx);
+    }
+
+    /// 正在实时展示这个用例的进度（用例结束后要换成最终结论）
+    pub fn is_live_for(&self, file: &str) -> bool {
+        self.shown.as_ref().is_some_and(|s| s.live && s.file == file)
+    }
+
+    /// 正在运行的界面用例：每完成一步就刷新一次，不必等用例结束
+    pub fn show_live(&mut self, live: &crate::run::LiveCase, window: &mut Window, cx: &mut Context<Self>) {
+        let evidence = requestbaby_core::engine::ui::UiEvidence { dir: live.dir.clone(), steps: live.steps.clone(), ..Default::default() };
+        let shown = Shown {
+            file: live.file.clone(),
+            method: "WEB".into(),
+            protocol: Protocol::Web,
+            responded: true,
+            evidence: Some(evidence),
+            passed: true,
+            origin: "进行中".into(),
+            live: true,
+            ..Default::default()
+        };
+        self.set(shown, window, cx);
+        self.steps_scroll.scroll_to_item(live.steps.len().saturating_sub(1));
     }
 
     /// 共享历史中的协议结果（可能来自 CLI / CI / AI）
@@ -245,6 +274,7 @@ impl ResponsePanel {
             curl: r.curl.clone(),
             logs: r.logs.clone(),
             origin: origin.to_string(),
+            live: false,
         };
         self.set(shown, window, cx);
     }
@@ -350,8 +380,8 @@ impl ResponsePanel {
             RespTab::Curl if protocol == Protocol::Http => "cURL".into(),
             RespTab::Curl => "命令".into(),
             RespTab::Logs => match s.map(|s| s.logs.len()).filter(|n| *n > 0) {
-                Some(n) => format!("日志 {n}"),
-                None => "日志".into(),
+                Some(n) => format!("脚本输出 {n}"),
+                None => "脚本输出".into(),
             },
         }
     }
@@ -617,7 +647,9 @@ impl ResponsePanel {
 
     fn render_summary(&self, s: &Shown, cx: &mut Context<Self>) -> impl IntoElement {
         let text = requestbaby_core::runner::status_text(s.protocol, s.status, s.responded);
-        let status_tag = if s.skipped {
+        let status_tag = if s.live {
+            Tag::info().xsmall().child("运行中")
+        } else if s.skipped {
             Tag::secondary().xsmall().child("SKIPPED")
         } else if !s.responded {
             Tag::danger().xsmall().child("无响应")
@@ -628,7 +660,9 @@ impl ResponsePanel {
         } else {
             Tag::success().xsmall().child(text)
         };
-        let verdict = if s.skipped {
+        let verdict = if s.live {
+            (IconName::LoaderCircle, cx.theme().primary, "进行中")
+        } else if s.skipped {
             (IconName::Ban, cx.theme().muted_foreground, "跳过")
         } else if s.passed {
             (IconName::CircleCheck, cx.theme().success, "通过")
@@ -943,7 +977,7 @@ impl ResponsePanel {
             },
             RespTab::Logs => {
                 if s.logs.is_empty() {
-                    return empty_hint("脚本没有输出日志（在 pre / post 中调用 log(...)）", cx).into_any_element();
+                    return empty_hint("脚本没有输出内容（在 pre / post 中调用 log(...) 才会有）", cx).into_any_element();
                 }
                 v_flex()
                     .flex_1()
@@ -1012,8 +1046,8 @@ impl ResponsePanel {
         }
         let start = ev.steps.get(step_ix).and_then(|s| steps.iter().position(|v| v.index == s.index)).unwrap_or(0);
         let vp = window.viewport_size();
-        let (w, h) = (px((f32::from(vp.width) - 80.).max(900.)), px((f32::from(vp.height) - 190.).max(420.)));
-        let viewer = cx.new(|cx| StepViewer::new(steps, start, (w, h), window, cx));
+        let (w, h) = (px((f32::from(vp.width) - 80.).max(900.)), px((f32::from(vp.height) - 240.).max(420.)));
+        let viewer = cx.new(|cx| StepViewer::new(steps, start, (w, h), cx));
         let focus = viewer.clone();
         window.open_dialog(cx, move |dialog, _, _| dialog.title("步骤截图").w(w + px(48.)).child(div().h(h).child(viewer.clone())));
         window.defer(cx, move |window, cx| {
@@ -1088,7 +1122,14 @@ impl ResponsePanel {
             .p_3()
             .gap_2()
             .child(
-                self.toolbar(format!("{} 步 · {shots} 张截图 · 点击缩略图查看大图", ev.steps.len()), cx)
+                self.toolbar(
+                    if s.live {
+                        format!("进行中 · 已完成 {} 步 · {shots} 张截图 · 每完成一步自动刷新，点击缩略图查看大图", ev.steps.len())
+                    } else {
+                        format!("{} 步 · {shots} 张截图 · 点击缩略图查看大图", ev.steps.len())
+                    },
+                    cx,
+                )
                     .when(shots > 0, |t| {
                         let at = ev.failed_step().filter(|s| s.screenshot.is_some()).and_then(|f| ev.steps.iter().position(|s| s.index == f.index)).or_else(|| ev.steps.iter().position(|s| s.screenshot.is_some())).unwrap_or(0);
                         t.child(Button::new("open-viewer").xsmall().outline().icon(IconName::Eye).label("大图浏览").tooltip("在大窗口里逐张查看全部截图，可放大到原始大小").on_click(cx.listener(move |this, _, window, cx| this.open_viewer(at, window, cx))))
@@ -1102,6 +1143,7 @@ impl ResponsePanel {
                     .flex_1()
                     .min_h_0()
                     .overflow_y_scroll()
+                    .track_scroll(&self.steps_scroll)
                     .children(rows)
                     .when(!artifacts.is_empty(), |this| {
                         this.child(

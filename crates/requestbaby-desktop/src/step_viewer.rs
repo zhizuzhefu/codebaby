@@ -1,5 +1,5 @@
 //! 步骤截图查看器：接近整个窗口大小，左侧是全部步骤（缩略图 + 标题，几十步也能一眼定位并点选），
-//! 右侧是大图；可「适应窗口」「原始大小」（1 个图片像素 = 1 个屏幕像素）和任意缩放，← → 翻页。
+//! 右侧是大图；可「适应窗口」「原始大小」（1 个图片像素 = 1 个逻辑像素，与浏览器 100% 一致）和任意缩放，← → 翻页。
 use gpui_kit::component::{
     ActiveTheme as _, Disableable as _, IconName, Selectable as _, Sizable as _, h_flex,
     button::{Button, ButtonVariants as _},
@@ -36,19 +36,17 @@ pub struct StepViewer {
     zoom: Option<f32>,
     /// 弹窗内容区大小（估算适应窗口的比例）
     size: (f32, f32),
-    scale_factor: f32,
     focus: FocusHandle,
     list: ScrollHandle,
 }
 
 impl StepViewer {
-    pub fn new(steps: Vec<ViewerStep>, start: usize, size: (Pixels, Pixels), window: &Window, cx: &mut Context<Self>) -> Self {
+    pub fn new(steps: Vec<ViewerStep>, start: usize, size: (Pixels, Pixels), cx: &mut Context<Self>) -> Self {
         let this = Self {
             steps,
             cur: start,
             zoom: None,
             size: (f32::from(size.0), f32::from(size.1)),
-            scale_factor: window.scale_factor(),
             focus: cx.focus_handle(),
             list: ScrollHandle::new(),
         };
@@ -71,10 +69,11 @@ impl StepViewer {
         }
     }
 
-    /// 原始大小下的显示尺寸（逻辑像素）：图片像素 / 屏幕缩放，Retina 上也是一一对应
+    /// 原始大小下的显示尺寸（逻辑像素）：1 个图片像素 = 1 个逻辑像素，和浏览器里图片 100% 一致
+    /// （截图是 1 倍图；按物理像素一一对应的话，Retina 屏上「原始大小」反而比「适应窗口」更小）
     fn real_size(&self) -> Option<(f32, f32)> {
         let (w, h) = self.steps[self.cur].size?;
-        Some((w as f32 / self.scale_factor, h as f32 / self.scale_factor))
+        Some((w as f32, h as f32))
     }
 
     /// 适应窗口时的实际缩放比例（相对原始大小）
@@ -167,7 +166,7 @@ impl Render for StepViewer {
             (Some(k), Some((w, h))) => stage
                 .overflow_scroll()
                 .child(img(st.file.clone()).w(px(w * k)).h(px(h * k)).flex_none().object_fit(ObjectFit::Fill)),
-            _ => stage.child(img(st.file.clone()).size_full().object_fit(ObjectFit::Contain)),
+            _ => stage.overflow_hidden().child(img(st.file.clone()).size_full().object_fit(ObjectFit::Contain)),
         }
         .on_click(cx.listener(|this, _, _, cx| {
             let z = if this.zoom.is_none() { Some(1.) } else { None };
@@ -207,14 +206,14 @@ impl Render for StepViewer {
                             .child(Button::new("v-next").xsmall().ghost().icon(IconName::ChevronRight).tooltip("下一张（→）").disabled(self.cur == last).on_click(cx.listener(|this, _, _, cx| this.step(1, cx))))
                             .when_some(first_failed, |d, f| d.child(Button::new("v-failed").xsmall().outline().label("失败的一步").tooltip("跳到第一个失败的步骤").on_click(cx.listener(move |this, _, _, cx| this.go(f, cx)))))
                             .child(Button::new("v-fit").xsmall().ghost().label("适应").tooltip("适应窗口（0）").selected(self.zoom.is_none()).on_click(cx.listener(|this, _, _, cx| this.set_zoom(None, cx))))
-                            .child(Button::new("v-real").xsmall().ghost().label("原始大小").tooltip("1 个图片像素 = 1 个屏幕像素（1）").selected(self.zoom == Some(1.)).on_click(cx.listener(|this, _, _, cx| this.set_zoom(Some(1.), cx))))
+                            .child(Button::new("v-real").xsmall().ghost().label("原始大小").tooltip("原始大小：1 个图片像素 = 1 个逻辑像素，与浏览器 100% 一致（1）").selected(self.zoom == Some(1.)).on_click(cx.listener(|this, _, _, cx| this.set_zoom(Some(1.), cx))))
                             .child(Button::new("v-out").xsmall().ghost().icon(IconName::Minus).tooltip("缩小（-）").on_click(cx.listener(|this, _, _, cx| this.zoom_by(0.8, cx))))
                             .child(div().w(px(84.)).text_xs().text_color(muted).text_center().child(zoom_label))
                             .child(Button::new("v-in").xsmall().ghost().icon(IconName::Plus).tooltip("放大（+）").on_click(cx.listener(|this, _, _, cx| this.zoom_by(1.25, cx)))),
                     )
                     .when_some(st.detail.clone(), |d, t| d.child(div().text_xs().text_color(if st.status == UiStepStatus::Failed { danger } else { muted }).child(t)))
-                    .child(stage)
-                    .child(div().text_xs().text_color(muted).child("← → 切换步骤 · 点击图片或按 1 / 0 在原始大小与适应窗口间切换 · 放大后用触控板或滚轮平移 · Esc 关闭")),
+                    .child(div().text_xs().text_color(muted).child("← → 切换步骤 · 点击图片或按 1 / 0 在原始大小与适应窗口间切换 · 放大后用触控板或滚轮平移 · Esc 关闭"))
+                    .child(stage),
             )
     }
 }

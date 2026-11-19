@@ -1492,6 +1492,16 @@ impl Runner {
         }
     }
 
+    /// 界面步骤的实时事件：与最终结果同样先脱敏（填写的密码 / 手机号等 secret 变量值不能出现在界面、终端和事件流里）
+    pub(crate) fn emit_ui_step(&self, file: &str, dir: &str, rec: &crate::engine::ui::StepRecord) {
+        let mut step = rec.clone();
+        step.title = self.redact_str(&step.title);
+        if let Some(d) = &mut step.detail {
+            *d = self.redact_str(d);
+        }
+        self.emit(RunEvent::UiStep { file: file.to_string(), dir: dir.to_string(), step });
+    }
+
     /// 单段文本脱敏
     pub fn redact_str(&self, s: &str) -> String {
         let mut out = s.to_string();

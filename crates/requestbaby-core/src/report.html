@@ -82,7 +82,7 @@ table.api td{padding:2px 12px 2px 0}
     <button id="lb-prev" title="上一张（←）">◀</button>
     <button id="lb-next" title="下一张（→）">▶</button>
     <button id="lb-fit" title="适应窗口（0）">适应</button>
-    <button id="lb-real" title="原始大小：1 个图片像素 = 1 个屏幕像素（1）">原始大小</button>
+    <button id="lb-real" title="原始大小：1 个图片像素 = 1 个 CSS 像素，与浏览器 100% 一致（1）">原始大小</button>
     <button id="lb-out" title="缩小（-）">－</button>
     <span class="dim" id="lb-zoom" style="min-width:64px;text-align:center"></span>
     <button id="lb-in" title="放大（+）">＋</button>
@@ -207,7 +207,7 @@ $('f-close').onclick = () => document.querySelectorAll('details.case').forEach(d
 // ---------------------------------------------------------------- 图片查看器
 const LB = { ci: 0, pos: 0, zoom: 0 }; // zoom 0 = 适应窗口；否则相对「原始大小」的倍数
 const lb = $('lb'), stage = $('lb-stage'), im = $('lb-img');
-const real = () => im.naturalWidth / (window.devicePixelRatio || 1);
+const real = () => im.naturalWidth; // 1 个图片像素 = 1 个 CSS 像素（与浏览器里图片 100% 一致）
 function shown() { return im.clientWidth / (real() || 1); }
 function applyZoom() {
   stage.classList.toggle('real', LB.zoom > 0);

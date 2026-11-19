@@ -548,15 +548,17 @@ impl Runner {
             screenshot: shot,
             detail: None,
         };
-        self.emit(RunEvent::Log { file: rel.clone(), line: format!("{} #0 {open_title}  {t_open}ms", if open_failed { "✘" } else { "✔" }) });
+        self.emit(RunEvent::Log { file: rel.clone(), line: self.redact_str(&format!("{} #0 {open_title}  {t_open}ms", if open_failed { "✘" } else { "✔" })) });
         if let Err(e) = open_res {
             let why = format!("{e:#}");
             rec.detail = Some(why.clone());
+            self.emit_ui_step(&rel, &ev.dir, &rec);
             ev.steps.push(rec);
             outcomes.push(TestOutcome { expr: format!("#0 {open_title}"), pass: false, detail: Some(why) });
             ev.artifacts = d.failure_scene(dir);
             return (outcomes, ev);
         }
+        self.emit_ui_step(&rel, &ev.dir, &rec);
         ev.steps.push(rec);
 
         // ---- 逐步执行 ----
@@ -760,8 +762,10 @@ impl Runner {
                 UiStepStatus::Failed => "✘",
                 UiStepStatus::Skipped => "⇣",
             };
-            self.emit(RunEvent::Log { file: rel.clone(), line: format!("{mark} #{n} {title}  {duration}ms") });
-            ev.steps.push(StepRecord { index: n, action: key.to_string(), title, status, at_ms: at, duration_ms: duration, screenshot: shot, detail });
+            self.emit(RunEvent::Log { file: rel.clone(), line: self.redact_str(&format!("{mark} #{n} {title}  {duration}ms")) });
+            let rec = StepRecord { index: n, action: key.to_string(), title, status, at_ms: at, duration_ms: duration, screenshot: shot, detail };
+            self.emit_ui_step(&rel, &ev.dir, &rec);
+            ev.steps.push(rec);
             if failed {
                 break;
             }
@@ -772,7 +776,9 @@ impl Runner {
         let at = started.elapsed().as_millis() as u64;
         if !failed {
             let shot = snap(d, &format!("{n:02}-final.jpg"), &[]).ok();
-            ev.steps.push(StepRecord { index: n, action: "final".into(), title: "结束画面".into(), status: UiStepStatus::Passed, at_ms: at, duration_ms: 0, screenshot: shot, detail: None });
+            let rec = StepRecord { index: n, action: "final".into(), title: "结束画面".into(), status: UiStepStatus::Passed, at_ms: at, duration_ms: 0, screenshot: shot, detail: None };
+            self.emit_ui_step(&rel, &ev.dir, &rec);
+            ev.steps.push(rec);
         } else {
             ev.artifacts = d.failure_scene(dir);
         }

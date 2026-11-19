@@ -84,7 +84,20 @@ pub enum ResultsSource {
     History(String),
 }
 
+/// 正在运行的界面用例：已完成的步骤（截图已写入证据目录），一步一步实时增加
+#[derive(Debug, Clone)]
+pub struct LiveCase {
+    pub file: String,
+    /// 证据目录（`StepRecord::screenshot` 在其中）
+    pub dir: String,
+    pub steps: Vec<requestbaby_core::engine::ui::StepRecord>,
+}
+
 pub enum RunStateEvent {
+    /// 界面用例刚完成一步（实时展示用，内容见 [`RunState::live`]）
+    LiveStep { file: String, send: bool },
+    /// 批量运行里一个用例结束（结果已进结果表）：正在实时展示它的面板应换成最终结论
+    CaseFinished { file: String },
     /// 一次运行结束（含取消）；send 不写历史
     Finished { send: bool, workflow: Option<String>, verify: bool, blocked: Option<String>, failed: usize, total: usize, dry_run: bool },
     /// 单用例完成（结果回填响应面板）
@@ -101,6 +114,7 @@ pub struct RunState {
     started_at: Option<Instant>,
     elapsed_ms: u64,
     current: Option<String>,
+    live: Option<LiveCase>,
     rows: Vec<CaseReport>,
     steps: Vec<StepView>,
     workflow: Option<String>,
@@ -138,6 +152,7 @@ impl RunState {
             started_at: None,
             elapsed_ms: 0,
             current: None,
+            live: None,
             rows: vec![],
             steps: vec![],
             workflow: None,
@@ -172,6 +187,11 @@ impl RunState {
 
     pub fn current(&self) -> Option<&str> {
         self.current.as_deref()
+    }
+
+    /// 正在运行的界面用例及其已完成的步骤
+    pub fn live(&self) -> Option<&LiveCase> {
+        self.live.as_ref()
     }
 
     pub fn rows(&self) -> &[CaseReport] {
@@ -388,7 +408,19 @@ impl RunState {
                         s.skipped = skipped;
                     }
                 }
-                RunEvent::CaseStarted { file, .. } => self.current = Some(file),
+                RunEvent::CaseStarted { file, .. } => {
+                    self.current = Some(file);
+                    self.live = None;
+                }
+                RunEvent::UiStep { file, dir, step } => {
+                    if self.live.as_ref().is_none_or(|l| l.file != file) {
+                        self.live = Some(LiveCase { file: file.clone(), dir, steps: vec![] });
+                    }
+                    if let Some(l) = self.live.as_mut() {
+                        l.steps.push(step);
+                    }
+                    cx.emit(RunStateEvent::LiveStep { file, send });
+                }
                 RunEvent::Log { file, line } => self.logs.push(LogLine { file, text: line, notice: false }),
                 RunEvent::Notice { message } => {
                     if send && message.starts_with("先运行前置用例") {
@@ -398,7 +430,9 @@ impl RunState {
                 }
                 RunEvent::CaseFinished { result } => {
                     if !send {
+                        let file = result.file.clone();
                         self.rows.push(result);
+                        cx.emit(RunStateEvent::CaseFinished { file });
                     }
                 }
                 RunEvent::RunFinished { .. } => {}
@@ -408,6 +442,7 @@ impl RunState {
                     self.elapsed_ms = self.started_at.map(|t| t.elapsed().as_millis() as u64).unwrap_or(0);
                 }
                 self.current = None;
+                self.live = None;
                 self.cancel = None;
                 // 未执行的步骤（前序失败 / 取消 / 出错）
                 for s in &mut self.steps {

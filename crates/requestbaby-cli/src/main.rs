@@ -1127,9 +1127,45 @@ fn json_stream_hook() -> runner::EventHook {
     })
 }
 
-/// 运行事件回调：`--json-stream` 输出全部事件到 stdout
-fn run_hook(json_stream: bool) -> Option<runner::EventHook> {
-    json_stream.then(json_stream_hook)
+/// 运行事件回调：`--json-stream` 输出全部事件到 stdout；终端里的普通运行实时打印界面用例每一步的进度（stderr，不污染 stdout）
+fn run_hook(json_stream: bool, term: bool) -> Option<runner::EventHook> {
+    use std::io::IsTerminal;
+    if json_stream {
+        Some(json_stream_hook())
+    } else if term && std::io::stderr().is_terminal() {
+        Some(live_steps_hook())
+    } else {
+        None
+    }
+}
+
+/// 界面用例（Web / Android）跑得慢：每完成一步就打印一行，不必等用例结束才知道做到哪了
+fn live_steps_hook() -> runner::EventHook {
+    let last = std::sync::Mutex::new(String::new());
+    Arc::new(move |ev: &runner::RunEvent| {
+        let mut last = last.lock().unwrap_or_else(|e| e.into_inner());
+        match ev {
+            runner::RunEvent::CaseStarted { .. } => last.clear(),
+            runner::RunEvent::UiStep { file, step, .. } => {
+                use requestbaby_core::engine::ui::UiStepStatus;
+                if *last != *file {
+                    eprintln!("\x1b[2m▶ {file}\x1b[0m");
+                    *last = file.clone();
+                }
+                let mark = match step.status {
+                    UiStepStatus::Passed => "\x1b[32m✔\x1b[0m",
+                    UiStepStatus::Failed => "\x1b[31m✘\x1b[0m",
+                    UiStepStatus::Skipped => "\x1b[33m⇣\x1b[0m",
+                };
+                let detail = match (&step.detail, step.status) {
+                    (Some(d), UiStepStatus::Failed) => format!("\n    \x1b[31m{d}\x1b[0m"),
+                    _ => String::new(),
+                };
+                eprintln!("  {mark} \x1b[2m#{}\x1b[0m {}  \x1b[2m{}ms\x1b[0m{detail}", step.index, step.title, step.duration_ms);
+            }
+            _ => {}
+        }
+    })
 }
 
 fn run_source() -> &'static str {
@@ -1157,7 +1193,7 @@ fn cmd_run(req: session::RunRequest, report: Option<&str>, json_stream: bool, no
             }
         }
     }
-    let hook = run_hook(json_stream);
+    let hook = run_hook(json_stream, fmt == "term");
     let quiet_header = json_stream || fmt == "json";
     let dry_run = req.dry_run;
     let outcome = session::run(&spec, hook, |env, planned, timeout_ms| {
@@ -1210,7 +1246,7 @@ fn cmd_workflow(a: WorkflowArgs) -> u8 {
         artifacts: None,
     };
     let is_term = fmt == "term" && !a.json_stream;
-    let hook = run_hook(a.json_stream);
+    let hook = run_hook(a.json_stream, fmt == "term");
     let verbose = a.verbose || a.dry_run;
     let mut header_done = false;
     let (name, dry_run) = (a.name.clone(), a.dry_run);
@@ -1535,7 +1571,7 @@ fn cmd_verify(env: Option<String>, report: Option<&str>, output: Option<String>,
         cancel: None,
     };
     let is_term = fmt == "term" && !json_stream;
-    let outcome = verify::run(&spec, run_hook(json_stream), |phase| {
+    let outcome = verify::run(&spec, run_hook(json_stream, is_term), |phase| {
         if is_term {
             term::print_verify_stage(phase);
         }

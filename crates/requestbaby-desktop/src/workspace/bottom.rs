@@ -1,19 +1,18 @@
-//! 底部面板：结果（含流程步骤与报告导出）/ 日志 / 历史 / 校验，以及状态栏。
+//! 底部面板：运行结果（含流程步骤、历史运行切换与报告导出），以及状态栏。
+//! 脚本输出、配置问题只在有内容时才从这里进入，不常驻为标签页。
 use crate::style;
-use super::{BottomTab, Workspace, relative_time, run_origin};
+use super::{BottomTab, Workspace, run_origin};
 use crate::project::{CaseStatus, status_of};
 use requestbaby_core::config::Protocol;
 use crate::run::{Phase, ResultsSource, StepState};
 use gpui_kit::component::{
     ActiveTheme as _, Disableable as _, Icon, IconName, Sizable as _, WindowExt as _, h_flex,
     button::{Button, ButtonVariants as _},
-    chart::BarChart,
     menu::{ContextMenuExt as _, DropdownMenu as _, PopupMenu, PopupMenuItem},
     notification::Notification,
     progress::Progress,
     status_bar::StatusBar,
     stepper::{Stepper, StepperItem},
-    tab::{Tab, TabBar},
     tag::Tag,
     tooltip::Tooltip,
     v_flex,
@@ -24,52 +23,36 @@ use gpui_kit::{
 };
 use requestbaby_core::history;
 use requestbaby_core::validate::ValidationIssue;
-use requestbaby_core::report::{CaseReport, CompareMark, Comparison, RunReport};
+use requestbaby_core::report::{CaseReport, CompareMark, Comparison};
 use std::path::PathBuf;
 
 impl Workspace {
     pub(super) fn render_bottom(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
-        let run = self.run.read(cx);
-        let rows = run.rows().len();
-        let failed = run.rows().iter().filter(|r| !r.passed && !r.skipped).count();
-        let logs = run.logs().len();
-        let history = self.project.history().len();
-        let v = &self.validation;
-        let errors = v.issues.iter().filter(|i| i.level == "error").count();
-        let warns = v.issues.iter().filter(|i| i.level != "error" && !i.is_style()).count();
-        let labels = [
-            if failed > 0 { format!("结果 {rows} · {failed} 失败") } else { format!("结果 {rows}") },
-            format!("日志 {logs}"),
-            format!("历史 {history}"),
-            match (v.running && !v.done, errors, warns) {
-                (true, _, _) => "校验 …".to_string(),
-                (_, 0, 0) => "校验 ✓".to_string(),
-                (_, 0, w) => format!("校验 · {w} 警告"),
-                (_, e, _) => format!("校验 · {e} 错误"),
-            },
-        ];
-        let selected = BottomTab::ALL.iter().position(|t| *t == self.bottom_tab).unwrap_or(0);
-        v_flex()
-            .size_full()
+        v_flex().size_full().map(|this| match self.bottom_tab {
+            BottomTab::Results => this.child(self.render_results(cx)),
+            BottomTab::Logs => this.child(self.render_logs(cx)),
+            BottomTab::Issues => this.child(self.render_validate(cx)),
+        })
+    }
+
+    /// 脚本输出 / 配置问题页顶部：标题 + 返回运行结果
+    fn sub_page_bar(&self, title: &'static str, cx: &mut Context<Self>) -> gpui_kit::Div {
+        h_flex()
+            .px_3()
+            .py_2()
+            .gap_2()
             .child(
-                h_flex().px_3().pt_2().pb_1().child(
-                    TabBar::new("bottom-tabs")
-                        .segmented()
-                        .small()
-                        .selected_index(selected)
-                        .children(labels.into_iter().map(|l| Tab::new().label(l)))
-                        .on_click(cx.listener(|this, ix: &usize, _, cx| {
-                            this.bottom_tab = BottomTab::ALL[*ix];
-                            cx.notify();
-                        })),
-                ),
+                Button::new("back-to-results")
+                    .xsmall()
+                    .ghost()
+                    .icon(IconName::ArrowLeft)
+                    .label("运行结果")
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.bottom_tab = BottomTab::Results;
+                        cx.notify();
+                    })),
             )
-            .map(|this| match self.bottom_tab {
-                BottomTab::Results => this.child(self.render_results(cx)),
-                BottomTab::Logs => this.child(self.render_logs(cx)),
-                BottomTab::History => this.child(self.render_history(cx)),
-                BottomTab::Validate => this.child(self.render_validate(cx)),
-            })
+            .child(div().text_xs().font_weight(FontWeight::MEDIUM).child(title))
     }
 
     fn render_results(&mut self, cx: &mut Context<Self>) -> AnyElement {
@@ -87,6 +70,13 @@ impl Workspace {
         let steps = run.steps().to_vec();
         let workflow = run.workflow().map(String::from);
         let is_verify = run.is_verify();
+        // 界面用例进行中：当前做到哪一步
+        let log_count = run.logs().len();
+        let live_text = run.live().and_then(|l| {
+            let step = l.steps.last()?;
+            let name = l.file.rsplit('/').next().unwrap_or(&l.file).trim_end_matches(".json");
+            Some(format!("正在运行 {name} · 第 {} 步 {}", step.index, step.title))
+        });
         let dry_run = run.report().and_then(|r| r.meta.as_ref()).is_some_and(|m| m.dry_run);
         let compare = if running { None } else { run.report().and_then(|r| r.compare.clone()).filter(|c| !c.is_empty()) };
         let summary = if running { String::new() } else { run.report().map(|r| r.failure_text()).unwrap_or_default() };
@@ -111,7 +101,7 @@ impl Workspace {
         if rows.is_empty() && steps.is_empty() && !running {
             let hint = match phase {
                 Phase::Failed(e) => e,
-                _ => "还没有运行记录。点击「运行全部」、运行流程，或在终端执行 requestbaby run —— 结果会自动出现在这里".into(),
+                _ => "还没有运行结果。点击右上角「运行全部」或「完整验证」，结果会显示在这里".into(),
             };
             return empty_state(IconName::SquareTerminal, hint, cx);
         }
@@ -120,11 +110,14 @@ impl Workspace {
             .px_3()
             .py_2()
             .gap_3()
-            .child(div().text_xs().font_weight(FontWeight::MEDIUM).child(match (&workflow, is_verify) {
-                (_, true) => format!("{origin} · 完整验证"),
-                (Some(w), _) => format!("{origin} · 流程 {w}"),
-                _ => origin,
-            }))
+            .child(self.history_button(
+                match (&workflow, is_verify) {
+                    (_, true) => format!("{origin} · 完整验证"),
+                    (Some(w), _) => format!("{origin} · 流程 {w}"),
+                    _ => origin,
+                },
+                cx,
+            ))
             .when(dry_run, |this| this.child(Tag::info().outline().xsmall().child("dry-run")))
             .child(Tag::success().outline().xsmall().child(format!("{passed} 通过")))
             .when(failed > 0, |this| this.child(Tag::danger().outline().xsmall().child(format!("{failed} 失败"))))
@@ -167,7 +160,22 @@ impl Workspace {
                 let pct = (rows.len() as f32 / planned as f32 * 100.).min(100.);
                 this.child(div().w(px(160.)).child(Progress::new("run-progress").value(pct)))
             })
+            .when_some(live_text, |this, t| this.child(div().min_w_0().overflow_hidden().text_ellipsis().whitespace_nowrap().text_xs().text_color(cx.theme().primary).child(t)))
             .child(div().flex_1())
+            .when(log_count > 0, |this| {
+                this.child(
+                    Button::new("open-logs")
+                        .xsmall()
+                        .ghost()
+                        .icon(IconName::FileText)
+                        .label(format!("脚本输出 {log_count}"))
+                        .tooltip("用例脚本里 log(...) 打印的内容")
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            this.bottom_tab = BottomTab::Logs;
+                            cx.notify();
+                        })),
+                )
+            })
             .when(!command.is_empty(), |this| this.child(style::cli_button("results-cli", command.clone())))
             .child(
                 Button::new("export-report")
@@ -376,10 +384,11 @@ impl Workspace {
 
     fn render_logs(&self, cx: &mut Context<Self>) -> AnyElement {
         let logs = self.run.read(cx).logs().to_vec();
+        let bar = self.sub_page_bar("脚本输出 · 用例脚本里 log(...) 打印的内容", cx);
         if logs.is_empty() {
-            return empty_state(IconName::FileText, "脚本日志会实时出现在这里（pre / post / setup 中的 log(...)）".into(), cx);
+            return v_flex().flex_1().min_h_0().child(bar).child(empty_state(IconName::FileText, "这次运行里，脚本没有打印任何内容".into(), cx)).into_any_element();
         }
-        v_flex()
+        v_flex().flex_1().min_h_0().child(bar).child(v_flex()
             .id("logs-scroll")
             .flex_1()
             .min_h_0()
@@ -395,146 +404,57 @@ impl Workspace {
                     .gap_3()
                     .child(div().w(px(280.)).flex_shrink_0().text_color(cx.theme().muted_foreground).child(l.file))
                     .child(div().when(l.notice, |d| d.text_color(cx.theme().warning)).child(l.text))
-            }))
+            })))
             .into_any_element()
     }
 
-    fn render_history(&mut self, cx: &mut Context<Self>) -> AnyElement {
+    /// 结果顶部的「来源」按钮：显示正在看的是哪次运行，点开切换到历史运行（CLI 与桌面端共享同一份记录）
+    fn history_button(&self, label: String, cx: &Context<Self>) -> AnyElement {
         let runs = self.project.history();
-        let total_runs = runs.len();
         if runs.is_empty() {
-            let dir = requestbaby_core::history::runs_dir(self.project.root());
-            return empty_state(IconName::Inbox, format!("暂无运行历史 —— CLI 与 Desktop 共享 {}", dir.display()), cx);
+            return div().text_xs().font_weight(FontWeight::MEDIUM).child(label).into_any_element();
         }
-        #[derive(Clone)]
-        struct Point {
-            label: String,
-            rate: f64,
-            failed: bool,
-        }
-        let points: Vec<Point> = runs
-            .iter()
-            .take(24)
-            .rev()
-            .enumerate()
-            .map(|(ix, r)| Point {
-                label: format!("#{}", ix + 1),
-                rate: if r.total == 0 { 0. } else { r.passed as f64 / r.total as f64 * 100. },
-                failed: r.failed > 0,
-            })
-            .collect();
-        let (ok, bad) = (cx.theme().success, cx.theme().danger);
-        let chart = BarChart::new(points)
-            .band(|p: &Point| p.label.clone())
-            .value(|p: &Point| p.rate)
-            .fill(move |p: &Point, _, _, _| if p.failed { bad } else { ok })
-            .value_axis(true)
-            .value_tick_count(3)
-            .id("history-pass-rate");
-
         let current = match self.run.read(cx).source() {
             ResultsSource::History(id) => Some(id.clone()),
             _ => None,
         };
-        h_flex()
-            .flex_1()
-            .min_h_0()
-            .items_stretch()
-            .child(
-                v_flex()
-                    .w(px(360.))
-                    .flex_shrink_0()
-                    .p_3()
-                    .gap_2()
-                    .border_r_1()
-                    .border_color(cx.theme().border)
-                    .child(div().text_xs().font_weight(FontWeight::MEDIUM).child("通过率趋势（最近 24 次）"))
-                    .child(div().flex_1().min_h_0().child(chart)),
-            )
-            .child(
-                v_flex()
-                    .flex_1()
-                    .min_w_0()
-                    .child(self.render_history_toolbar(total_runs, cx))
-                    .child(
-                div().flex_1().min_h_0().px_2().pb_2().child(
-                    uniform_list(
-                        "history-list",
-                        total_runs,
-                        cx.processor(move |this, range: std::ops::Range<usize>, _window, cx| {
-                            let runs = this.project.history();
-                            let range = range.start.min(runs.len())..range.end.min(runs.len());
-                            runs[range.clone()].iter().enumerate().map(|(i, r)| this.history_row(range.start + i, r, current.as_deref(), cx)).collect::<Vec<_>>()
-                        }),
-                    )
-                    .size_full(),
-                ),
-                    ),
-            )
-            .into_any_element()
-    }
-
-    /// 历史列表的一行：点击或打开菜单时按运行 ID 取报告（不为每行拷贝整份报告）
-    fn history_row(&self, ix: usize, r: &RunReport, current: Option<&str>, cx: &Context<Self>) -> AnyElement {
-        let muted = cx.theme().muted_foreground;
-        let (hover, active) = (cx.theme().table_hover, cx.theme().table_active);
-        let m = r.meta.clone().unwrap_or_default();
-        let is_current = current == Some(m.id.as_str());
-        let (icon, color) = if r.failed > 0 { (IconName::CircleX, cx.theme().danger) } else { (IconName::CircleCheck, cx.theme().success) };
-        let (click_id, del_id, menu_id, menu_cmd) = (m.id.clone(), m.id.clone(), m.id.clone(), m.command.clone());
+        let items: Vec<(String, String, bool, bool)> = runs
+            .iter()
+            .take(20)
+            .filter_map(|r| {
+                let m = r.meta.as_ref()?;
+                let text = format!("{} · {}/{} 通过", run_origin(r), r.passed, r.total);
+                Some((m.id.clone(), text, r.failed > 0, current.as_deref() == Some(m.id.as_str())))
+            })
+            .collect();
+        let total = runs.len();
         let view = cx.entity().downgrade();
-        h_flex()
-            .id(("history-row", ix))
-            // 虚拟列表要求行高一致；行宽撑满，弹性列才会按容器宽度省略
-            .w_full()
-            .h(px(28.))
-            .px_2()
-            .gap_3()
-            .rounded(cx.theme().radius)
-            .when(is_current, |this| this.bg(active))
-            .hover(|this| this.bg(hover))
-            .on_click(cx.listener(move |this, _, _, cx| this.show_history_run(&click_id, cx)))
-            .child(Icon::new(icon).xsmall().text_color(color))
-            .child(div().w(px(64.)).flex_shrink_0().child(Tag::secondary().xsmall().child(m.source.clone())))
-            .child(div().w(px(84.)).flex_shrink_0().text_xs().whitespace_nowrap().child(format!("{}/{} 通过", r.passed, r.total)))
-            .child(div().w(px(96.)).flex_shrink_0().overflow_hidden().text_ellipsis().whitespace_nowrap().text_xs().text_color(muted).child(m.env.clone()))
-            .child(div().w(px(80.)).flex_shrink_0().whitespace_nowrap().text_xs().text_color(muted).child(relative_time(m.started_at_ms)))
-            .when_some(m.workflow.clone(), |this, w| this.child(Tag::info().outline().xsmall().flex_shrink_0().child(format!("流程 {w}"))))
-            .when(m.verify, |this| this.child(Tag::primary().outline().xsmall().flex_shrink_0().child("完整验证")))
-            .child(
-                div()
-                    .flex_1()
-                    .min_w_0()
-                    .overflow_hidden()
-                    .text_ellipsis()
-                    .whitespace_nowrap()
-                    .text_xs()
-                    .font_family(cx.theme().mono_font_family.clone())
-                    .text_color(muted)
-                    .child(m.command.clone()),
-            )
-            .child(
-                Button::new(("history-del", ix))
-                    .ghost()
-                    .xsmall()
-                    .icon(IconName::Close)
-                    .tooltip("删除这条运行记录（requestbaby history rm <ID>）")
-                    .on_click(cx.listener(move |this, _, window, cx| {
-                        cx.stop_propagation();
-                        this.delete_history(del_id.clone(), window, cx)
-                    })),
-            )
-            .context_menu(move |menu, _, _| {
-                let (show_id, cmd, id) = (menu_id.clone(), menu_cmd.clone(), menu_id.clone());
-                menu.item(super::sidebar::menu_item(&view, "查看结果", IconName::Eye, move |w, _, cx| w.show_history_run(&show_id, cx)))
-                    .item(PopupMenuItem::new("复制等价命令").icon(IconName::Copy).on_click(move |_, window, cx| {
-                        cx.write_to_clipboard(ClipboardItem::new_string(cmd.clone()));
-                        window.push_notification(Notification::success("已复制"), cx);
-                    }))
-                    .separator()
-                    .item(super::sidebar::menu_item(&view, "删除这条记录", IconName::Delete, move |w, window, cx| {
-                        w.delete_history(id.clone(), window, cx)
-                    }))
+        Button::new("history-menu")
+            .xsmall()
+            .ghost()
+            .label(label)
+            .icon(IconName::ChevronDown)
+            .tooltip("切换查看以前的运行结果")
+            .dropdown_menu(move |menu, _, _| {
+                let mut menu = menu.item(PopupMenuItem::label(format!("历史运行（共 {total} 条，最近 20 条）")));
+                for (id, text, failed, is_current) in items.iter().cloned() {
+                    let view = view.clone();
+                    menu = menu.item(
+                        PopupMenuItem::new(text)
+                            .icon(if failed { IconName::CircleX } else { IconName::CircleCheck })
+                            .checked(is_current)
+                            .on_click(move |_, _, cx| {
+                                let _ = view.update(cx, |w, cx| w.show_history_run(&id, cx));
+                            }),
+                    );
+                }
+                let clean = |label: &'static str, c: history::Clean, title: &'static str| {
+                    super::sidebar::menu_item(&view, label, IconName::Delete, move |w, window, cx| w.clean_history(c, title, window, cx))
+                };
+                menu.separator()
+                    .item(clean("只保留最近 20 条", history::Clean { keep: Some(20), ..Default::default() }, "只保留最近 20 条运行记录？"))
+                    .item(clean("删除 7 天前的", history::Clean { older_than_ms: Some(7 * 86_400_000), ..Default::default() }, "删除 7 天前的运行记录？"))
+                    .item(clean("清空全部历史…", history::Clean::default(), "清空全部运行历史？"))
             })
             .into_any_element()
     }
@@ -557,18 +477,16 @@ impl Workspace {
         let warns = shown.len() - errors;
         let notice = style::style_notice("copy-ai-brief", &v.issues, &self.env, cx);
         let command = format!("requestbaby validate -e {}", self.env);
-        let toolbar = h_flex()
-            .px_3()
-            .py_2()
-            .gap_2()
-            .child(div().text_xs().font_weight(FontWeight::MEDIUM).child(format!("项目校验 · 环境 {}", self.env)))
+        let toolbar = self
+            .sub_page_bar("配置检查", cx)
+            .child(div().text_xs().text_color(muted).child(format!("环境 {}", self.env)))
             .map(|this| match (&v.error, v.running && !v.done) {
-                (Some(_), _) => this.child(Tag::danger().outline().xsmall().child("校验出错")),
-                (_, true) => this.child(Tag::secondary().outline().xsmall().child("校验中…")),
+                (Some(_), _) => this.child(Tag::danger().outline().xsmall().child("检查出错")),
+                (_, true) => this.child(Tag::secondary().outline().xsmall().child("检查中…")),
                 _ if errors + warns == 0 => this.child(Tag::success().outline().xsmall().child("全部通过")),
                 _ => this
                     .when(errors > 0, |t| t.child(Tag::danger().outline().xsmall().child(format!("{errors} 个错误"))))
-                    .when(warns > 0, |t| t.child(Tag::warning().outline().xsmall().child(format!("{warns} 个警告")))),
+                    .when(warns > 0, |t| t.child(Tag::warning().outline().xsmall().child(format!("{warns} 个提醒")))),
             })
             .child(div().flex_1())
             .child(style::cli_button("validate-cli", command))
@@ -577,26 +495,8 @@ impl Workspace {
                     .xsmall()
                     .outline()
                     .icon(IconName::RefreshCw)
-                    .label("重新校验")
+                    .label("重新检查")
                     .on_click(cx.listener(|this, _, _, cx| this.revalidate(cx))),
-            )
-            .child(
-                Button::new("fmt-project")
-                    .xsmall()
-                    .outline()
-                    .icon(IconName::FileText)
-                    .label("格式化")
-                    .tooltip("requestbaby fmt：规范字段顺序，公共请求头上提到 collection.json")
-                    .on_click(cx.listener(|this, _, window, cx| this.format_project(window, cx))),
-            )
-            .child(
-                Button::new("doctor")
-                    .xsmall()
-                    .outline()
-                    .icon(IconName::Settings)
-                    .label("环境自检")
-                    .tooltip("requestbaby doctor")
-                    .on_click(cx.listener(|this, _, window, cx| this.run_doctor(window, cx))),
             );
 
         let body: AnyElement = if let Some(e) = &v.error {
@@ -648,10 +548,11 @@ impl Workspace {
 
     pub(super) fn render_status_bar(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let muted = cx.theme().muted_foreground;
-        let last = self.project.history().first().map(|r| {
-            let m = r.meta.clone().unwrap_or_default();
-            format!("最近运行 {} · {}/{} 通过 · {}", m.source, r.passed, r.total, relative_time(m.started_at_ms))
-        });
+        let v = &self.validation;
+        let problems = v.issues.iter().filter(|i| !i.is_style()).count() + usize::from(v.error.is_some());
+        let proxy_on = self.proxy_mode() == requestbaby_core::proxy_setting::Mode::On;
+        let session = self.run.read(cx).session();
+        let has_session = !session.vars.is_empty() || !session.cookies.is_empty();
         StatusBar::new()
             .left(
                 h_flex()
@@ -659,22 +560,31 @@ impl Workspace {
                     .text_xs()
                     .text_color(muted)
                     .child(h_flex().gap_1().child(Icon::new(IconName::FolderOpen).xsmall()).child(self.project.root().display().to_string()))
-                    .child(
-                        h_flex()
-                            .gap_1()
-                            .child(Icon::new(IconName::RefreshCw).xsmall())
-                            .child(if self._watcher.is_some() { "监听文件变更（CLI / AI 写入实时同步）" } else { "文件监听不可用" }),
-                    ),
+                    .when(problems > 0, |this| {
+                        this.child(
+                            Button::new("open-issues")
+                                .xsmall()
+                                .ghost()
+                                .icon(IconName::TriangleAlert)
+                                .text_color(cx.theme().warning)
+                                .label(format!("{problems} 处配置问题"))
+                                .tooltip("查看哪里需要修改")
+                                .on_click(cx.listener(|this, _, _, cx| {
+                                    this.bottom_tab = BottomTab::Issues;
+                                    cx.notify();
+                                })),
+                        )
+                    })
+                    .when(self._watcher.is_none(), |this| this.child("文件监听不可用：外部改动需重新打开项目")),
             )
             .right(
                 h_flex()
                     .gap_3()
                     .text_xs()
                     .text_color(muted)
+                    .when(proxy_on, |this| this.child(h_flex().gap_1().child(Icon::new(IconName::Network).xsmall()).child("代理已开启")))
                     .when_some(self.render_update_badge(cx), |this, b| this.child(b))
-                    .child(self.render_session(cx))
-                    .when_some(last, |this, l| this.child(l))
-                    .child(format!("libcurl {}", requestbaby_core::engine::libcurl_version())),
+                    .when(has_session, |this| this.child(self.render_session(cx))),
             )
     }
 }
@@ -720,50 +630,6 @@ impl Workspace {
 }
 
 impl Workspace {
-    /// 历史列表顶部：条数 + 清理菜单
-    fn render_history_toolbar(&self, total: usize, cx: &mut Context<Self>) -> impl IntoElement {
-        let view = cx.entity().downgrade();
-        h_flex()
-            .px_3()
-            .py_2()
-            .gap_2()
-            .child(div().flex_1().text_xs().text_color(cx.theme().muted_foreground).child(format!(
-                "共 {total} 条 · CLI 与桌面端共享 .requestbaby/runs/（自动保留最近 {} 条）",
-                history::KEEP_RUNS
-            )))
-            .child(
-                Button::new("history-clean")
-                    .xsmall()
-                    .outline()
-                    .icon(IconName::Delete)
-                    .label("清理")
-                    .disabled(total == 0)
-                    .dropdown_menu(move |menu, _, _| {
-                        let clean = |label: &'static str, c: history::Clean, title: &'static str| {
-                            super::sidebar::menu_item(&view, label, IconName::Delete, move |w, window, cx| w.clean_history(c, title, window, cx))
-                        };
-                        menu.item(clean("只保留最近 20 条", history::Clean { keep: Some(20), ..Default::default() }, "只保留最近 20 条运行记录？"))
-                            .item(clean(
-                                "删除 7 天前的",
-                                history::Clean { older_than_ms: Some(7 * 86_400_000), ..Default::default() },
-                                "删除 7 天前的运行记录？",
-                            ))
-                            .separator()
-                            .item(clean("清空全部历史…", history::Clean::default(), "清空全部运行历史？"))
-                    }),
-            )
-    }
-
-    fn delete_history(&mut self, id: String, window: &mut Window, cx: &mut Context<Self>) {
-        match history::delete(self.project.root(), &id) {
-            Ok(()) => {
-                self.after_history_cleaned(cx);
-                window.push_notification(Notification::success("已删除这条运行记录"), cx);
-            }
-            Err(e) => window.push_notification(Notification::error(format!("{e:#}")), cx),
-        }
-    }
-
     fn clean_history(&mut self, clean: history::Clean, title: &'static str, window: &mut Window, cx: &mut Context<Self>) {
         let (root, this) = (self.project.root().to_path_buf(), cx.entity().downgrade());
         crate::dialogs::confirm_danger(

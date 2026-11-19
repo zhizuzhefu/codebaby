@@ -1483,6 +1483,47 @@ fn web_case_runs_in_real_browser_with_step_screenshots() {
     assert!(out.status.success());
     let html = std::fs::read_to_string(d.join("report.html")).unwrap();
     assert!(html.contains("data:image/jpeg;base64,") && html.contains("步骤明细") && html.contains("openLB"));
+
+    // 实时进度：每做完一步就有一条 uiStep 事件，且都在该用例的 caseFinished 之前（不必等用例结束）
+    let out = run_cli(&["run", "collections/web/01-登录.json", "--json-stream"], d);
+    let events: Vec<serde_json::Value> = String::from_utf8_lossy(&out.stdout).lines().filter_map(|l| serde_json::from_str(l).ok()).collect();
+    let kinds: Vec<&str> = events.iter().map(|e| e["event"].as_str().unwrap_or_default()).collect();
+    let finished = kinds.iter().position(|k| *k == "caseFinished").expect("有 caseFinished");
+    let steps: Vec<&serde_json::Value> = events.iter().take(finished).filter(|e| e["event"] == "uiStep").collect();
+    assert!(steps.len() >= 3, "{kinds:?}");
+    assert_eq!(steps[0]["step"]["index"], 0);
+    assert!(steps.iter().all(|e| e["file"] == "collections/web/01-登录.json" && e["dir"].as_str().is_some_and(|d| !d.is_empty())));
+    // 实时事件与最终结果里的步骤一致
+    let final_steps = events[finished]["result"]["response"]["evidence"]["steps"].as_array().unwrap().len();
+    assert_eq!(steps.len(), final_steps);
+}
+
+/// 实时步骤事件与日志同样脱敏：填进页面的 secret 变量值（手机号 / 密码）不能出现在事件流里
+#[test]
+fn web_live_step_events_redact_secret_values() {
+    if requestbaby_core::engine::cdp::find_browser(None).is_err() {
+        eprintln!("跳过：本机没有 Chrome / Edge / Chromium");
+        return;
+    }
+    let dir = TempDir::new().unwrap();
+    let d = dir.path();
+    std::fs::write(d.join("requestbaby.json"), r#"{"version":1,"defaultEnv":"dev","vars":{"phone":{"value":"13800000000","secret":true}}}"#).unwrap();
+    std::fs::create_dir_all(d.join("site")).unwrap();
+    std::fs::create_dir_all(d.join("collections/web")).unwrap();
+    std::fs::create_dir_all(d.join("envs")).unwrap();
+    std::fs::write(d.join("site/login.html"), r#"<!doctype html><meta charset="utf-8"><title>登录</title><label>手机号 <input id="p"></label>"#).unwrap();
+    let base = format!("file://{}", d.join("site").display());
+    std::fs::write(d.join("envs/dev.json"), serde_json::json!({ "vars": { "site": base } }).to_string()).unwrap();
+    std::fs::write(
+        d.join("collections/web/01-登录.json"),
+        r#"{"name":"登录","web":{"url":"{{site}}/login.html","steps":[{"fill":{"label":"手机号"},"value":"{{phone}}"}]}}"#,
+    )
+    .unwrap();
+    let out = run_cli(&["run", "collections/web/01-登录.json", "--json-stream"], d);
+    let stream = String::from_utf8_lossy(&out.stdout);
+    assert!(stream.contains("uiStep"), "{stream}");
+    assert!(!stream.contains("13800000000"), "secret 值泄露到事件流：{stream}");
+    assert!(stream.contains("****"), "{stream}");
 }
 
 /// 远程浏览器：另起一个开着调试端口的 Chrome（相当于 Docker / 另一台机器上的浏览器），用 web.endpoint 连接

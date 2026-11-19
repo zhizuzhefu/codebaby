@@ -1,7 +1,9 @@
 //! 运行期事件协议：CLI（`run --json-stream` 逐行 NDJSON）与 Desktop（进程内 channel）共用。
 //!
-//! 事件序列：`runStarted` → [`stepStarted`] (`caseStarted` → `log`* → `caseFinished`)* [`stepFinished`] … → `notice`* → `runFinished`
+//! 事件序列：`runStarted` → [`stepStarted`] (`caseStarted` → `log`* → [`uiStep`]* → `caseFinished`)* [`stepFinished`] … → `notice`* → `runFinished`
+//! （`uiStep` 仅 Web / Android 界面用例出现：每做完一步就发一条，不必等用例结束；截图已写入证据目录）
 //! （`stepStarted` / `stepFinished` 仅流程 / verify 运行出现）
+use crate::engine::ui::StepRecord;
 use crate::report::{CaseReport, RunReport};
 use serde::{Deserialize, Serialize};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -21,6 +23,9 @@ pub enum RunEvent {
     CaseStarted { file: String, name: String },
     #[serde(rename_all = "camelCase")]
     Log { file: String, line: String },
+    /// 界面用例刚完成的一步（`dir` 是证据目录，`step.screenshot` 在其中；用例结束后同样的记录在 `caseFinished` 的 `response.evidence` 里）
+    #[serde(rename_all = "camelCase")]
+    UiStep { file: String, dir: String, step: StepRecord },
     #[serde(rename_all = "camelCase")]
     CaseFinished { result: CaseReport },
     /// 非用例级提示（teardown 失败等）
