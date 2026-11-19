@@ -162,7 +162,7 @@ AI 依据报错自修复 → 循环直到通过
   远程执行：Web 可连远程浏览器（`web.endpoint`：http 调试端口经 /json/version 解析并改写主机，或直接 ws/wss，
   wss 复用 rustls + 平台证书校验；远程浏览器只断开不关闭），Android 网络序列号自动 `adb connect`、`android.server` 连远程 adb server。
 - **发布与更新**（`update`）：GitHub Release 是唯一渠道；检查 / 下载 / SHA256 校验 / 替换自身只在 core 实现一遍，
-  `requestbaby upgrade` 与桌面端「新版本」共用，走统一代理规则。DMG 在本机签名公证后上传，CI 只构建命令行（见 docs/RELEASING.md）
+  `requestbaby upgrade` 与桌面端「新版本」共用，走统一代理规则。DMG 与命令行包都在本机构建，DMG 签名公证后上传，不使用 CI（见 docs/RELEASING.md）
 - **代理**（`engine::proxy`）：一条规则（跟随系统 = 环境变量 → macOS 系统代理设置 / 使用代理 / 直连，本机地址始终直连）覆盖全部对外连接。
   libcurl 原生代理；gRPC / WebSocket / CDP 用自带的 SOCKS5 / HTTP CONNECT 拨号器；本机浏览器经进程内 SOCKS5 中转（浏览器不支持带认证的 SOCKS5）；
   adb 经本地转发端口。设置读写在 `proxy_setting`（CLI `requestbaby proxy` 与桌面端项目设置共用）
@@ -170,4 +170,4 @@ AI 依据报错自修复 → 循环直到通过
 ## 10. 支持矩阵
 
 - 协议：http/https、gRPC、WebSocket；界面：Web（Chrome / Edge / Chromium，本机或远程）、Android（adb，本机 / 网络设备 / 远程 adb server）
-- 平台：macOS / Linux（Windows 未声明）
+- 平台：安装包只提供 macOS（桌面端 + 命令行）；Linux 可从源码构建命令行，Windows 未声明

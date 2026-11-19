@@ -63,9 +63,8 @@ AI 交付的独立验收层，辅助人对 AI 交付的成果验收。
 | macOS 桌面端 | `requestbaby-<版本>.dmg` | 已签名并通过 Apple 公证，macOS 12 以上 |
 | 命令行，macOS（Apple 芯片） | `requestbaby-aarch64-apple-darwin.tar.gz` | |
 | 命令行，macOS（Intel） | `requestbaby-x86_64-apple-darwin.tar.gz` | |
-| 命令行，Linux（x86_64） | `requestbaby-x86_64-unknown-linux-musl.tar.gz` | 静态链接，不依赖系统库 |
 
-每个安装包旁边有同名的 `.sha256` 文件，可以用来校验下载是否完整。Windows 暂时没有安装包。
+每个安装包旁边有同名的 `.sha256` 文件，可以用来校验下载是否完整。暂时没有 Linux 和 Windows 的安装包，Linux 可以[从源码构建](#从源码构建)命令行。
 
 ### 桌面端
 

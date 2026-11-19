@@ -9,15 +9,16 @@
    - 检查：在 main、工作区干净、与 origin/main 一致、标签未被占用、CHANGELOG 有本版本
    - `cargo test` + `clippy -D warnings`
    - **本机**构建 universal DMG：Developer ID 签名 + 公证，生成 `.sha256`
-   - 建 GitHub Release **草稿**并上传 DMG
-   - 推送 `vX.Y.Z` 标签，CI 构建 Linux x86_64 / macOS arm64 / macOS x86_64 的命令行包（各带 `.sha256`）并传到同一个草稿
-   - 附件到齐后发布；此后用户的「检查更新」才会看到新版本
+   - 打包 macOS 命令行（Apple 芯片 / Intel，各带 `.sha256`），建 GitHub Release **草稿**并上传全部 6 个附件，推送 `vX.Y.Z` 标签
+   - 附件数量核对无误后发布；此后用户的「检查更新」才会看到新版本
 
-`scripts/release.sh --dry-run` 只做检查。CI 没传齐时草稿保留，修好后 `gh release edit vX.Y.Z --draft=false` 手动发布。
+`scripts/release.sh --dry-run` 只做检查。附件数量不对时草稿保留，核对后 `gh release edit vX.Y.Z --draft=false --latest` 手动发布。
+
+发布全程在本机完成，仓库不使用 CI（GitHub Actions）；测试与 clippy 由发布脚本在发布前跑。目前只提供 macOS 安装包，没有 Linux / Windows 包。
 
 ## 为什么签名公证在本机
 
-Apple 证书和公证凭据只存在维护者的钥匙串里，不放进 GitHub Secrets：CI 不接触任何 Apple 账号信息，仓库开源后也没有可被 fork / PR 工作流窃取的密钥。代价是发版要在有证书的那台 Mac 上做。
+Apple 证书和公证凭据只存在维护者的钥匙串里，不放进 GitHub Secrets，仓库开源后也没有可被 fork / PR 工作流窃取的密钥。代价是发版要在有证书的那台 Mac 上做。
 
 ## 用户怎么获得更新
 
