@@ -112,14 +112,15 @@ impl Workspace {
     }
 
     /// 项目菜单：自动检查开关
-    pub(super) fn auto_update_item(view: &gpui_kit::WeakEntity<Workspace>) -> PopupMenuItem {
+    pub(super) fn auto_update_item(_view: &gpui_kit::WeakEntity<Workspace>) -> PopupMenuItem {
         let auto = Prefs::load().auto;
-        menu_item(view, "启动时自动检查更新", IconName::Check, move |_, window, cx| {
-            let mut p = Prefs::load();
-            p.auto = !p.auto;
-            p.save();
-            window.push_notification(Notification::info(if p.auto { "已开启：启动时每天最多检查一次" } else { "已关闭自动检查更新" }), cx);
-        })
-        .checked(auto)
+        PopupMenuItem::new("启动时自动检查更新")
+            .checked(auto)
+            .on_click(move |_, window, cx| {
+                let mut p = Prefs::load();
+                p.auto = !p.auto;
+                p.save();
+                window.push_notification(Notification::info(if p.auto { "已开启：启动时每天最多检查一次" } else { "已关闭自动检查更新" }), cx);
+            })
     }
 }

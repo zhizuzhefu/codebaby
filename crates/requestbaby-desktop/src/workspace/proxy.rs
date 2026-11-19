@@ -1,11 +1,11 @@
-//! 标题栏的代理入口：一眼看到当前状态，一键切换 跟随系统 / 使用代理 / 不使用代理，地址与直连主机在「项目设置」里改。
+//! 标题栏的代理入口：显示当前代理模式，一键切换 跟随系统 / 使用代理 / 不使用代理（直连），地址与直连主机在「项目设置」里改。
 //! 读写走 core::proxy_setting，与 `requestbaby proxy on / off / unset` 和项目设置里的「代理」同一实现。
 use super::sidebar::menu_item;
 use super::{Target, Workspace};
 use gpui_kit::component::{
     Icon, IconName, Sizable as _, WindowExt as _,
     button::{Button, ButtonVariants as _},
-    menu::DropdownMenu as _,
+    menu::{DropdownMenu as _, PopupMenuItem},
     notification::Notification,
 };
 use gpui_kit::{AnyElement, Context, IntoElement, Window};
@@ -40,18 +40,21 @@ impl Workspace {
         let view = cx.entity().downgrade();
         let label = match mode {
             Mode::System => "代理：跟随系统",
-            Mode::On => "代理：已开启",
-            Mode::Off => "代理：已关闭",
+            Mode::On => "代理：使用代理",
+            Mode::Off => "代理：直连",
         };
         let mut b = Button::new("proxy-menu").small().icon(Icon::new(IconName::Network)).label(label);
         b = if mode == Mode::On { b.primary() } else { b.ghost() };
-        b.tooltip("所有请求 / 浏览器 / adb 的代理（requestbaby proxy）；地址在项目设置里改")
+        b.tooltip("代理模式")
             .dropdown_menu(move |menu, _, _| {
-                let mut menu = menu;
+                let mut menu = menu.item(PopupMenuItem::label("代理模式"));
                 for m in [Mode::System, Mode::On, Mode::Off] {
-                    menu = menu.item(menu_item(&view, m.label(), IconName::Check, move |w, window, cx| w.set_proxy_mode(m, window, cx)).checked(m == mode));
+                    let view = view.clone();
+                    menu = menu.item(PopupMenuItem::new(m.label()).checked(m == mode).on_click(move |_, window, cx| {
+                        let _ = view.update(cx, |w, cx| w.set_proxy_mode(m, window, cx));
+                    }));
                 }
-                menu.separator().item(menu_item(&view, "代理设置…（地址 / 直连主机）", IconName::Settings2, |w, window, cx| w.open(Target::Project, window, cx)))
+                menu.separator().item(menu_item(&view, "代理设置…", IconName::Settings2, |w, window, cx| w.open(Target::Project, window, cx)))
             })
             .into_any_element()
     }

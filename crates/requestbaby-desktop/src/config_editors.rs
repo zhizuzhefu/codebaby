@@ -519,21 +519,21 @@ impl ProjectEditor {
         let muted = cx.theme().muted_foreground;
         let mode = self.proxy_mode_of(cx);
         let note = match mode {
-            proxy_setting::Mode::System => "按系统的代理设置：先看 HTTPS_PROXY / ALL_PROXY 等环境变量，没有再看系统设置 → 网络 → 代理，都没有则直连",
-            proxy_setting::Mode::On => "HTTP / gRPC / WebSocket / 浏览器 / adb 全部经这个代理；本机地址（localhost / 127.0.0.1）始终直连。账号密码可写成 {{变量}} 放进 envs/<环境>.local.json",
-            proxy_setting::Mode::Off => "全部直连，也不使用环境变量里的代理；地址保留，切回「使用代理」即可",
+            proxy_setting::Mode::System => "沿用环境变量和系统的代理设置，都没有则直连",
+            proxy_setting::Mode::On => "所有请求、浏览器、adb 都经这个代理；localhost 始终直连",
+            proxy_setting::Mode::Off => "全部直连，忽略环境变量和系统的代理；地址会保留",
         };
         v_flex()
             .gap_2()
-            .child(section("代理", "所有对外连接走同一条规则（与 requestbaby proxy 同一设置）", cx))
+            .child(section("代理", "所有对外连接走同一个代理", cx))
             .child(
                 h_flex()
                     .gap_3()
                     .items_end()
-                    .child(v_flex().w(px(200.)).gap_1().child(div().text_xs().text_color(muted).child("模式")).child(Select::new(&self.proxy_mode).small()))
+                    .child(v_flex().w(px(200.)).gap_1().child(div().text_xs().text_color(muted).child("代理模式")).child(Select::new(&self.proxy_mode).small()))
                     .when(mode != proxy_setting::Mode::System, |this| {
-                        this.child(v_flex().flex_1().gap_1().child(div().text_xs().text_color(muted).child("代理地址（socks5 / socks5h / http）")).child(Input::new(&self.proxy_url).small()))
-                            .child(v_flex().w(px(260.)).gap_1().child(div().text_xs().text_color(muted).child("直连主机（逗号分隔）")).child(Input::new(&self.proxy_bypass).small()))
+                        this.child(v_flex().flex_1().gap_1().child(div().text_xs().text_color(muted).child("代理地址（socks5 / http）")).child(Input::new(&self.proxy_url).small()))
+                            .child(v_flex().w(px(260.)).gap_1().child(div().text_xs().text_color(muted).child("直连的主机（逗号分隔）")).child(Input::new(&self.proxy_bypass).small()))
                     }),
             )
             .child(div().text_xs().text_color(muted).child(note))
