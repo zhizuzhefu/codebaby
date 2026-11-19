@@ -5,7 +5,7 @@ use crate::recent;
 use crate::{CloseProject, ImportSpec, InstallCli, NewProject, OpenProject, ToggleTheme};
 use gpui_kit::component::{
     ActiveTheme as _, Icon, IconName, Sizable as _, Theme, ThemeMode, TitleBar, WindowExt as _, h_flex,
-    button::Button,
+    button::{Button, ButtonVariants as _},
     notification::Notification,
     v_flex,
 };
@@ -234,7 +234,14 @@ impl Shell {
                             .child(action("welcome-import", IconName::Inbox, "导入", "从 OpenAPI / Swagger / Postman 生成完整项目", Self::prompt_import)),
                     )
                     .child(self.render_recent(cx))
-                    .child(div().text_xs().text_color(muted).child("也可在终端执行 requestbaby open 直接打开当前项目")),
+                    .child(div().text_xs().text_color(muted).child("也可在终端执行 requestbaby open 直接打开当前项目"))
+                    .child(
+                        h_flex()
+                            .gap_2()
+                            .child(Button::new("welcome-website").ghost().small().icon(IconName::ExternalLink).label("官网与下载").on_click(|_, _, cx| cx.open_url(requestbaby_core::about::WEBSITE)))
+                            .child(Button::new("welcome-docs").ghost().small().icon(IconName::ExternalLink).label("文档").on_click(|_, _, cx| cx.open_url(requestbaby_core::about::DOCS)))
+                            .child(Button::new("welcome-issues").ghost().small().icon(IconName::ExternalLink).label("反馈问题").on_click(|_, _, cx| cx.open_url(requestbaby_core::about::ISSUES))),
+                    ),
             )
     }
 }

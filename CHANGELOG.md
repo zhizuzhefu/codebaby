@@ -9,4 +9,5 @@
 - 新增代理：HTTP / gRPC / WebSocket / 浏览器 / adb 全部经同一条规则，支持 socks5 / socks5h / http；不配置时跟随系统（环境变量 → macOS 系统代理）；`requestbaby proxy` 与桌面端「项目设置 → 代理」同一设置
 - 新增 `requestbaby upgrade` 与桌面端「新版本」提示：检查并升级到最新版本（SHA256 校验）
 - 桌面端：侧栏「新建」改为醒目的按钮；协议名统一为「HTTP / HTTPS」
+- 新增「关于 / 帮助」入口：桌面端应用菜单、「帮助」菜单、项目菜单和欢迎页可直达官网、文档、更新日志与反馈；命令行新增 `requestbaby about`
 - 命令行与桌面端拆分为两个独立程序，共用同一套核心

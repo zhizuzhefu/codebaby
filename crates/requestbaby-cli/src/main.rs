@@ -12,6 +12,7 @@ use std::sync::Arc;
     name = "requestbaby",
     version,
     about = "Independent acceptance layer for AI-delivered work: JSON test cases for HTTP / gRPC / WebSocket APIs and Web / Android UIs, with step-by-step screenshot evidence",
+    after_help = "官网与下载：https://apps.zhizuzhefu.com/requestbaby/　反馈：https://github.com/zhizuzhefu/requestbaby/issues",
     long_about = "requestbaby — AI 交付的独立验收层，辅助人对 AI 交付的成果验收：在接口边界核对行为，一个 JSON 文件一个用例。\nAI / LLM 对接：requestbaby guide（用例格式 + 调度协议）；配置契约：requestbaby schema --all。"
 )]
 struct Cli {
@@ -83,6 +84,8 @@ enum Cmd {
         #[command(subcommand)]
         action: AndroidCmd,
     },
+    /// 关于：版本、官网、源码、文档与反馈地址
+    About,
     /// 检查并升级到最新版本（下载 GitHub Release 的安装包，校验 SHA256 后替换自身）
     Upgrade {
         /// 只检查有没有新版本，不安装（有新版本时 exit 1，便于脚本判断）
@@ -651,6 +654,10 @@ fn main() -> ExitCode {
         Cmd::Web { action } => cmd_web(action),
         Cmd::Android { action } => cmd_android(action),
         Cmd::Proxy { action } => cmd_proxy(action),
+        Cmd::About => {
+            println!("{}", requestbaby_core::about::text());
+            0
+        }
         Cmd::Upgrade { check } => cmd_upgrade(check),
         Cmd::Env { action } => cmd_env(action.unwrap_or(EnvCmd::List { json: false })),
         Cmd::Case { action: CaseCmd::New(a) } => cmd_new(NewCmd::Case(a)),

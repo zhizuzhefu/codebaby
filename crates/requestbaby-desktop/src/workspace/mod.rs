@@ -1385,6 +1385,9 @@ impl Workspace {
                                         );
                                     }))
                                     .separator()
+                                    .item(menu_item(&view, "官网与文档", IconName::ExternalLink, |_, _, cx| cx.open_url(requestbaby_core::about::WEBSITE)))
+                                    .item(menu_item(&view, "反馈问题…", IconName::ExternalLink, |_, _, cx| cx.open_url(requestbaby_core::about::ISSUES)))
+                                    .separator()
                                     .item(PopupMenuItem::new("在 Finder 中显示").icon(IconName::Folder).on_click(move |_, _, cx| cx.reveal_path(&root)))
                                     .separator()
                                     .item(menu_item(&view, "关闭项目", IconName::Close, |_, _, cx| cx.emit(ShellRequest::CloseProject)))

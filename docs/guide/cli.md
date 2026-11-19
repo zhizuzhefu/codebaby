@@ -69,6 +69,7 @@ requestbaby verify -e dev --report json
 requestbaby init                          # 项目骨架 + AGENTS.md / CLAUDE.md
 requestbaby guide --init                  # 已有项目补 AGENTS.md / CLAUDE.md
 requestbaby schema --all                  # 四类配置文件的 JSON Schema
+requestbaby about                         # 版本、官网、源码、文档与反馈地址
 requestbaby upgrade                       # 升级到最新版本（--check 只检查，有新版本时 exit 1）
 requestbaby doctor                        # 环境自检：引擎 / 配置 / 环境文件 / baseUrl 可达 / 浏览器 / adb
 requestbaby import openapi.json -o api/   # OpenAPI 3 / Swagger 2 / Postman v2.1 → 用例

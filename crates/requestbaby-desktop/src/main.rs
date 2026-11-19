@@ -28,7 +28,7 @@ use std::path::PathBuf;
 
 actions!(
     requestbaby,
-    [SaveCase, SendCase, RunAll, RunWithOptions, Verify, StopRun, ToggleTheme, OpenProject, NewProject, ImportSpec, CloseProject, Quit, QuickOpen, FindInTree, InstallCli, ManageEnvs]
+    [SaveCase, SendCase, RunAll, RunWithOptions, Verify, StopRun, ToggleTheme, OpenProject, NewProject, ImportSpec, CloseProject, Quit, QuickOpen, FindInTree, InstallCli, ManageEnvs, OpenWebsite, OpenDocs, OpenChangelog, ReportIssue]
 );
 
 fn main() {
@@ -54,6 +54,11 @@ fn main() {
             KeyBinding::new("cmd-q", Quit, None),
         ]);
         cx.on_action(|_: &Quit, cx| cx.quit());
+        // 关于 / 帮助：不依赖当前打开的项目，欢迎页与工作区都可用
+        cx.on_action(|_: &OpenWebsite, cx| cx.open_url(requestbaby_core::about::WEBSITE));
+        cx.on_action(|_: &OpenDocs, cx| cx.open_url(requestbaby_core::about::DOCS));
+        cx.on_action(|_: &OpenChangelog, cx| cx.open_url(requestbaby_core::about::CHANGELOG));
+        cx.on_action(|_: &ReportIssue, cx| cx.open_url(requestbaby_core::about::ISSUES));
         // 单窗口应用：窗口关闭即退出，不留下没有窗口的 Dock 图标
         cx.on_window_closed(|cx, _| {
             if cx.windows().is_empty() {
@@ -63,6 +68,8 @@ fn main() {
         .detach();
         cx.set_menus([
             Menu::new("requestbaby").items([
+                MenuItem::action("关于 requestbaby（官网）", OpenWebsite),
+                MenuItem::separator(),
                 MenuItem::action("安装命令行工具…", InstallCli),
                 MenuItem::separator(),
                 MenuItem::action("退出 requestbaby", Quit),
@@ -90,6 +97,13 @@ fn main() {
                 MenuItem::action("环境管理…", ManageEnvs),
                 MenuItem::separator(),
                 MenuItem::action("切换深色 / 浅色主题", ToggleTheme),
+            ]),
+            Menu::new("帮助").items([
+                MenuItem::action("官网与下载", OpenWebsite),
+                MenuItem::action("文档", OpenDocs),
+                MenuItem::action("更新日志", OpenChangelog),
+                MenuItem::separator(),
+                MenuItem::action("反馈问题…", ReportIssue),
             ]),
         ]);
         cx.activate(true);

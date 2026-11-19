@@ -6,7 +6,7 @@ AI 交付的独立验收层，辅助人对 AI 交付的成果验收。
 
 有命令行，也有 macOS 桌面端，两边读写同一个项目目录。
 
-[下载安装](#下载安装) · [快速上手](#快速上手) · [最新版本](https://github.com/zhizuzhefu/requestbaby/releases/latest) · [更新日志](CHANGELOG.md)
+[官网](https://apps.zhizuzhefu.com/requestbaby/) · [下载安装](#下载安装) · [快速上手](#快速上手) · [最新版本](https://github.com/zhizuzhefu/requestbaby/releases/latest) · [更新日志](CHANGELOG.md)
 
 ![桌面端：左边是用例，中间编辑，右边是每一步的截图，下面是这次运行的结果](docs/images/desktop-web-steps.png)
 

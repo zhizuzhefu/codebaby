@@ -3,6 +3,7 @@
 //! 规则：本 crate 不直接写 stdout/stderr、不输出 ANSI 颜色；
 //! 一切运行期信息通过 [`runner::RunEvent`] 事件流交给上层渲染。
 //! 两端的每个能力（运行（HTTP / gRPC / WebSocket）、流程、单发、校验、格式化、脚手架、自检、变量预览、完整验证、AI 对接文档）都只在这里实现一次。
+pub mod about;
 pub mod config;
 pub mod cookies;
 pub mod doctor;
