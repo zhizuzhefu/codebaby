@@ -1,7 +1,7 @@
 [package]
 name = "requestbaby"
-description = "Independent acceptance layer for AI-delivered code: file-based HTTP / gRPC / WebSocket cases that help humans accept AI work"
-keywords = ["api", "testing", "cli", "e2e", "curl"]
+description = "Independent acceptance layer for AI-delivered work: JSON test cases for HTTP / gRPC / WebSocket APIs and Web / Android UIs, with step-by-step screenshot evidence"
+keywords = ["api-testing", "e2e", "grpc", "websocket", "acceptance"]
 categories = ["command-line-utilities", "development-tools::testing"]
 version.workspace = true
 edition.workspace = true

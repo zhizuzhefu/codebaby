@@ -11,7 +11,7 @@ use std::sync::Arc;
 #[command(
     name = "requestbaby",
     version,
-    about = "Independent acceptance layer for AI-delivered code: file-based API cases (HTTP / gRPC / WebSocket) that help humans accept AI work",
+    about = "Independent acceptance layer for AI-delivered work: JSON test cases for HTTP / gRPC / WebSocket APIs and Web / Android UIs, with step-by-step screenshot evidence",
     long_about = "requestbaby — AI 交付的独立验收层，辅助人对 AI 交付的成果验收：在接口边界核对行为，一个 JSON 文件一个用例。\nAI / LLM 对接：requestbaby guide（用例格式 + 调度协议）；配置契约：requestbaby schema --all。"
 )]
 struct Cli {

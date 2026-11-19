@@ -1,35 +1,111 @@
 # requestbaby
 
-> AI 交付的独立验收层，辅助人对 AI 交付的成果验收。在接口边界（HTTP / gRPC / WebSocket）和真实界面（Web / Android，每一步截图留证）核对行为，一个 JSON 文件一个用例；命令行给 AI 和 CI 跑，桌面端给人审、给人改，两边读写同一个目录，结论一致。
+AI 交付的独立验收层，辅助人对 AI 交付的成果验收。
 
+用 JSON 文件写下「发什么请求、点哪些按钮，应该得到什么结果」，requestbaby 真的去跑一遍，告诉你通过还是失败。接口（HTTP / gRPC / WebSocket）和界面（Web / Android）都能验收，界面验收的每一步都会截图留证。
+
+有命令行，也有 macOS 桌面端，两边读写同一个项目目录。
+
+[下载安装](#下载安装) · [快速上手](#快速上手) · [最新版本](https://github.com/zhizuzhefu/requestbaby/releases/latest) · [更新日志](CHANGELOG.md)
+
+## 适合谁用
+
+- 让 AI 写后端或前端，想自己握有一套验收标准，不用逐行读代码的人
+- 想把接口检查、界面检查放进 CI 的团队
+- 需要给测试结果留证据的场合：请求响应记录、每一步的截图、可以直接转发的报告
+
+## 能做什么
+
+**验收接口**
+
+- HTTP / HTTPS、gRPC、WebSocket。gRPC 用服务端反射或 `.proto` 文件，不用生成代码；WebSocket 可以逐步发送、接收、断言
+- 断言状态码、响应头，以及响应体里的任意字段
+- 登录拿到的 token 之类的值可以存成变量，后面的用例直接用
+- 环境：dev / test / prod 各有一套地址和账号；密钥放在不入库的本机文件里
+- 把几个集合按顺序串成流程；一个用例可以按多组数据重复运行
+- 从 OpenAPI / Swagger / Postman / cURL 导入现成的接口
+
+**验收界面**
+
+- Web：直接驱动本机的 Chrome / Edge，不需要 Playwright 或 Node；也可以连 Docker、云端的远程浏览器
+- Android：通过 adb 操作真机或模拟器，远程模拟器、云手机也可以
+- 按人看到的样子找元素（名叫「登录」的按钮、标签是「手机号」的输入框），自动等元素就绪再操作，不用写 sleep
+- 每一步自动截图，并框出点了哪里、验证了哪个元素；失败时另存页面、控制台、网络请求（Android 是界面结构和 logcat）
+- HTML 报告是单个文件，截图已经嵌在里面，发给别人直接打开
+
+**结果与协作**
+
+- 命令行退出码就是结论，方便放进 CI；也可以输出 JSON 或 HTML 报告
+- 保留运行历史，记录每次运行对应的代码提交；同一个提交上时过时不过的用例会标成「不稳定」
+- 桌面端可以可视化地编辑用例、看响应和截图，每个操作都有对应的命令
+- 所有对外连接可以统一走代理（socks5 / http），也可以一键关掉
+- 判断通过与否不调用大模型，不消耗 token，同样的用例每次得到同样的结论
+- 单个可执行文件，运行时不依赖其他软件
+
+## 下载安装
+
+所有安装包都在 [Releases](https://github.com/zhizuzhefu/requestbaby/releases/latest) 页面。
+
+| 你要装的 | 下载 | 说明 |
+|----------|------|------|
+| macOS 桌面端 | `requestbaby-<版本>.dmg` | 已签名并通过 Apple 公证，macOS 12 以上 |
+| 命令行，macOS（Apple 芯片） | `requestbaby-aarch64-apple-darwin.tar.gz` | |
+| 命令行，macOS（Intel） | `requestbaby-x86_64-apple-darwin.tar.gz` | |
+| 命令行，Linux（x86_64） | `requestbaby-x86_64-unknown-linux-musl.tar.gz` | 静态链接，不依赖系统库 |
+
+每个安装包旁边有同名的 `.sha256` 文件，可以用来校验下载是否完整。Windows 暂时没有安装包。
+
+### 桌面端
+
+打开 DMG，把 requestbaby 拖进「应用程序」。桌面端自带命令行：在菜单里选「安装命令行工具」，终端里就能直接用 `requestbaby` 命令。
+
+### 命令行
+
+以 macOS Apple 芯片为例，其他平台换成对应的文件名：
+
+```bash
+curl -LO https://github.com/zhizuzhefu/requestbaby/releases/latest/download/requestbaby-aarch64-apple-darwin.tar.gz
+tar -xzf requestbaby-aarch64-apple-darwin.tar.gz
+sudo mv requestbaby /usr/local/bin/
+requestbaby --version
 ```
- ____                             _         _         ____
-|  _ \ ___  ___ _ __     _ __ ___| |_ _   _| | ___   / ___|__ _ _ __ ___   ___
-| |_) / _ \/ __| '_ \   | '__/ _ \ __| | | | |/ _ \ | |   / _` | '_ ` _ \ / _ \
-|  _ <  __/\__ \ |_) |  | | |  __/ |_| |_| | |  __/ | |__| (_| | | | | | |  __/
-|_| \_\___||___/ .__/   |_|  \___|\__|\__,_|_|\___|  \____\__,_|_| |_| |_|\___|
-               |_|
+
+### 升级
+
+命令行运行 `requestbaby upgrade`，会下载最新版本、校验后替换自己；加 `--check` 只检查不安装。桌面端启动时会检查，有新版本时状态栏会提示。
+
+### 从源码构建
+
+需要 Rust（rustup）和 cmake：
+
+```bash
+cargo install --locked --path crates/requestbaby-cli       # 命令行
+make mac-app && make install-mac                            # macOS 桌面端，装到 /Applications
 ```
 
-## 它解决什么
+### 运行环境
 
-AI 交付得越来越快，人没法逐行审代码。requestbaby 是 AI 交付的**独立验收层**：不看实现，只在接口边界核对行为，辅助人对 AI 交付的成果做验收。
+- Web 用例需要本机装有 Chrome、Edge 或 Chromium（或者连接远程浏览器）
+- Android 用例需要 [adb](https://developer.android.com/tools/releases/platform-tools)，以及一台开着调试的设备或模拟器
 
-- **独立**：用例只写「发什么请求、应得什么响应」，与实现代码分开；AI 改得了代码，绕不开接口行为
-- **人做决定**：用例是普通 JSON 文件，进 Git、能 review；人审几十行用例定下约定，不必逐行审实现
-- **结论可复现**：`requestbaby verify` 一条命令跑完全部用例与流程，退出码 0 / 1 / 2 就是结论；每次运行连同等价命令写进共享历史，CLI、桌面端、CI 看到同一份证据
+`requestbaby doctor` 会检查这些是否就绪。
 
-## 5 个概念
+## 快速上手
 
-| 概念 | 是什么 | 在哪 |
-|------|--------|------|
-| 用例 | 一个请求 + 它应得的响应 | `collections/**/NN-名称.json`，文件名序 = 执行序 |
-| 集合 | 一个目录；公共请求头、标签 | 目录里的 `collection.json`（可选） |
-| 环境 | 一组变量：`baseUrl`、账号 | `envs/<环境>.json` |
-| 断言 | 响应应该是什么样 | 用例的 `expect` |
-| 流程 | 按顺序跑几个集合 | `requestbaby.json` 的 `workflows` |
+```bash
+requestbaby init myapi && cd myapi                          # 生成项目：dev / prod 环境、示例用例
+requestbaby vars set baseUrl http://localhost:8080 -e dev   # 告诉它被测服务在哪
+requestbaby new case collections/orders 创建订单 -m post    # 新建一个用例
+requestbaby send collections/orders/01-创建订单.json --suggest   # 发一次，看真实响应，并给出断言建议
+requestbaby run                                             # 跑全部用例
+requestbaby open                                            # 在桌面端打开这个项目
+```
 
-## 看懂一个用例
+已有接口的话：`requestbaby new case <目录> --curl "curl …"` 可以把浏览器里复制的 cURL 变成用例，`requestbaby import openapi.json` 可以导入 OpenAPI / Swagger / Postman 文件。
+
+## 一个用例长什么样
+
+一个 JSON 文件就是一个用例，放在 `collections/` 下，文件名顺序就是运行顺序。
 
 ```json case
 {
@@ -50,110 +126,69 @@ AI 交付得越来越快，人没法逐行审代码。requestbaby 是 AI 交付�
 }
 ```
 
-读法：向 `环境里的 baseUrl + /auth/login` 发 POST；期望状态码 200、响应体 `code` 等于 0、`data.token` 是字符串；
-把 `data.token` 存成变量 `token`，后面的用例写 `{{token}}` 就能用。失败时报告直接写明：`body.code = 0 → 期望 0，实际 4030001`。
+这个用例向环境里配置的 `baseUrl` 加 `/auth/login` 发一个 POST，期望状态码是 200、响应体里 `code` 等于 0、`data.token` 是字符串，并把 `data.token` 存成变量 `token`，后面的用例写 `{{token}}` 就能用。
 
-## HTTP、gRPC、WebSocket、Web、Android
+失败的时候，报告会直接写出差在哪：`body.code = 0 → 期望 0，实际 4030001`。
 
-一个用例对应一种协议，请求部分五选一；断言、捕获、变量、集合、流程、报告完全一样。
+界面用例的写法类似，把请求换成一步一步的操作：
 
-| 协议 | 请求写在 | `expect.status` | `expect.headers` | `expect.body` |
-|------|----------|-----------------|------------------|---------------|
-| HTTP | `request`：method、url、headers、body | 状态码 200 | 响应头 | 响应体 |
-| gRPC | `grpc`：target、method、message、metadata | `"OK"` / `"NOT_FOUND"`… | 响应元数据 | 响应消息（流式为数组） |
-| WebSocket | `ws`：url、headers、steps（发送 / 接收并断言 / 等到某条消息…） | 握手状态 101 | 握手响应头 | 收到的全部消息 |
-| Web | `web`：url、steps（点击 / 填写 / 断言…） | 页面的 HTTP 状态 | 页面响应头 | 结束时的 `{url, title}` |
-| Android | `android`：app、steps（点按 / 填写 / 滑动 / 断言…） | 无 | 无 | 结束时的 `{package, activity}` |
-
-gRPC 用服务端反射或项目里的 .proto 文件（`requestbaby.json` 的 `grpc.protos`），不需要生成代码；WebSocket 的每一步都能断言、捕获，
-后面的步骤直接用捕获的值。详见 `requestbaby guide grpc` / `requestbaby guide ws`。桌面端按协议切换各自的编辑界面与响应视图。
-
-Web / Android 用例按用户看得到的东西定位（`{"role": "button", "name": "登录"}`、`{"label": "手机号"}`），
-每一步自动等待、**自动截图**（点了哪里、验证到哪个元素都框出来），失败时另存页面结构、控制台、网络请求 / logcat；
-证据放在 `.requestbaby/runs/<运行 ID>/`，运行记录绑定代码提交，`run --report html` 生成带截图时间线的单文件报告。
-Web 直接驱动本机 Chrome / Edge（DevTools 协议，不需要 Playwright / Node），也能连 Docker / 云端的远程浏览器；Android 只需要 adb，远程模拟器 / 云手机写 `主机:端口` 自动连接；运行与判定不调用大模型、不消耗 token。
-详见 `requestbaby guide web` / `requestbaby guide android`。
-
-需要代理时一处设置、全部生效：`requestbaby proxy set socks5h://主机:端口`（或桌面端「项目设置 → 代理」），HTTP / gRPC / WebSocket / 浏览器 / adb 都经它，`proxy off` 一键直连。详见 `requestbaby guide proxy`。
-
-## 界面与文件一一对应
-
-| 桌面端 | 文件里 |
-|--------|--------|
-| 用例编辑器「请求」页 | `request`（方法、URL、参数、请求头、请求体） |
-| 「断言」页：状态码 / 响应体表 / 响应头表 | `expect.status` / `expect.body` / `expect.headers`（一行 = 一条） |
-| 「断言」页：捕获为变量 | `capture` |
-| 「脚本（进阶）」页 | `pre` / `post` / `tests`（JS，表格写不出的才用） |
-| 「高级」页 | `tags`、`skip`、超时、数据驱动 `cases` |
-| 侧栏「流程」/ 流程编辑器 | `requestbaby.json` 的 `workflows` |
-| 环境管理页 | `envs/*.json` |
-| 响应面板「字段」页：断言值 / 断言类型 / 捕获… | 往 `expect.body` / `capture` 里加一条 |
-
-每个操作都有等价命令（悬停查看或一键复制，如 `requestbaby send collections/demo/01-health.json -e dev`），保存的文件与 `requestbaby fmt` 的格式逐字节一致。
-在桌面端改、在编辑器里改、让 AI 改，是同一件事。
-
-## 安装
-
-```bash
-cargo install --locked --path crates/requestbaby-cli    # 命令行 requestbaby
-make mac-app && make install-mac                         # macOS 桌面端（本机签名）→ /Applications/requestbaby.app
+```json case
+{
+  "name": "登录后看到订单",
+  "web": {
+    "url": "{{webBase}}/login",
+    "steps": [
+      { "fill": { "label": "手机号" }, "value": "{{phone}}" },
+      { "fill": { "label": "密码" }, "value": "{{password}}" },
+      { "click": { "role": "button", "name": "登录" } },
+      { "expect": { "role": "heading", "name": "我的订单" } }
+    ]
+  }
+}
 ```
 
-构建需要 rustup 与 cmake（编译内嵌 libcurl）。运行时零外部依赖：libcurl 静态链接、TLS 用 rustls、证书走系统证书库。
-升级：`requestbaby upgrade`（命令行）；桌面端启动时检查，状态栏提示「新版本」。发版流程见 [docs/RELEASING.md](docs/RELEASING.md)（`make release`：本机签名公证 DMG，发布到 GitHub Release）。
+运行后，每一步都有一张截图，保存在 `.requestbaby/runs/` 下；加上 `--report html` 会得到一份带截图时间线的单文件报告。Android 用例把 `web` 换成 `android`，写应用包名和操作步骤即可。
 
-## 上手
+## 放进 CI
 
-```bash
-requestbaby init myapi && cd myapi          # 项目骨架：dev / prod 环境 + 示例集合 + AGENTS.md
-requestbaby vars set baseUrl http://localhost:8080 -e dev
-requestbaby new case collections/orders 创建订单 -m post
-requestbaby send collections/orders/01-创建订单.json --suggest   # 看真实响应，照着生成 expect / capture
-requestbaby run                              # 跑全部用例
-requestbaby verify                           # 校验 → 全部用例 → 全部流程，一个结论
-requestbaby open                             # 在桌面端打开
-```
-
-已有资产：`requestbaby new case <目录> --curl "curl …"`（浏览器 Copy as cURL）、`requestbaby import openapi.json`（OpenAPI 3 / Swagger 2 / Postman v2.1）。
-
-## 写偏了会被提醒
-
-`requestbaby validate` 除了报错，还给写法建议：长 JS 断言可以写成 expect、post 里的取值可以写成 capture、URL 写死了域名……
-带 `fixable` 的由 `requestbaby fmt --fix` 一键改写（语义不变，桌面端用例编辑器底部「一键改写」同一实现）。
-
-## 和 AI 一起用
-
-告诉 AI：「接口测试用 requestbaby，先执行 `requestbaby guide`」。它会读到一张 6KB 的速查卡，读完就能写出一次通过校验的用例；
-需要时再看 `requestbaby guide <主题>`。`requestbaby init` 生成的 `AGENTS.md` / `CLAUDE.md` 已经写好这条约定。
-
-文档三层，都编译在二进制里、与所装版本一致：
-
-| 层 | 命令 | 内容 |
-|----|------|------|
-| 速查卡 | `requestbaby guide` | 5 个概念、典型用例、expect / capture、闭环命令、规矩 |
-| 场景配方 | `requestbaby guide <主题>` | `expect` `capture` `vars` `flow` `auth` `e2e` `data` `setup` `env` `grpc` `ws` `web` `android` `proxy` `scripts` `cli` |
-| 字段参考 | `requestbaby guide ref` | 由 JSON Schema 生成的全部字段（`requestbaby schema --all` 是原始 Schema） |
-
-源文件在 [docs/guide/](docs/guide/)；其中每个示例都由测试真实执行（validate + dry-run），文中每条命令都由测试核对存在。
-
-## CI
+`requestbaby verify` 依次做校验、跑全部用例、跑全部流程，给出一个结论：退出码 0 全部通过，1 有用例失败，2 无法完成验证。
 
 ```yaml
-- run: requestbaby verify -e ci --report json > verify.json   # 被测服务由 CI 先启动；exit 0 / 1 / 2
+- run: requestbaby verify -e ci --report json > verify.json
 ```
 
-## 开发
+被测服务需要由 CI 先启动。
+
+## 和 AI 配合
+
+让 AI 写用例的话，先让它读 `requestbaby guide`，那是一页写法速查，读完就能写出能通过校验的用例。桌面端的项目菜单里有「复制用例写法速查」，可以直接贴进对话。`requestbaby init` 生成的 `AGENTS.md` 和 `CLAUDE.md` 也写好了这条约定，Claude Code、Codex 等工具在项目目录里会自动读到。
+
+AI 写完之后，`requestbaby validate` 会检查用例并给出写法建议，`requestbaby fmt --fix` 可以一键改写。
+
+## 文档
+
+文档随程序一起安装，版本始终和你装的一致：`requestbaby guide <主题>`。同样的内容在 [docs/guide](docs/guide/)：
+
+| 想了解 | 主题 |
+|--------|------|
+| 断言怎么写 | [expect](docs/guide/expect.md) |
+| 把登录的 token 传给后面的用例 | [capture](docs/guide/capture.md)、[auth](docs/guide/auth.md) |
+| 变量与环境 | [vars](docs/guide/vars.md)、[env](docs/guide/env.md) |
+| 多个用例串成流程、按多组数据运行 | [flow](docs/guide/flow.md)、[data](docs/guide/data.md) |
+| gRPC / WebSocket | [grpc](docs/guide/grpc.md)、[ws](docs/guide/ws.md) |
+| Web / Android 界面验收 | [web](docs/guide/web.md)、[android](docs/guide/android.md) |
+| 代理 | [proxy](docs/guide/proxy.md) |
+| 全部命令 | [cli](docs/guide/cli.md)，或 `requestbaby --help` |
+
+## 参与开发
 
 ```bash
 cargo test --workspace
 cargo clippy --workspace --all-targets -- -D warnings
-cargo run -p requestbaby -- run collections
-cargo run -p requestbaby-desktop -- <项目目录>
 ```
 
-三个 crate：`requestbaby-core`（全部能力）、`requestbaby-cli`、`requestbaby-desktop`（GPUI）。每个能力只在 core 实现一次，两端都完整。
-架构：[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)。
+项目结构见 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)。发现问题或有建议，欢迎提 [Issue](https://github.com/zhizuzhefu/requestbaby/issues)。
 
-## License
+## 许可
 
-MIT
+[MIT](LICENSE)
