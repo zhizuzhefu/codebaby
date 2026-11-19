@@ -55,10 +55,8 @@ AI 交付的独立验收层，辅助人对 AI 交付的成果验收。
 | Tests 里的断言 | 「断言」页：状态码、响应头、响应体任意字段 |
 | Pre-request / Tests 脚本 | 「脚本（进阶）」页：JS 脚本，API 与 `pm.*` 不同 |
 | Collection Runner / Newman | 「运行全部」，命令行 `requestbaby run` / `verify` |
-| Import | 导入 cURL、Postman、OpenAPI / Swagger（Postman 里的脚本不会迁移） |
+| Import | 导入 cURL、Postman、OpenAPI / Swagger |
 | Workspace 同步 | 用例是普通文件，用 git 共享和评审 |
-
-目前没有的：内置的 OAuth 2.0 / Digest / AWS 签名向导、`pm.*` 脚本的自动迁移、GraphQL 专用编辑器和 Socket.IO、Mock Server、定时监控、在线文档发布、云端团队空间、导出为 Postman 格式、多语言代码片段、Windows 版本。
 
 ## 运行起来是什么样
 
@@ -79,8 +77,10 @@ AI 交付的独立验收层，辅助人对 AI 交付的成果验收。
 | macOS 桌面端 | `requestbaby-<版本>.dmg` | 已签名并通过 Apple 公证，macOS 12 以上 |
 | 命令行，macOS（Apple 芯片） | `requestbaby-aarch64-apple-darwin.tar.gz` | |
 | 命令行，macOS（Intel） | `requestbaby-x86_64-apple-darwin.tar.gz` | |
+| 命令行，Linux（x86_64） | `requestbaby-x86_64-unknown-linux-musl.tar.gz` | 静态链接，不依赖系统库 |
+| 命令行，Linux（arm64） | `requestbaby-aarch64-unknown-linux-musl.tar.gz` | 静态链接 |
 
-每个安装包旁边有同名的 `.sha256` 文件，可以用来校验下载是否完整。暂时没有 Linux 和 Windows 的安装包，Linux 可以[从源码构建](#从源码构建)命令行。
+每个安装包旁边有同名的 `.sha256` 文件，可以用来校验下载是否完整。桌面端目前是 macOS 版，命令行覆盖 macOS 和 Linux。
 
 ### 桌面端
 
