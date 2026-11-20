@@ -2,7 +2,7 @@
   "$schema": "http://json-schema.org/draft-07/schema#",
   "$id": "https://requestbaby.dev/schema/case.schema.json",
   "title": "requestbaby 用例配置",
-  "description": "单个验收用例：HTTP / gRPC / WebSocket 接口，或 Web / Android 界面。由 AI 生成或人工编写，requestbaby validate 可校验。",
+  "description": "单个验收用例：HTTP / gRPC / WebSocket 接口，或 Web / Android / Mac 桌面界面。由 AI 生成或人工编写，requestbaby validate 可校验。",
   "type": "object",
   "additionalProperties": false,
   "required": [],
@@ -28,11 +28,15 @@
     },
     "web": {
       "$ref": "#/definitions/web",
-      "description": "Web 界面验收（与 request / grpc / ws / android 五选一）：用本机 Chrome / Edge 打开页面按步骤操作，每一步截图留证。expect.status 是页面的 HTTP 状态，expect.body 是结束时的 {url, title}"
+      "description": "Web 界面验收（与 request / grpc / ws / android / desktop 六选一）：用本机 Chrome / Edge 打开页面按步骤操作，每一步截图留证。expect.status 是页面的 HTTP 状态，expect.body 是结束时的 {url, title}"
     },
     "android": {
       "$ref": "#/definitions/android",
-      "description": "Android 应用验收（五选一）：adb + uiautomator 启动应用按步骤操作，每一步截图留证。expect.body 是结束时的 {package, activity}"
+      "description": "Android 应用验收（六选一）：adb + uiautomator 启动应用按步骤操作，每一步截图留证。expect.body 是结束时的 {package, activity}"
+    },
+    "desktop": {
+      "$ref": "#/definitions/desktop",
+      "description": "Mac 桌面应用验收（六选一）：agent-desktop 通过系统无障碍树启动 / 接管应用按步骤操作，每一步截图留证。expect.body 是结束时的 {app, window}"
     },
     "expect": {
       "type": "object",
@@ -443,23 +447,23 @@
       "properties": {
         "role": {
           "type": "string",
-          "description": "无障碍角色：button / link / textbox / checkbox / radio / combobox / heading / tab / menuitem / cell …（Web 与 Android 都可用）"
+          "description": "无障碍角色：button / link / textbox / checkbox / radio / combobox / heading / tab / menuitem / cell …（Web / Android / Mac 桌面都可用；Mac 桌面用系统角色名：button / textfield / checkbox / radiobutton / combobox / menubutton / treeitem / statictext …）"
         },
         "name": { "type": "string", "description": "无障碍名称（按钮文字、链接文字、输入框标签…），配合 role；缺省包含即可、忽略大小写" },
         "label": {
           "type": "string",
-          "description": "表单控件的标签（<label> / aria-label；没有标签时用占位文字）；Android 为输入框提示文字"
+          "description": "表单控件的标签（<label> / aria-label；没有标签时用占位文字）；Android 为输入框提示文字；Mac 桌面为输入框的名称 / 描述"
         },
         "text": { "type": "string", "description": "可见文字（包含即可）" },
         "placeholder": { "type": "string", "description": "输入框占位文字（Web）" },
         "testId": { "type": "string", "description": "data-testid（Web）" },
         "css": { "type": "string", "description": "CSS 选择器（Web 兜底：依赖页面实现，改版容易失效）" },
-        "id": { "type": "string", "description": "resource-id（Android）：写全 com.x:id/phone 或只写 phone" },
-        "desc": { "type": "string", "description": "content-desc 无障碍描述（Android）" },
+        "id": { "type": "string", "description": "resource-id（Android）：写全 com.x:id/phone 或只写 phone；Mac 桌面写 AXIdentifier" },
+        "desc": { "type": "string", "description": "content-desc 无障碍描述（Android）/ AXDescription（Mac 桌面）" },
         "exact": { "type": "boolean", "description": "名称 / 文字完全相等（缺省包含即可）" },
         "nth": { "type": "integer", "minimum": 0, "description": "匹配到多个时取第几个（从 0 开始）；不写时匹配到多个即报错，避免点错" },
         "url": { "type": "string", "description": "等待 / 断言：当前地址包含（Web）" },
-        "title": { "type": "string", "description": "等待 / 断言：页面标题包含（Web）" },
+        "title": { "type": "string", "description": "等待 / 断言：页面标题包含（Web）/ 窗口标题包含（Mac 桌面）" },
         "activity": { "type": "string", "description": "等待 / 断言：当前 Activity 包含（Android）" },
         "state": {
           "enum": ["visible", "hidden", "enabled", "disabled", "checked", "unchecked"],
@@ -478,21 +482,21 @@
       "description": "一步只做一件事：上面的动作恰好写一个",
       "properties": {
         "goto": { "type": "string", "description": "打开地址（Web）：绝对地址，或相对当前页面的路径" },
-        "click": { "$ref": "#/definitions/locator", "description": "点击元素（Web；Android 写 tap）" },
+        "click": { "$ref": "#/definitions/locator", "description": "点击元素（Web / Mac 桌面；Android 写 tap）" },
         "tap": { "$ref": "#/definitions/locator", "description": "点按元素（Android；Web 写 click）" },
         "longPress": { "$ref": "#/definitions/locator", "description": "长按元素（Android）" },
         "hover": { "$ref": "#/definitions/locator", "description": "鼠标悬停（Web）" },
         "fill": { "$ref": "#/definitions/locator", "description": "清空并输入 value" },
         "select": { "$ref": "#/definitions/locator", "description": "下拉框选择 value（选项文字或值，Web）" },
-        "type": { "type": "string", "description": "往当前焦点输入文字（Android；中文需设备装 ADBKeyBoard）" },
+        "type": { "type": "string", "description": "往当前焦点输入文字（Android；中文需设备装 ADBKeyBoard / Mac 桌面）" },
         "press": {
           "type": "string",
-          "description": "按键：Enter / Tab / Escape / Backspace / ArrowDown / Control+a …；Android 还有 Back / Home / KEYCODE_*"
+          "description": "按键：Enter / Tab / Escape / Backspace / ArrowDown / Control+a …；Android 还有 Back / Home / KEYCODE_*；Mac 桌面写 Meta+s / cmd+s"
         },
-        "swipe": { "enum": ["up", "down", "left", "right"], "description": "滑动屏幕，手指移动的方向（Android）" },
+        "swipe": { "enum": ["up", "down", "left", "right"], "description": "滑动屏幕，手指移动的方向（Android；Mac 桌面滚动窗口里最大的滚动区域，方向含义相同）" },
         "back": { "const": true, "description": "返回上一页（浏览器后退 / Android 返回键）" },
-        "launch": { "const": true, "description": "（重新）启动应用（Android）；配合 clearData" },
-        "stop": { "const": true, "description": "关闭应用（Android）" },
+        "launch": { "const": true, "description": "（重新）启动应用（Android / Mac 桌面）；配合 clearData（仅 Android）" },
+        "stop": { "const": true, "description": "关闭应用（Android / Mac 桌面）" },
         "waitFor": {
           "$ref": "#/definitions/locator",
           "description": "一直等到条件满足（不满足则失败）：元素状态 / 地址 / 标题 / Activity"
@@ -504,7 +508,7 @@
         "clearData": { "type": "boolean", "description": "launch 前清除应用数据" },
         "capture": {
           "type": "object",
-          "description": "本步完成后取值存为变量：变量名 → \"url\" / \"title\"（Web）/ \"activity\"（Android）或元素定位（可加 attr / regex）",
+          "description": "本步完成后取值存为变量：变量名 → \"url\" / \"title\"（Web）/ \"activity\"（Android）/ \"window\" / \"app\"（Mac 桌面）或元素定位（可加 attr / regex）",
           "additionalProperties": {
             "oneOf": [{ "type": "string" }, { "$ref": "#/definitions/locator" }]
           }
@@ -537,6 +541,22 @@
           "minimum": 1,
           "description": "每一步等待的默认超时毫秒（缺省 10000）；打开页面用项目 timeoutMs"
         },
+        "steps": {
+          "type": "array",
+          "items": { "$ref": "#/definitions/uiStep" },
+          "description": "操作与断言步骤，按顺序执行；任一步失败即停止。每一步自动等待、自动截图"
+        }
+      }
+    },
+    "desktop": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["app"],
+      "properties": {
+        "app": { "type": "string", "description": "应用名称（如 TextEdit）或 bundle ID（如 com.apple.TextEdit）" },
+        "window": { "type": "string", "description": "窗口标题包含这段文字的窗口（应用有多个窗口时用；缺省取唯一可见窗口）" },
+        "restart": { "type": "boolean", "description": "开始前先正常退出应用再重新启动（缺省接管已在运行的应用，不动它）" },
+        "timeoutMs": { "type": "integer", "minimum": 1, "description": "每一步等待的默认超时毫秒（缺省 10000）" },
         "steps": {
           "type": "array",
           "items": { "$ref": "#/definitions/uiStep" },

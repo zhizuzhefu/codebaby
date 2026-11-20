@@ -28,6 +28,7 @@ pub const TOPICS: &[(&str, &[&str], &str, &str)] = &[
     ("ws", &["websocket", "长连接"], "WebSocket", include_str!("../../../docs/guide/ws.md")),
     ("web", &["界面", "浏览器", "页面"], "Web 界面验收", include_str!("../../../docs/guide/web.md")),
     ("android", &["安卓", "app", "手机"], "Android 界面验收", include_str!("../../../docs/guide/android.md")),
+    ("desktop", &["mac", "桌面", "macos", "agent-desktop"], "Mac 桌面应用验收", include_str!("../../../docs/guide/desktop.md")),
     ("proxy", &["代理", "socks", "socks5"], "代理", include_str!("../../../docs/guide/proxy.md")),
     ("scripts", &["脚本", "js"], "进阶 JS 脚本", include_str!("../../../docs/guide/scripts.md")),
     ("cli", &["命令", "协议"], "命令与调度协议", include_str!("../../../docs/guide/cli.md")),
@@ -174,7 +175,7 @@ pub const AGENTS_MD: &str = r#"# requestbaby 接口测试项目
 
 ```bash
 requestbaby guide          # 速查卡：5 个概念、典型用例、expect / capture 写法、闭环命令（与已安装版本一致，必读）
-requestbaby guide <主题>   # 按场景深入：expect capture vars flow auth e2e data setup env web android scripts cli ref
+requestbaby guide <主题>   # 按场景深入：expect capture vars flow auth e2e data setup env web android desktop scripts cli ref
 ```
 
 闭环：写用例 → `requestbaby validate --report json`（exit 2 = 配置错误；warn 是写法建议，`requestbaby fmt --fix` 自动改写）
@@ -187,7 +188,7 @@ requestbaby guide <主题>   # 按场景深入：expect capture vars flow auth e
 - 断言照真实响应写：`requestbaby send <用例> --suggest`
 - URL 写 `{{baseUrl}}/路径`；变量用 `requestbaby vars set …` 写进环境，密钥加 `--secret`，本机真实值用 `--local <环境>`
 - 只能在某个环境跑的，用流程固定环境（`requestbaby workflow env <流程> <环境>`），不写环境守卫脚本
-- 界面用例（web / android）：先 `requestbaby web snapshot <url>` / `requestbaby android snapshot` 看元素与定位；API、Web、Android 可放进同一个流程，`capture` 的值互通
+- 界面用例（web / android / desktop）：先 `requestbaby web snapshot <url>` / `android snapshot` / `desktop snapshot <应用>` 看元素与定位；API、Web、Android、Mac 桌面可放进同一个流程，`capture` 的值互通
 - 每个场景都要先登录的：登录做成一个流程，其他流程 `needs` 依赖它，不要重复登录；切用户用步骤的 `as`（`requestbaby guide flow`）
 - 被测服务由你自己启动；`.requestbaby/` 是运行历史，不要修改
 "#;

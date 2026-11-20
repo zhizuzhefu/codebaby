@@ -57,6 +57,7 @@ pub fn side_label(p: Protocol) -> &'static str {
         Protocol::Ws => "WebSocket",
         Protocol::Web => "Web",
         Protocol::Android => "Android",
+        Protocol::Desktop => "Mac 桌面",
     }
 }
 

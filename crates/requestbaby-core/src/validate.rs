@@ -470,7 +470,7 @@ fn check_protocol(case: &TestCase, dc: &DiscoveredCase, file: &str, issues: &mut
                 Err(e) => push("grpc-proto", format!("{e:#}")),
             }
         }
-        Protocol::Web | Protocol::Android => check_ui(case, &mut push),
+        Protocol::Web | Protocol::Android | Protocol::Desktop => check_ui(case, &mut push),
         Protocol::Ws => {
             let w = case.ws.as_ref().unwrap();
             if !has_var(&w.url) {
@@ -510,11 +510,10 @@ fn check_protocol(case: &TestCase, dc: &DiscoveredCase, file: &str, issues: &mut
 
 /// 界面用例：地址 / 包名、每一步恰好一个动作且适用于该端、定位写法、动作参数
 fn check_ui(case: &TestCase, push: &mut dyn FnMut(&'static str, String)) {
-    use crate::config::{CaptureSource, Locator, UiAction};
+    use crate::config::{CaptureSource, Locator, UiAction, UiKind};
     let has_var = |t: &str| t.contains("{{");
-    let android = case.android.is_some();
-    let (key, steps) = match (&case.web, &case.android) {
-        (Some(w), _) => {
+    let (kind, steps) = match (&case.web, &case.android, &case.desktop) {
+        (Some(w), _, _) => {
             let u = w.url.trim();
             if u.is_empty() {
                 push("web-url", "web.url 不能为空：写要打开的页面地址".into());
@@ -526,20 +525,35 @@ fn check_ui(case: &TestCase, push: &mut dyn FnMut(&'static str, String)) {
                     push("web-viewport", format!("web.viewport {}×{} 不合理（宽高 200 ~ 7680）", v.width, v.height));
                 }
             }
-            ("web", &w.steps)
+            (UiKind::Web, &w.steps)
         }
-        (_, Some(a)) => {
+        (_, Some(a), _) => {
             let app = a.app.trim();
             if app.is_empty() {
                 push("android-app", "android.app 不能为空：写应用包名，如 com.example.shop".into());
             } else if !has_var(app) && (!app.contains('.') || app.contains(char::is_whitespace) || app.contains('/')) {
                 push("android-app", format!("android.app 写应用包名（如 com.example.shop），实际 {app}"));
             }
-            ("android", &a.steps)
+            (UiKind::Android, &a.steps)
+        }
+        (_, _, Some(d)) => {
+            if d.app.trim().is_empty() {
+                push("desktop-app", "desktop.app 不能为空：写应用名称（如 TextEdit）或 bundle ID（如 com.apple.TextEdit）".into());
+            }
+            if d.window.as_deref().is_some_and(|w| w.trim().is_empty()) {
+                push("desktop-window", "desktop.window 不能为空：写窗口标题里的一段文字，或删掉这一项".into());
+            }
+            (UiKind::Desktop, &d.steps)
         }
         _ => return,
     };
-    let side = if android { "Android" } else { "Web" };
+    let key = kind.key();
+    let side = kind.label();
+    let locator_hint = match kind {
+        UiKind::Web => "role+name / label / text / placeholder / testId / css",
+        UiKind::Android => "id / text / desc / label / role",
+        UiKind::Desktop => "role+name / label / text / id / desc",
+    };
     let lint_locator = |l: &Locator, at: &str, condition: bool, push: &mut dyn FnMut(&'static str, String)| {
         let primary: Vec<&str> = [("role", l.role.is_some()), ("label", l.label.is_some()), ("text", l.text.is_some()), ("placeholder", l.placeholder.is_some()), ("testId", l.test_id.is_some()), ("css", l.css.is_some()), ("id", l.id.is_some()), ("desc", l.desc.is_some())]
             .into_iter()
@@ -547,20 +561,20 @@ fn check_ui(case: &TestCase, push: &mut dyn FnMut(&'static str, String)) {
             .map(|(k, _)| k)
             .collect();
         // Android 的 id + text 组合是常见写法（同 id 的列表项按文字区分），其余只写一种
-        let combo_ok = android && primary.len() == 2 && primary.contains(&"id");
+        let combo_ok = kind != UiKind::Web && primary.len() == 2 && primary.contains(&"id");
         if primary.len() > 1 && !combo_ok {
             push("ui-locator", format!("{at}：定位只写一种（{}），需要更精确时用 nth / exact / hasText", primary.join("、")));
         }
         if l.name.is_some() && l.role.is_none() {
             push("ui-locator", format!("{at}：name 要和 role 一起写（{{\"role\": \"button\", \"name\": \"登录\"}}）；只按文字找写 text"));
         }
-        let wrong: Vec<&str> = if android {
-            [("css", l.css.is_some()), ("testId", l.test_id.is_some()), ("placeholder", l.placeholder.is_some()), ("url", l.url.is_some()), ("title", l.title.is_some())].into_iter().filter(|(_, on)| *on).map(|(k, _)| k).collect()
-        } else {
-            [("id", l.id.is_some()), ("desc", l.desc.is_some()), ("activity", l.activity.is_some())].into_iter().filter(|(_, on)| *on).map(|(k, _)| k).collect()
+        let wrong: Vec<&str> = match kind {
+            UiKind::Android => [("css", l.css.is_some()), ("testId", l.test_id.is_some()), ("placeholder", l.placeholder.is_some()), ("url", l.url.is_some()), ("title", l.title.is_some())].into_iter().filter(|(_, on)| *on).map(|(k, _)| k).collect(),
+            UiKind::Web => [("id", l.id.is_some()), ("desc", l.desc.is_some()), ("activity", l.activity.is_some())].into_iter().filter(|(_, on)| *on).map(|(k, _)| k).collect(),
+            UiKind::Desktop => [("css", l.css.is_some()), ("testId", l.test_id.is_some()), ("url", l.url.is_some()), ("activity", l.activity.is_some())].into_iter().filter(|(_, on)| *on).map(|(k, _)| k).collect(),
         };
         if !wrong.is_empty() {
-            push("ui-locator", format!("{at}：{} 用例不能写 {}（{}）", side, wrong.join("、"), if android { "Android 用 id / text / desc / label / role" } else { "Web 用 role+name / label / text / placeholder / testId / css" }));
+            push("ui-locator", format!("{at}：{} 用例不能写 {}（{} 用 {locator_hint}）", side, wrong.join("、"), side));
         }
         let cond: Vec<&str> = [("url", l.url.is_some()), ("title", l.title.is_some()), ("activity", l.activity.is_some()), ("state", l.state.is_some()), ("count", l.count.is_some()), ("value", l.value.is_some())]
             .into_iter()
@@ -569,14 +583,14 @@ fn check_ui(case: &TestCase, push: &mut dyn FnMut(&'static str, String)) {
             .collect();
         if condition {
             if !l.has_target() && l.url.is_none() && l.title.is_none() && l.activity.is_none() {
-                push("ui-locator", format!("{at}：写要等待 / 验证的元素（role+name / label / text …）或页面条件（{}）", if android { "activity" } else { "url / title" }));
+                push("ui-locator", format!("{at}：写要等待 / 验证的元素（role+name / label / text …）或页面条件（{}）", match kind { UiKind::Android => "activity", UiKind::Web => "url / title", UiKind::Desktop => "title（窗口标题）" }));
             }
             if !l.has_target() && (l.state.is_some() || l.count.is_some() || l.value.is_some() || l.has_text.is_some()) {
                 push("ui-locator", format!("{at}：state / count / value / hasText 是对元素的要求，要同时写元素定位"));
             }
         } else {
             if !l.has_target() {
-                push("ui-locator", format!("{at}：写要操作的元素（{}）", if android { "id / text / desc / label / role" } else { "role+name / label / text / placeholder / testId / css" }));
+                push("ui-locator", format!("{at}：写要操作的元素（{locator_hint}）"));
             }
             if !cond.is_empty() {
                 push("ui-locator", format!("{at}：{} 只能写在 waitFor / expect 里", cond.join("、")));
@@ -590,23 +604,24 @@ fn check_ui(case: &TestCase, push: &mut dyn FnMut(&'static str, String)) {
         let n = i + 1;
         let at = format!("{key}.steps 第 {n} 步");
         let Some(a) = step.action() else {
-            let list = if android { "tap / fill / type / press / swipe / back / launch / stop / waitFor / expect / screenshot / wait" } else { "click / fill / select / press / hover / goto / back / waitFor / expect / screenshot / wait" };
+            let list = kind.actions().iter().map(|a| a.key(kind)).collect::<Vec<_>>().join(" / ");
             if step.actions().is_empty() {
                 push("ui-step", format!("{at}没有动作：写 {list} 其中一个"));
             } else {
-                push("ui-step", format!("{at}写了多个动作（{}）：每一步只做一件事，拆成多步", step.actions().iter().map(|a| a.key(android)).collect::<Vec<_>>().join("、")));
+                push("ui-step", format!("{at}写了多个动作（{}）：每一步只做一件事，拆成多步", step.actions().iter().map(|a| a.key(kind)).collect::<Vec<_>>().join("、")));
             }
             continue;
         };
-        if !a.supported(android) {
-            push("ui-step", format!("{at}：{} 是 {} 专用的动作", a.key(android), if android { "Web" } else { "Android" }));
+        if !a.supported(kind) {
+            let ok = kind.actions().iter().map(|a| a.key(kind)).collect::<Vec<_>>().join(" / ");
+            push("ui-step", format!("{at}：{} 不能用在 {side} 用例里（{side} 可用：{ok}）", a.key(kind)));
             continue;
         }
         if let Some(l) = step.locator() {
             lint_locator(l, &at, matches!(a, UiAction::WaitFor | UiAction::Expect), push);
         }
         match (a, &step.value) {
-            (UiAction::Fill | UiAction::Select, None) => push("ui-step", format!("{at}：{} 要写 value（{}）", a.key(android), if a == UiAction::Fill { "要填的内容" } else { "选项文字或值" })),
+            (UiAction::Fill | UiAction::Select, None) => push("ui-step", format!("{at}：{} 要写 value（{}）", a.key(kind), if a == UiAction::Fill { "要填的内容" } else { "选项文字或值" })),
             (UiAction::Fill | UiAction::Select, Some(_)) => {}
             (_, Some(_)) => push("ui-step", format!("{at}：value 只用于 fill / select")),
             _ => {}
@@ -615,7 +630,11 @@ fn check_ui(case: &TestCase, push: &mut dyn FnMut(&'static str, String)) {
             push("ui-step", format!("{at}：clearData 只用于 launch"));
         }
         if let Some(k) = step.press.as_deref().filter(|k| !has_var(k)) {
-            let ok = if android { crate::engine::android::keycode(k).map(|_| ()) } else { crate::engine::web::key_event(k).map(|_| ()) };
+            let ok = match kind {
+                UiKind::Android => crate::engine::android::keycode(k).map(|_| ()),
+                UiKind::Web => crate::engine::web::key_event(k).map(|_| ()),
+                UiKind::Desktop => crate::engine::desktop::combo(k).map(|_| ()),
+            };
             if let Err(e) = ok {
                 push("ui-step", format!("{at}：{e:#}"));
             }
@@ -633,9 +652,17 @@ fn check_ui(case: &TestCase, push: &mut dyn FnMut(&'static str, String)) {
         for (name, src) in &step.capture {
             match src {
                 CaptureSource::Builtin(b) => {
-                    let ok = if android { b == "activity" } else { b == "url" || b == "title" };
+                    let ok = match kind {
+                        UiKind::Android => b == "activity",
+                        UiKind::Web => b == "url" || b == "title",
+                        UiKind::Desktop => b == "window" || b == "title" || b == "app",
+                    };
                     if !ok {
-                        push("capture-source", format!("{at} capture.{name}：{}", if android { "写 \"activity\" 或一个元素定位（{\"id\": \"order_no\"}）" } else { "写 \"url\" / \"title\" 或一个元素定位（{\"testId\": \"order-no\"}）" }));
+                        push("capture-source", format!("{at} capture.{name}：{}", match kind {
+                            UiKind::Android => "写 \"activity\" 或一个元素定位（{\"id\": \"order_no\"}）",
+                            UiKind::Web => "写 \"url\" / \"title\" 或一个元素定位（{\"testId\": \"order-no\"}）",
+                            UiKind::Desktop => "写 \"window\" / \"app\" 或一个元素定位（{\"role\": \"statictext\", \"text\": \"订单号\"}）",
+                        }));
                     }
                 }
                 CaptureSource::Element(l) => {

@@ -62,7 +62,7 @@ impl CaseReport {
             url: r.url.clone(),
             protocol: r.protocol,
             status: r.status,
-            status_text: if matches!(r.protocol, crate::config::Protocol::Grpc | crate::config::Protocol::Web | crate::config::Protocol::Android) { r.status_text() } else { String::new() },
+            status_text: if matches!(r.protocol, crate::config::Protocol::Grpc | crate::config::Protocol::Web | crate::config::Protocol::Android | crate::config::Protocol::Desktop) { r.status_text() } else { String::new() },
             duration_ms: r.duration_ms,
             skipped: r.skipped,
             passed: r.passed(),

@@ -1,6 +1,6 @@
 //! 各协议的项目级操作（CLI 与 Desktop 用例编辑器共用）：
 //! - gRPC：`grpc list / describe`，接口描述来源按 requestbaby.json 的 grpc 配置
-//! - Web / Android：`web snapshot` / `android snapshot` 列出界面元素与可直接粘贴的定位
+//! - Web / Android / Mac 桌面：`web snapshot` / `android snapshot` / `desktop snapshot` 列出界面元素与可直接粘贴的定位
 //!
 //! 地址里的 {{变量}} 按所选环境替换
 use crate::engine::grpc::{self, MethodInfo, Source};
@@ -62,7 +62,7 @@ pub fn grpc_describe(root: &Path, env: &str, target: &str, method: &str, insecur
 }
 
 // ---------------------------------------------------------------------------------------------
-// 界面快照：列出页面 / 界面上的元素和可直接粘贴的定位（CLI `web snapshot` / `android snapshot`、Desktop 步骤编辑器共用）
+// 界面快照：列出页面 / 界面上的元素和可直接粘贴的定位（CLI `web snapshot` / `android snapshot` / `desktop snapshot`、Desktop 步骤编辑器共用）
 // ---------------------------------------------------------------------------------------------
 
 /// 快照里的一个元素
@@ -79,9 +79,9 @@ pub struct SnapElement {
 
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct UiSnapshot {
-    /// Web：地址；Android：包名
+    /// Web：地址；Android：包名；Mac 桌面：应用名称
     pub location: String,
-    /// Web：标题；Android：Activity
+    /// Web：标题；Android：Activity；Mac 桌面：窗口标题
     pub title: String,
     pub elements: Vec<SnapElement>,
     /// 截图（PNG）
@@ -223,6 +223,78 @@ pub fn android_snapshot(root: Option<&Path>) -> Result<UiSnapshot> {
         elements.push(SnapElement { kind: kind.into(), name, locator: loc, states });
     }
     let shot = dev.screenshot().ok().and_then(|s| {
+        let file = snapshot_dir(root).join(format!("snapshot-{}.png", crate::history::now_ms()));
+        crate::fsx::write(&file, &s.bytes).ok().map(|_| file)
+    });
+    Ok(UiSnapshot { location: info.location, title: info.title, elements, screenshot: shot })
+}
+
+/// 正在运行、有界面的 Mac 应用：(名称, bundle ID)
+pub fn desktop_apps(root: Option<&Path>) -> Result<Vec<(String, String)>> {
+    use crate::engine::desktop;
+    let project = root.map(project).unwrap_or_default();
+    let ad = desktop::AgentDesktop::from_config(&project.desktop)?;
+    let data = ad.call(&["list-apps"], std::time::Duration::from_secs(15))?;
+    let mut out: Vec<(String, String)> = data
+        .get("apps")
+        .and_then(|a| a.as_array())
+        .into_iter()
+        .flatten()
+        .filter(|a| a.get("presentation").and_then(|p| p.as_str()) == Some("foreground"))
+        .filter_map(|a| Some((a.get("name")?.as_str()?.to_string(), a.get("bundle_id").and_then(|b| b.as_str()).unwrap_or_default().to_string())))
+        .collect();
+    out.sort();
+    Ok(out)
+}
+
+/// 读取正在运行的 Mac 应用当前窗口，列出元素与推荐定位（角色 + 名称；同名多个时加 nth；其次 AXIdentifier）
+pub fn desktop_snapshot(root: Option<&Path>, app: &str, window: Option<&str>) -> Result<UiSnapshot> {
+    use crate::engine::desktop;
+    use crate::engine::ui::UiDriver;
+    let project = root.map(project).unwrap_or_default();
+    let ad = desktop::AgentDesktop::from_config(&project.desktop)?;
+    let mut a = desktop::App::new(ad, app.to_string(), window.map(String::from), std::time::Duration::from_secs(10));
+    a.attach()?;
+    let info = a.page()?;
+    let nodes = a.nodes()?;
+    let key = |n: &desktop::Node| (n.role.clone(), n.name.clone());
+    let totals = nodes.iter().fold(std::collections::HashMap::<(String, String), usize>::new(), |mut m, n| {
+        *m.entry(key(n)).or_default() += 1;
+        m
+    });
+    let skip = ["window", "group", "scrollarea", "scrollbar", "ruler", "rulermarker", "splitter", "handle", "unknown", "toolbar", "column", "outline", "image"];
+    let mut seen: std::collections::HashMap<(String, String), usize> = Default::default();
+    let mut elements = vec![];
+    for n in nodes.iter().filter(|n| !skip.contains(&n.role.as_str()) && !n.has_state("hidden") && !n.rect.is_empty()) {
+        let text_only = n.ref_id.is_none();
+        let shown = if n.role == "statictext" { n.value.clone().filter(|v| !v.is_empty()).unwrap_or_else(|| n.name.clone()) } else { n.name.clone() };
+        if text_only && (n.role != "statictext" || shown.is_empty()) {
+            continue;
+        }
+        let k = key(n);
+        let i = *seen.entry(k.clone()).and_modify(|x| *x += 1).or_insert(0);
+        let many = totals.get(&k).copied().unwrap_or(1) > 1;
+        let mut loc = if n.role == "statictext" {
+            serde_json::json!({ "text": shown })
+        } else if !n.name.is_empty() {
+            serde_json::json!({ "role": n.role, "name": n.name })
+        } else if !n.native_id.is_empty() {
+            serde_json::json!({ "id": n.native_id })
+        } else {
+            serde_json::json!({ "role": n.role })
+        };
+        if (many || (n.name.is_empty() && n.native_id.is_empty())) && n.role != "statictext" && loc.get("id").is_none() {
+            loc["nth"] = serde_json::json!(i);
+        }
+        let mut states = vec![];
+        for (s, label) in [("disabled", "禁用"), ("checked", "已勾选"), ("offscreen", "不在可见范围"), ("readonly", "只读"), ("selected", "已选中")] {
+            if n.has_state(s) {
+                states.push(label.to_string());
+            }
+        }
+        elements.push(SnapElement { kind: crate::config::ui::role_label(&n.role).to_string(), name: shown, locator: loc, states });
+    }
+    let shot = a.screenshot().ok().and_then(|s| {
         let file = snapshot_dir(root).join(format!("snapshot-{}.png", crate::history::now_ms()));
         crate::fsx::write(&file, &s.bytes).ok().map(|_| file)
     });

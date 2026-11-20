@@ -64,7 +64,7 @@ pub fn status_text(protocol: Protocol, status: u16, responded: bool) -> String {
         (_, false) => "-".into(),
         (Protocol::Grpc, true) => crate::config::protocols::grpc_code_name(status),
         (Protocol::Web, true) if status > 0 => status.to_string(),
-        (Protocol::Web | Protocol::Android, true) => "完成".into(),
+        (Protocol::Web | Protocol::Android | Protocol::Desktop, true) => "完成".into(),
         _ => status.to_string(),
     }
 }
@@ -76,7 +76,7 @@ pub fn status_is_bad(protocol: Protocol, status: u16, responded: bool) -> bool {
             Protocol::Http | Protocol::Web => status >= 400,
             Protocol::Ws => status != 101,
             Protocol::Grpc => status != 0,
-            Protocol::Android => false,
+            Protocol::Android | Protocol::Desktop => false,
         }
 }
 
@@ -859,6 +859,7 @@ impl Runner {
             Protocol::Ws => self.exchange_ws(dc, case, row, &vars, &env_view, &mut result, opts),
             Protocol::Web => self.exchange_web(dc, case, row, &vars, &env_view, &mut result, opts),
             Protocol::Android => self.exchange_android(dc, case, row, &vars, &env_view, &mut result, opts),
+            Protocol::Desktop => self.exchange_desktop(dc, case, row, &vars, &mut result, opts),
         };
         let Some(Exchanged { resp: resp_data, outcomes: step_outcomes }) = exchanged else { return result };
         result.status = resp_data.status;

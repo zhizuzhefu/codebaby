@@ -33,6 +33,9 @@ pub struct Project {
     /// Android 界面验收：adb、设备、截图策略
     #[serde(default, skip_serializing_if = "is_default")]
     pub android: super::ui::AndroidConfig,
+    /// Mac 桌面应用验收：agent-desktop、截图策略
+    #[serde(default, skip_serializing_if = "is_default")]
+    pub desktop: super::ui::DesktopConfig,
     /// 代理：所有对外连接（HTTP / gRPC / WebSocket / 浏览器 / adb）经同一个代理；不配置则跟随系统（环境变量 → 系统代理设置）
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub proxy: Option<ProxyConfig>,
@@ -141,6 +144,7 @@ impl Default for Project {
             grpc: GrpcConfig::default(),
             web: Default::default(),
             android: Default::default(),
+            desktop: Default::default(),
             proxy: None,
         }
     }

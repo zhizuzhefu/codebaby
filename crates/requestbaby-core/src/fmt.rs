@@ -2,7 +2,7 @@
 
 /// 字段规范排序与空字段清理
 pub fn canonical_case(d: &serde_json::Value) -> serde_json::Value {
-    let order = ["name", "tags", "skip", "expectStatus", "request", "grpc", "ws", "web", "android", "expect", "capture", "cases", "pre", "post", "tests"];
+    let order = ["name", "tags", "skip", "expectStatus", "request", "grpc", "ws", "web", "android", "desktop", "expect", "capture", "cases", "pre", "post", "tests"];
     let mut out = serde_json::Map::new();
     if let Some(obj) = d.as_object() {
         for key in order {
@@ -62,6 +62,7 @@ pub fn canonical_case(d: &serde_json::Value) -> serde_json::Value {
         ("ws", &["url", "query", "headers", "subprotocols", "steps", "timeoutMs", "insecure"][..]),
         ("web", &["url", "viewport", "timeoutMs", "steps"][..]),
         ("android", &["app", "activity", "apk", "clearData", "timeoutMs", "steps"][..]),
+        ("desktop", &["app", "window", "restart", "timeoutMs", "steps"][..]),
     ] {
         if let Some(v) = out.get_mut(key) {
             *v = reorder(v, fields);
@@ -77,7 +78,7 @@ pub fn canonical_case(d: &serde_json::Value) -> serde_json::Value {
         "goto", "click", "tap", "longPress", "hover", "fill", "select", "type", "press", "swipe", "back", "launch", "stop", "waitFor", "expect", "screenshot", "wait",
         "value", "clearData", "capture", "timeoutMs", "optional",
     ];
-    for key in ["web", "android"] {
+    for key in ["web", "android", "desktop"] {
         if let Some(steps) = out.get_mut(key).and_then(|w| w.get_mut("steps")).and_then(|s| s.as_array_mut()) {
             for st in steps.iter_mut() {
                 *st = reorder(st, &UI_STEP);
@@ -302,7 +303,7 @@ pub fn canonical_env_text(d: &serde_json::Value) -> String {
 
 /// requestbaby.json 规范文本
 pub fn canonical_project_text(d: &serde_json::Value) -> String {
-    let mut v = ordered(d, &["version", "defaultEnv", "vars", "timeoutMs", "cookies", "proxy", "grpc", "web", "android", "workflows"]);
+    let mut v = ordered(d, &["version", "defaultEnv", "vars", "timeoutMs", "cookies", "proxy", "grpc", "web", "android", "desktop", "workflows"]);
     if let Some(o) = v.as_object_mut() {
         o.entry("version").or_insert(serde_json::json!(1));
     }

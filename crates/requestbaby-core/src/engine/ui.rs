@@ -1,14 +1,14 @@
-//! 界面自动化的公共部分：驱动接口（Web = Chrome DevTools 协议，Android = adb）、
+//! 界面自动化的公共部分：驱动接口（Web = Chrome DevTools 协议，Android = adb，Mac 桌面 = agent-desktop）、
 //! 找到的元素、证据（每一步的记录与截图、运行环境、失败现场）、截图标注。
 //!
-//! 步骤循环（自动等待、断言、捕获、截图留证）在 runner 里只写一遍，两种驱动只负责「找」和「做」。
-use crate::config::Locator;
+//! 步骤循环（自动等待、断言、捕获、截图留证）在 runner 里只写一遍，每种驱动只负责「找」和「做」。
+use crate::config::{Locator, UiKind};
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-/// 元素位置（Web：CSS 像素，视口坐标；Android：屏幕像素）
+/// 元素位置（Web：CSS 像素，视口坐标；Android：屏幕像素；Mac 桌面：相对窗口左上角的点）
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
 pub struct Rect {
     pub x: f64,
@@ -53,9 +53,9 @@ pub struct Element {
 /// 当前页面 / 界面
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct PageInfo {
-    /// Web：地址；Android：应用包名
+    /// Web：地址；Android：应用包名；Mac 桌面：应用名称
     pub location: String,
-    /// Web：标题；Android：当前 Activity
+    /// Web：标题；Android：当前 Activity；Mac 桌面：窗口标题
     pub title: String,
 }
 
@@ -72,9 +72,9 @@ pub enum Actionable {
     NotYet(String),
 }
 
-/// 一种界面驱动：Web 页面（一个浏览器上下文里的一个标签页）或一台 Android 设备上的应用
+/// 一种界面驱动：Web 页面（一个浏览器上下文里的一个标签页）、一台 Android 设备上的应用或 Mac 桌面上的一个应用
 pub trait UiDriver {
-    fn android(&self) -> bool;
+    fn kind(&self) -> UiKind;
     /// 按定位找出全部匹配的元素（含不可见的，由调用方筛选）；写法有误等无法恢复的错误返回 Err
     fn find(&mut self, loc: &Locator) -> Result<Vec<Element>>;
     fn page(&mut self) -> Result<PageInfo>;
@@ -96,7 +96,7 @@ pub trait UiDriver {
     /// 动作之后等界面稳定（页面跳转加载完成 / 动画结束），最多等 timeout
     fn settle(&mut self, timeout: Duration);
     fn screenshot(&mut self) -> Result<Shot>;
-    /// 元素属性（Web：DOM 属性；Android：节点属性）
+    /// 元素属性（Web：DOM 属性；Android / Mac 桌面：节点属性）
     fn attr(&mut self, el: &Element, name: &str) -> Result<Option<String>>;
     /// 失败现场：页面结构 / 控制台 / 网络 / logcat 等，写进 dir，返回附件清单
     fn failure_scene(&mut self, dir: &Path) -> Vec<Artifact>;

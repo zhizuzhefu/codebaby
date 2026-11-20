@@ -144,7 +144,7 @@ impl Workspace {
                                 .when(show_timeline, |b| b.primary())
                                 .when(!show_timeline, |b| b.ghost())
                                 .label("时间线")
-                                .tooltip("API / Web / Android 的用例与步骤，按真实发生的先后排在一起")
+                                .tooltip("API / Web / Android / Mac 桌面的用例与步骤，按真实发生的先后排在一起")
                                 .on_click(cx.listener(|this, _, _, cx| {
                                     this.results_timeline = true;
                                     cx.notify();
@@ -334,7 +334,7 @@ impl Workspace {
         let tests_pass = r.tests.iter().filter(|t| t.pass).count();
         // 报告给 gRPC / 界面用例存状态文字（"-" = 没拿到响应）；HTTP / WebSocket 的 0 = 没拿到响应
         let responded = match r.protocol {
-            Protocol::Grpc | Protocol::Web | Protocol::Android => !r.status_text.is_empty() && r.status_text != "-",
+            Protocol::Grpc | Protocol::Web | Protocol::Android | Protocol::Desktop => !r.status_text.is_empty() && r.status_text != "-",
             _ => r.status > 0,
         };
         let status = requestbaby_core::runner::status_text(r.protocol, r.status, responded);
@@ -416,6 +416,7 @@ impl Workspace {
             Protocol::Http | Protocol::Grpc | Protocol::Ws => Tag::info(),
             Protocol::Web => Tag::primary(),
             Protocol::Android => Tag::secondary(),
+            Protocol::Desktop => Tag::warning(),
         }
         .outline()
         .xsmall()
@@ -805,7 +806,7 @@ fn row_menu(menu: PopupMenu, r: &CaseReport) -> PopupMenu {
             Protocol::Http => "cURL",
             Protocol::Grpc => "grpcurl",
             Protocol::Ws => "websocat",
-            Protocol::Web | Protocol::Android => "等价",
+            Protocol::Web | Protocol::Android | Protocol::Desktop => "等价",
         };
         menu = menu.item(copy(format!("复制为 {tool} 命令"), "命令", c.clone()));
     }

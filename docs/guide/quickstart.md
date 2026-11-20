@@ -6,11 +6,11 @@
 
 | 概念 | 是什么 | 在哪 |
 |------|--------|------|
-| 用例 | 一个请求 + 它应得的响应 | `collections/**/NN-名称.json`（名称可用中文），文件名序 = 执行序；其他协议把 `request` 换成 `grpc` / `ws` / `web` / `android` |
+| 用例 | 一个请求 + 它应得的响应 | `collections/**/NN-名称.json`（名称可用中文），文件名序 = 执行序；其他协议把 `request` 换成 `grpc` / `ws` / `web` / `android` / `desktop` |
 | 集合 | 一个目录；公共请求头、标签 | 目录里的 `collection.json`（可选） |
 | 环境 | 一组变量：`baseUrl`、账号 | `envs/<环境>.json`；`baseUrl` 只写到端口，`/api/…` 写在用例 URL |
 | 断言 | 响应应该是什么样 | 用例的 `expect` |
-| 流程 | 按顺序跑几个集合 / 用例；API / Web / Android 可混在一个流程 | `requestbaby.json` 的 `workflows` |
+| 流程 | 按顺序跑几个集合 / 用例；API / Web / Android / Mac 可混在一个流程 | `requestbaby.json` 的 `workflows` |
 
 ## 一个完整的用例
 
@@ -62,11 +62,10 @@ token 这类每个用例都要带的请求头，在目录的 `collection.json` �
 | `matches` | 正则 | `{"matches": "^\\d{6}$"}` |
 | `oneOf` | 属于其一 | `{"oneOf": ["paid", "shipped"]}` |
 
-
 ## capture：从响应取值给后面的用例
 
 `"capture": { "变量名": "响应体路径" }`，响应头写 `"header:X-Trace-Id"`。取不到值时本用例失败，并写明缺哪个字段。
-一次运行里按执行顺序传给后面所有用例（跨文件、跨目录，不需要流程）；没写 capture 的用例不会改动已有变量。
+一次运行里按执行顺序传给后面所有用例（跨文件、跨目录，不需要流程）。
 
 ## 变量：日常只需要两层
 
@@ -75,13 +74,13 @@ token 这类每个用例都要带的请求头，在目录的 `collection.json` �
 
 用法：`{{name}}`，URL 里直接写。JSON 请求体里的数字字段写 `"id": "{{id:number}}"`（输出裸数字）。断言里与数字比较不用转换（环境里的 `"42"` 等于 42）。
 
-## Web / Android 与多端混合
+## Web / Android / Mac 与多端混合
 
-`web` / `android` 用例写步骤（点击、填写、断言文字），每步自动截图；先用 `requestbaby web snapshot <url>` / `android snapshot` 看元素与推荐定位（`guide web` / `android`）。API、Web、Android 用例可放进同一个流程，`capture` 的值互通。每个场景都要先登录：登录做成一个流程，其他流程 `"needs": ["login"]` 依赖它（登录态沿用，不要每个流程重复登录）；步骤 `"as": "student"` 切换用户（`guide flow`）。
+`web` / `android` / `desktop`（Mac 应用）用例写步骤（点击、填写、断言文字），每步自动截图；先用 `requestbaby web snapshot <url>` / `android snapshot` / `desktop snapshot <应用>` 看元素与定位（`guide web` / `android` / `desktop`）。各端用例可放进同一个流程，`capture` 的值互通。每个场景都要先登录：登录做成一个流程，其他流程 `"needs": ["login"]` 依赖它（登录态沿用，不重复登录）；步骤 `"as": "student"` 切换用户（`guide flow`）。
 
 ## 闭环命令
 
-写完的顺序：`validate` → `run` → `verify`。都用 `-e <环境>` 选环境，不写用项目默认环境。
+顺序：`validate` → `run` → `verify`；`-e <环境>` 选环境，缺省用项目默认环境。
 
 ```bash
 requestbaby new case collections/orders 创建订单 -m post   # 新建用例（自动 NN- 编号）
@@ -104,4 +103,4 @@ requestbaby verify -e dev            # 最终结论：校验 → 全部用例 �
 
 ## 主题（`requestbaby guide <主题>`）
 
-`expect` 断言 · `capture` 捕获与串联 · `vars` 变量进阶 · `flow` 流程 · `auth` 鉴权登录 · `e2e` 多步 · `data` 数据驱动 · `setup` 造数清数 · `env` 环境 · `grpc` gRPC · `ws` WebSocket · `web` Web 界面 · `android` 安卓界面 · `proxy` 代理 · `scripts` 脚本 · `cli` 命令 · `ref` 全部字段 · `all` 全部
+`expect` 断言 · `capture` 捕获与串联 · `vars` 变量进阶 · `flow` 流程 · `auth` 鉴权登录 · `e2e` 多步 · `data` 数据驱动 · `setup` 造数清数 · `env` 环境 · `grpc` gRPC · `ws` WebSocket · `web` 网页 · `android` 安卓 · `desktop` Mac 桌面 · `proxy` 代理 · `scripts` 脚本 · `cli` 命令 · `ref` 全部字段 · `all` 全部

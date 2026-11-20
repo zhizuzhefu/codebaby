@@ -1,9 +1,9 @@
-//! 用例编辑器里 Web / Android 的界面（与其他协议同一个编辑器、同一套断言 / 高级页，只有请求部分不同）：
-//! - 地址栏：Web 写要打开的页面，Android 写应用包名；右侧「读取元素」打开页面 / 读设备当前界面，列出元素与推荐定位
+//! 用例编辑器里 Web / Android / Mac 桌面的界面（与其他协议同一个编辑器、同一套断言 / 高级页，只有请求部分不同）：
+//! - 地址栏：Web 写要打开的页面，Android 写应用包名，Mac 桌面写应用名称；右侧「读取元素」打开页面 / 读设备当前界面 / 读应用窗口，列出元素与推荐定位
 //! - 步骤：一行一步（动作 + 目标 + 值），目标可从读取到的元素里点选；每行下方用人话复述这一步
-//! - Android 另有「应用」页：Activity / APK / 启动前清除数据
+//! - Android 另有「应用」页：Activity / APK / 启动前清除数据；Mac 桌面的「应用」页：窗口标题 / 启动前先退出
 use super::CaseEditor;
-use crate::case_form::{UiStepForm, ui_has_text, ui_targets_locator};
+use crate::case_form::{UiStepForm, ui_has_text, ui_kind, ui_targets_locator};
 use gpui_kit::component::{
     ActiveTheme as _, Disableable as _, IconName, Selectable as _, Sizable as _, h_flex,
     button::{Button, ButtonVariants as _},
@@ -17,7 +17,7 @@ use gpui_kit::{
     AnyElement, AppContext as _, Context, Entity, FontWeight, InteractiveElement as _, IntoElement, ParentElement as _, StatefulInteractiveElement as _, Styled as _, Window, div,
     prelude::FluentBuilder as _, px,
 };
-use requestbaby_core::config::{Protocol, UiAction};
+use requestbaby_core::config::{UiAction, UiKind};
 use requestbaby_core::protocols::SnapElement;
 use serde_json::Value;
 
@@ -33,7 +33,18 @@ pub(super) struct UiRow {
     pub raw: Option<Value>,
 }
 
-fn target_placeholder(a: UiAction, android: bool) -> &'static str {
+fn target_placeholder(a: UiAction, kind: UiKind) -> &'static str {
+    let android = kind == UiKind::Android;
+    if kind == UiKind::Desktop {
+        match a {
+            UiAction::Click => return "要点的元素：{\"role\": \"button\", \"name\": \"保存\"}；直接写文字 = 按文字找；或点右侧「元素」选",
+            UiAction::Fill => return "输入框：{\"role\": \"textfield\"} / {\"label\": \"名称\"}",
+            UiAction::Select => return "下拉框：{\"role\": \"combobox\", \"name\": \"字体\"}",
+            UiAction::WaitFor | UiAction::Expect => return "条件：{\"role\": \"button\", \"name\": \"保存\"} / {\"title\": \"设置\"}（窗口标题） / {\"text\": \"已保存\", \"state\": \"hidden\"}",
+            UiAction::Press => return "按键：Enter / Escape / Meta+s（⌘S） / Control+a",
+            _ => {}
+        }
+    }
     match a {
         UiAction::Click | UiAction::LongPress | UiAction::Hover if android => "要点的元素：{\"id\": \"login\"} / {\"text\": \"登录\"}；直接写文字 = 按文字找；或点右侧「元素」选",
         UiAction::Click | UiAction::LongPress | UiAction::Hover => "要点的元素：{\"role\": \"button\", \"name\": \"登录\"}；直接写文字 = 按文字找；或点右侧「元素」选",
@@ -55,8 +66,8 @@ fn target_placeholder(a: UiAction, android: bool) -> &'static str {
 
 impl CaseEditor {
     fn ui_row(&mut self, f: &UiStepForm, window: &mut Window, cx: &mut Context<Self>) -> UiRow {
-        let android = self.protocol == Protocol::Android;
-        let target = cx.new(|cx| InputState::new(window, cx).placeholder(target_placeholder(f.action, android)).default_value(f.target.clone()));
+        let kind = ui_kind(self.protocol);
+        let target = cx.new(|cx| InputState::new(window, cx).placeholder(target_placeholder(f.action, kind)).default_value(f.target.clone()));
         let value_hint = if f.action == UiAction::Select { "选项文字或值" } else { "要填的内容；支持 {{变量}}" };
         let value = cx.new(|cx| InputState::new(window, cx).placeholder(value_hint).default_value(f.value.clone()));
         let capture = cx.new(|cx| InputState::new(window, cx).placeholder("捕获（可选）").default_value(f.capture.clone()));
@@ -175,15 +186,20 @@ impl CaseEditor {
         }
     }
 
-    /// 后台读取元素：Web 打开地址栏的页面（变量按当前环境替换），Android 读设备当前界面；与 `requestbaby web / android snapshot` 同一实现
+    /// 后台读取元素：Web 打开地址栏的页面（变量按当前环境替换），Android 读设备当前界面，Mac 桌面读应用窗口；与 `requestbaby web / android / desktop snapshot` 同一实现
     pub(super) fn load_ui_snapshot(&mut self, cx: &mut Context<Self>) {
         let root = self.path.as_deref().and_then(requestbaby_core::runner::discover::find_project_root);
         let env = if self.env.is_empty() { "dev".to_string() } else { self.env.clone() };
         let url = self.ui_target.read(cx).value().to_string();
-        let android = self.protocol == Protocol::Android;
+        let kind = ui_kind(self.protocol);
+        let window_title = self.ui_window.read(cx).value().trim().to_string();
         self.ui_snapshot_loading = true;
         let task = cx.background_spawn(async move {
-            let snap = if android { requestbaby_core::protocols::android_snapshot(root.as_deref()) } else { requestbaby_core::protocols::web_snapshot(root.as_deref(), &env, &url, false) };
+            let snap = match kind {
+                UiKind::Android => requestbaby_core::protocols::android_snapshot(root.as_deref()),
+                UiKind::Desktop => requestbaby_core::protocols::desktop_snapshot(root.as_deref(), url.trim(), Some(window_title.as_str()).filter(|w| !w.is_empty())),
+                UiKind::Web => requestbaby_core::protocols::web_snapshot(root.as_deref(), &env, &url, false),
+            };
             snap.map(|s| s.elements).map_err(|e| format!("{e:#}"))
         });
         self._ui_task = Some(cx.spawn(async move |this, cx| {
@@ -199,7 +215,7 @@ impl CaseEditor {
 
     /// 地址栏右侧：读取元素
     pub(super) fn render_snapshot_button(&self, cx: &mut Context<Self>) -> AnyElement {
-        let android = self.protocol == Protocol::Android;
+        let kind = ui_kind(self.protocol);
         let n = self.ui_snapshot.as_ref().and_then(|r| r.as_ref().ok()).map(|e| e.len());
         let label = if self.ui_snapshot_loading {
             "读取中…".to_string()
@@ -209,10 +225,10 @@ impl CaseEditor {
                 None => "读取元素".to_string(),
             }
         };
-        let tip = if android {
-            "读取设备当前界面的元素与推荐定位，步骤里点「元素」即可选用（等价命令：requestbaby android snapshot）"
-        } else {
-            "打开这个页面，读取按钮 / 链接 / 输入框与推荐定位，步骤里点「元素」即可选用（等价命令：requestbaby web snapshot <地址>）"
+        let tip = match kind {
+            UiKind::Android => "读取设备当前界面的元素与推荐定位，步骤里点「元素」即可选用（等价命令：requestbaby android snapshot）",
+            UiKind::Desktop => "读取这个应用（需已在运行）窗口里的元素与推荐定位，步骤里点「元素」即可选用（等价命令：requestbaby desktop snapshot <应用>）",
+            UiKind::Web => "打开这个页面，读取按钮 / 链接 / 输入框与推荐定位，步骤里点「元素」即可选用（等价命令：requestbaby web snapshot <地址>）",
         };
         Button::new("ui-snapshot")
             .small()
@@ -226,21 +242,40 @@ impl CaseEditor {
     }
 
     pub(super) fn render_ui_parts(&self, cx: &mut Context<Self>) -> AnyElement {
-        let android = self.protocol == Protocol::Android;
+        let kind = ui_kind(self.protocol);
+        let android = kind == UiKind::Android;
+        let desktop = kind == UiKind::Desktop;
         let theme = cx.theme();
         let (muted, success, warning) = (theme.muted_foreground, theme.success, theme.warning);
         let n = self.ui_steps.len();
         let tabs = TabBar::new("ui-parts")
             .underline()
             .small()
-            .selected_index(if android { self.ui_tab } else { 0 })
+            .selected_index(if android || desktop { self.ui_tab } else { 0 })
             .child(Tab::new().label("步骤").when(n > 0, |t| t.suffix(div().text_xs().text_color(success).child(format!("{n}")))))
-            .when(android, |t| t.child(Tab::new().label("应用")))
+            .when(android || desktop, |t| t.child(Tab::new().label("应用")))
             .on_click(cx.listener(|this, ix: &usize, _, cx| {
                 this.ui_tab = *ix;
                 cx.notify();
             }));
-        let body = if android && self.ui_tab == 1 {
+        let body = if desktop && self.ui_tab == 1 {
+            let hint = |t: &'static str| div().text_xs().text_color(muted).child(t);
+            v_flex()
+                .gap_3()
+                .child(v_flex().gap_1().child(div().text_xs().font_weight(FontWeight::MEDIUM).child("窗口标题")).child(Input::new(&self.ui_window).small()).child(hint("应用有多个窗口时，写标题里的一段文字；缺省取唯一可见的窗口")))
+                .child(
+                    Switch::new("ui-restart")
+                        .small()
+                        .label("开始前先退出应用再重新启动（缺省接管已在运行的应用）")
+                        .checked(self.ui_restart)
+                        .on_change(cx.listener(|this, v: &bool, _, cx| {
+                            this.ui_restart = *v;
+                            this.refresh_dirty(cx);
+                            cx.notify();
+                        })),
+                )
+                .into_any_element()
+        } else if android && self.ui_tab == 1 {
             let hint = |t: &'static str| div().text_xs().text_color(muted).child(t);
             v_flex()
                 .gap_3()
@@ -269,14 +304,15 @@ impl CaseEditor {
     }
 
     fn render_ui_steps(&self, cx: &mut Context<Self>) -> AnyElement {
-        let android = self.protocol == Protocol::Android;
+        let kind = ui_kind(self.protocol);
+        let android = kind == UiKind::Android;
         let theme = cx.theme();
         let (muted, border, radius, danger) = (theme.muted_foreground, theme.border, theme.radius, theme.danger);
         let row_border = theme.table_row_border;
         let mono = theme.mono_font_family.clone();
         let view = cx.entity().downgrade();
         let n = self.ui_steps.len();
-        let actions: Vec<UiAction> = if android { UiAction::ANDROID.to_vec() } else { UiAction::WEB.to_vec() };
+        let actions: Vec<UiAction> = kind.actions().to_vec();
         let elements: Vec<SnapElement> = self.ui_snapshot.as_ref().and_then(|r| r.as_ref().ok()).cloned().unwrap_or_default();
         let forms = self.current_ui_steps(cx);
         let rows = self.ui_steps.iter().zip(forms).enumerate().map(|(ix, (r, form))| {
@@ -285,8 +321,8 @@ impl CaseEditor {
             let acts = actions.clone();
             let els = elements.clone();
             // 人话复述这一步（写错时显示原因）
-            let (summary, bad) = match form.to_value(ix + 1, android).and_then(|v| serde_json::from_value::<requestbaby_core::config::UiStep>(v).map_err(|e| e.to_string())) {
-                Ok(step) => (requestbaby_core::runner::ui::describe_ui_step(&step, android), false),
+            let (summary, bad) = match form.to_value(ix + 1, kind).and_then(|v| serde_json::from_value::<requestbaby_core::config::UiStep>(v).map_err(|e| e.to_string())) {
+                Ok(step) => (requestbaby_core::runner::ui::describe_ui_step(&step, kind), false),
                 Err(e) => (e, true),
             };
             let line1 = h_flex()
@@ -330,7 +366,7 @@ impl CaseEditor {
                     )
                 })
                 .when(matches!(current, UiAction::Fill | UiAction::Select), |this| this.child(div().w(px(160.)).child(Input::new(&r.value).small())))
-                .when(current == UiAction::Launch, |this| {
+                .when(current == UiAction::Launch && kind != UiKind::Desktop, |this| {
                     this.child(Button::new(("ui-clear", ix)).xsmall().ghost().label("清除数据").selected(r.clear_data).tooltip("启动前清除应用数据").on_click(cx.listener(move |this, _, window, cx| this.toggle_ui_flag(ix, true, window, cx))))
                 })
                 .when(ui_targets_locator(current), |this| {
@@ -370,10 +406,10 @@ impl CaseEditor {
                 this.edit_ui_steps(|s| s.push(UiStepForm::new(a)), window, cx);
             }))
         };
-        let quick: Vec<UiAction> = if android {
-            vec![UiAction::Click, UiAction::Fill, UiAction::Expect, UiAction::WaitFor, UiAction::Swipe, UiAction::Back, UiAction::Press, UiAction::Screenshot]
-        } else {
-            vec![UiAction::Click, UiAction::Fill, UiAction::Expect, UiAction::WaitFor, UiAction::Select, UiAction::Press, UiAction::Goto, UiAction::Screenshot]
+        let quick: Vec<UiAction> = match kind {
+            UiKind::Android => vec![UiAction::Click, UiAction::Fill, UiAction::Expect, UiAction::WaitFor, UiAction::Swipe, UiAction::Back, UiAction::Press, UiAction::Screenshot],
+            UiKind::Desktop => vec![UiAction::Click, UiAction::Fill, UiAction::Expect, UiAction::WaitFor, UiAction::Select, UiAction::Type, UiAction::Press, UiAction::Screenshot],
+            UiKind::Web => vec![UiAction::Click, UiAction::Fill, UiAction::Expect, UiAction::WaitFor, UiAction::Select, UiAction::Press, UiAction::Goto, UiAction::Screenshot],
         };
         v_flex()
             .gap_2()
@@ -381,10 +417,10 @@ impl CaseEditor {
                 h_flex()
                     .gap_2()
                     .child(div().text_xs().font_weight(FontWeight::MEDIUM).child("操作步骤"))
-                    .child(div().text_xs().text_color(muted).child(if android {
-                        "启动应用后按顺序执行；每一步自动等待目标出现、自动截图留证；任一步失败即停止并保存现场"
-                    } else {
-                        "打开页面后按顺序执行；每一步自动等待目标出现、可点击，自动截图留证；任一步失败即停止并保存现场"
+                    .child(div().text_xs().text_color(muted).child(match kind {
+                        UiKind::Android => "启动应用后按顺序执行；每一步自动等待目标出现、自动截图留证；任一步失败即停止并保存现场",
+                        UiKind::Desktop => "启动（或接管）应用后按顺序执行；每一步自动等待目标出现、可操作，自动截图留证；任一步失败即停止并保存现场",
+                        UiKind::Web => "打开页面后按顺序执行；每一步自动等待目标出现、可点击，自动截图留证；任一步失败即停止并保存现场",
                     })),
             )
             .child(if self.ui_steps.is_empty() {
@@ -399,7 +435,10 @@ impl CaseEditor {
                     .border_color(border)
                     .text_sm()
                     .text_color(muted)
-                    .child(if android { "没有步骤：只验证应用能启动（留下启动后的截图）" } else { "没有步骤：只验证页面能打开（留下打开后的截图）" })
+                    .child(match kind {
+                        UiKind::Web => "没有步骤：只验证页面能打开（留下打开后的截图）",
+                        _ => "没有步骤：只验证应用能启动（留下启动后的截图）",
+                    })
                     .into_any_element()
             } else {
                 v_flex().children(rows).into_any_element()

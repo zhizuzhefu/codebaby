@@ -33,6 +33,9 @@ pub struct TestCase {
     /// 安卓应用界面验收（adb + uiautomator）
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub android: Option<super::ui::AndroidSpec>,
+    /// Mac 桌面应用界面验收（agent-desktop 无障碍树）
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub desktop: Option<super::ui::DesktopSpec>,
     /// 前置脚本：请求发出前执行，可改写 req
     #[serde(default)]
     pub pre: String,
@@ -58,7 +61,13 @@ impl TestCase {
     /// 运行时写入的变量：capture 的键（含 ws 步骤里的）+ pre / post 脚本中的 `vars.x = …`（依赖分析、未定义变量检查共用）
     pub fn var_writes(&self) -> Vec<String> {
         let mut out: Vec<String> = self.capture.keys().cloned().collect();
-        let ui_steps = self.web.as_ref().map(|w| w.steps.as_slice()).or(self.android.as_ref().map(|a| a.steps.as_slice())).unwrap_or_default();
+        let ui_steps = self
+            .web
+            .as_ref()
+            .map(|w| w.steps.as_slice())
+            .or(self.android.as_ref().map(|a| a.steps.as_slice()))
+            .or(self.desktop.as_ref().map(|d| d.steps.as_slice()))
+            .unwrap_or_default();
         let ui_captures = ui_steps.iter().flat_map(|s| s.capture.keys().cloned());
         for n in self.ws.as_ref().map(|w| w.captures()).unwrap_or_default().into_iter().chain(ui_captures) {
             if !out.contains(&n) {
@@ -84,6 +93,8 @@ impl TestCase {
             Protocol::Web
         } else if self.android.is_some() {
             Protocol::Android
+        } else if self.desktop.is_some() {
+            Protocol::Desktop
         } else {
             Protocol::Http
         }
@@ -99,6 +110,8 @@ impl TestCase {
             ("WEB".into(), w.url.clone())
         } else if let Some(a) = &self.android {
             ("APP".into(), a.app.clone())
+        } else if let Some(d) = &self.desktop {
+            ("MAC".into(), d.app.clone())
         } else if let Some(r) = &self.request {
             (r.method.clone(), r.url.clone())
         } else {
@@ -106,13 +119,13 @@ impl TestCase {
         }
     }
 
-    /// request / grpc / ws / web / android 必须恰好写一个
+    /// request / grpc / ws / web / android / desktop 必须恰好写一个
     pub fn spec_error(&self) -> Option<String> {
-        let n = [self.request.is_some(), self.grpc.is_some(), self.ws.is_some(), self.web.is_some(), self.android.is_some()].iter().filter(|x| **x).count();
+        let n = [self.request.is_some(), self.grpc.is_some(), self.ws.is_some(), self.web.is_some(), self.android.is_some(), self.desktop.is_some()].iter().filter(|x| **x).count();
         match n {
             1 => None,
-            0 => Some("缺少请求：写 request（HTTP）、grpc、ws、web 或 android 其中一个".into()),
-            _ => Some("request / grpc / ws / web / android 只能写一个：一个用例对应一种协议".into()),
+            0 => Some("缺少请求：写 request（HTTP）、grpc、ws、web、android 或 desktop 其中一个".into()),
+            _ => Some("request / grpc / ws / web / android / desktop 只能写一个：一个用例对应一种协议".into()),
         }
     }
 
@@ -140,6 +153,10 @@ impl TestCase {
         if let Some(a) = &self.android {
             texts.extend([a.app.clone()].into_iter().chain(a.activity.clone()).chain(a.apk.clone()));
             texts.extend(a.steps.iter().flat_map(|s| s.texts()));
+        }
+        if let Some(d) = &self.desktop {
+            texts.extend([d.app.clone()].into_iter().chain(d.window.clone()));
+            texts.extend(d.steps.iter().flat_map(|s| s.texts()));
         }
         texts
     }

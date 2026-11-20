@@ -2,7 +2,7 @@
 //! - gRPC：地址 + 方法（从服务端反射或 .proto 加载方法列表）· 消息（按方法生成骨架）· 元数据
 //! - WebSocket：地址 · 对话（一行一步：发送 / 接收 / 等到 / 静候 / 关闭）· 请求头 · 参数
 //!
-//! Web / Android 见 case_editor_ui.rs
+//! Web / Android / Mac 桌面见 case_editor_ui.rs
 use super::{CaseEditor, EditorTab};
 use crate::case_form::StepForm;
 use crate::kv_table::ReadonlyRow;
@@ -48,6 +48,16 @@ fn content_placeholder(a: WsAction) -> &'static str {
 const GRPC_RESERVED: [&str; 8] = ["content-type", "content-length", "user-agent", "host", "connection", "te", "accept", "accept-encoding"];
 
 impl CaseEditor {
+    /// 界面用例地址栏的提示：Web 写页面地址，Android 写包名，Mac 桌面写应用名称
+    pub(super) fn sync_ui_target_placeholder(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let hint = match self.protocol {
+            Protocol::Android => "com.example.shop（应用包名）",
+            Protocol::Desktop => "TextEdit 或 com.apple.TextEdit（应用名称 / bundle ID）",
+            _ => "{{webBase}}/login（要打开的页面）",
+        };
+        self.ui_target.update(cx, |st, cx| st.set_placeholder(hint, window, cx));
+    }
+
     /// 切换协议：请求部分换成新协议的界面；状态码是旧协议的缺省值时一并换成新协议的缺省值
     pub(super) fn set_protocol(&mut self, p: Protocol, window: &mut Window, cx: &mut Context<Self>) {
         if p == self.protocol {
@@ -76,14 +86,15 @@ impl CaseEditor {
             }
             Protocol::Ws => fill(&self.ws_url, "{{wsBase}}/", window, cx),
             Protocol::Web => fill(&self.ui_target, "{{webBase}}/", window, cx),
-            Protocol::Android => {
-                // 地址 ↔ 包名不通用：从 Web 切过来时清空
+            Protocol::Android | Protocol::Desktop => {
+                // 地址 ↔ 包名 / 应用名不通用：从 Web 切过来时清空
                 if self.ui_target.read(cx).value().contains("://") || self.ui_target.read(cx).value().contains("{{") {
                     self.ui_target.update(cx, |st, cx| st.set_value(String::new(), window, cx));
                 }
             }
         }
         self.ui_snapshot = None;
+        self.sync_ui_target_placeholder(window, cx);
         if self.tab == EditorTab::Json {
             self.tab = EditorTab::Request;
         }
@@ -532,6 +543,6 @@ pub(super) fn default_status(p: Protocol) -> &'static str {
         Protocol::Grpc => "OK",
         Protocol::Ws => "101",
         Protocol::Web => "200",
-        Protocol::Android => "",
+        Protocol::Android | Protocol::Desktop => "",
     }
 }

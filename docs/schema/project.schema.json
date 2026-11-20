@@ -135,6 +135,18 @@
         }
       }
     },
+    "desktop": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Mac 桌面应用用例的设置（需要安装 agent-desktop）",
+      "properties": {
+        "agentDesktop": { "type": "string", "description": "agent-desktop 路径（缺省 PATH 与常见安装位置；环境变量 REQUESTBABY_AGENT_DESKTOP 优先）" },
+        "screenshots": {
+          "enum": ["steps", "failure"],
+          "description": "截图：steps（每一步，缺省）/ failure（只截失败、结束画面与 screenshot 步骤）"
+        }
+      }
+    },
     "android": {
       "type": "object",
       "additionalProperties": false,

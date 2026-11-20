@@ -118,14 +118,18 @@ pub struct CaseEditor {
     /// WebSocket 子页：0 对话 / 1 请求头 / 2 参数
     ws_tab: usize,
     _step_subs: Vec<Subscription>,
-    // ---- Web / Android
-    /// Web：要打开的页面；Android：应用包名
+    // ---- Web / Android / Mac 桌面
+    /// Web：要打开的页面；Android：应用包名；Mac 桌面：应用名称 / bundle ID
     ui_target: Entity<InputState>,
+    /// Mac 桌面：窗口标题包含的文字
+    ui_window: Entity<InputState>,
+    /// Mac 桌面：开始前先退出应用
+    ui_restart: bool,
     ui_activity: Entity<InputState>,
     ui_apk: Entity<InputState>,
     ui_clear_data: bool,
     ui_steps: Vec<ui::UiRow>,
-    /// Android 子页：0 步骤 / 1 应用
+    /// Android / Mac 桌面子页：0 步骤 / 1 应用
     ui_tab: usize,
     /// 读取到的页面 / 界面元素（步骤里点选定位）
     ui_snapshot: Option<Result<Vec<requestbaby_core::protocols::SnapElement>, String>>,
@@ -217,11 +221,12 @@ impl CaseEditor {
         let ws_query = cx.new(|_| KvTable::new(KvMode::Toggle, "参数名"));
         let ws_subprotocols = cx.new(|cx| InputState::new(window, cx).placeholder("chat.v1（服务端要求子协议时填写，逗号分隔）"));
         let ui_target = cx.new(|cx| InputState::new(window, cx).placeholder("{{webBase}}/login（要打开的页面）"));
+        let ui_window = cx.new(|cx| InputState::new(window, cx).placeholder("如 Untitled（窗口标题里的一段文字）"));
         let ui_activity = cx.new(|cx| InputState::new(window, cx).placeholder(".MainActivity"));
         let ui_apk = cx.new(|cx| InputState::new(window, cx).placeholder("build/app-debug.apk"));
 
         let mut subs = vec![];
-        for input in [&name, &url, &expect_status, &tags, &timeout, &retry, &cases_file, &grpc_target, &grpc_method, &ws_url, &ws_subprotocols, &ui_target, &ui_activity, &ui_apk] {
+        for input in [&name, &url, &expect_status, &tags, &timeout, &retry, &cases_file, &grpc_target, &grpc_method, &ws_url, &ws_subprotocols, &ui_target, &ui_window, &ui_activity, &ui_apk] {
             subs.push(cx.subscribe_in(input, window, |this, _, ev: &InputEvent, _, cx| {
                 if matches!(ev, InputEvent::Change) {
                     this.refresh_dirty(cx);
@@ -290,6 +295,8 @@ impl CaseEditor {
             ws_tab: 0,
             _step_subs: vec![],
             ui_target,
+            ui_window,
+            ui_restart: false,
             ui_activity,
             ui_apk,
             ui_clear_data: false,
@@ -491,6 +498,7 @@ impl CaseEditor {
             (&self.ws_url, &f.ws.url),
             (&self.ws_subprotocols, &f.ws.subprotocols),
             (&self.ui_target, &f.ui.target),
+            (&self.ui_window, &f.ui.window),
             (&self.ui_activity, &f.ui.activity),
             (&self.ui_apk, &f.ui.apk),
         ] {
@@ -503,11 +511,13 @@ impl CaseEditor {
         self.ws_query.update(cx, |t, cx| t.load(Some(&f.ws.query), window, cx));
         self.set_steps(&f.ws.steps, window, cx);
         self.ui_clear_data = f.ui.clear_data;
+        self.ui_restart = f.ui.restart;
         self.set_ui_steps(&f.ui.steps, window, cx);
         self.ui_tab = 0;
         if protocol_changed {
             self.ui_snapshot = None;
         }
+        self.sync_ui_target_placeholder(window, cx);
         self.ws_tab = 0;
         self.grpc_tab = 0;
         if protocol_changed || self.grpc_methods.as_ref().is_some_and(|m| m.is_err()) {
@@ -550,6 +560,8 @@ impl CaseEditor {
             },
             ui: UiForm {
                 target: input(&self.ui_target),
+                window: input(&self.ui_window),
+                restart: self.ui_restart,
                 activity: input(&self.ui_activity),
                 apk: input(&self.ui_apk),
                 clear_data: self.ui_clear_data,
@@ -786,7 +798,7 @@ impl CaseEditor {
                 Protocol::Http => this.child(self.render_request_parts(cx).into_any_element()),
                 Protocol::Grpc => this.child(self.render_grpc_parts(cx)),
                 Protocol::Ws => this.child(self.render_ws_parts(cx)),
-                Protocol::Web | Protocol::Android => this.child(self.render_ui_parts(cx)),
+                Protocol::Web | Protocol::Android | Protocol::Desktop => this.child(self.render_ui_parts(cx)),
             })
     }
 
@@ -805,7 +817,7 @@ impl CaseEditor {
                 .child(self.render_method_picker(cx))
                 .into_any_element(),
             Protocol::Ws => bar.child(div().flex_1().min_w_0().child(Input::new(&self.ws_url).small())).into_any_element(),
-            Protocol::Web | Protocol::Android => bar
+            Protocol::Web | Protocol::Android | Protocol::Desktop => bar
                 .child(div().flex_1().min_w_0().child(Input::new(&self.ui_target).small()))
                 .child(self.render_snapshot_button(cx))
                 .into_any_element(),
@@ -818,7 +830,7 @@ impl CaseEditor {
             Protocol::Http => self.url.read(cx).value().to_string(),
             Protocol::Grpc => self.grpc_target.read(cx).value().to_string(),
             Protocol::Ws => self.ws_url.read(cx).value().to_string(),
-            Protocol::Web | Protocol::Android => self.ui_target.read(cx).value().to_string(),
+            Protocol::Web | Protocol::Android | Protocol::Desktop => self.ui_target.read(cx).value().to_string(),
         }
     }
 
@@ -833,7 +845,7 @@ impl CaseEditor {
                 t.extend(self.ws_steps.iter().map(|r| r.content.read(cx).value().to_string()));
                 return t.join("\n");
             }
-            Protocol::Web | Protocol::Android => {
+            Protocol::Web | Protocol::Android | Protocol::Desktop => {
                 let t: Vec<String> = self.current_ui_steps(cx).into_iter().flat_map(|s| [s.target, s.value, s.capture]).collect();
                 return t.join("\n");
             }
@@ -1127,6 +1139,7 @@ impl CaseEditor {
             Protocol::Ws => ("握手状态", "成功是 101；验证被拒写 401 / 403；留空 = 必须握手成功", "收到的消息", "全部收到的消息组成的数组：[0].type、[*].type、$ 长度；逐条断言写在「对话」里的接收步骤", "握手响应头", "服务端关闭时另有 ws-close-code / ws-close-reason"),
             Protocol::Web => ("页面状态", "打开的页面的 HTTP 状态，通常 200；留空则不检查", "结束时的页面", "{url, title}：如 url 写 { \"contains\": \"/orders\" }；界面上的断言写在「请求」页的步骤里", "页面响应头", "最后一次整页加载的响应头"),
             Protocol::Android => ("状态", "Android 没有状态码，留空", "结束时的界面", "{package, activity}：如 activity 写 { \"contains\": \"MainActivity\" }；界面上的断言写在「请求」页的步骤里", "响应头", "Android 没有响应头"),
+            Protocol::Desktop => ("状态", "Mac 桌面应用没有状态码，留空", "结束时的窗口", "{app, window}：如 window 写 { \"contains\": \"Untitled\" }；界面上的断言写在「请求」页的步骤里", "响应头", "Mac 桌面应用没有响应头"),
         };
         v_flex()
             .id("case-expect")

@@ -319,7 +319,7 @@ impl ResponsePanel {
         match s.protocol {
             Protocol::Ws => !s.frames.is_empty(),
             Protocol::Grpc => s.frames.len() > 2,
-            Protocol::Http | Protocol::Web | Protocol::Android => false,
+            Protocol::Http | Protocol::Web | Protocol::Android | Protocol::Desktop => false,
         }
     }
 
@@ -356,6 +356,7 @@ impl ResponsePanel {
                 Protocol::Ws => "消息".into(),
                 Protocol::Web => "页面".into(),
                 Protocol::Android => "界面".into(),
+                Protocol::Desktop => "窗口".into(),
             },
             RespTab::Fields => match self.fields.len() {
                 0 => "字段".into(),
@@ -366,7 +367,7 @@ impl ResponsePanel {
                     Protocol::Http => "响应头",
                     Protocol::Grpc => "元数据",
                     Protocol::Ws => "握手头",
-                    Protocol::Web | Protocol::Android => "页面响应头",
+                    Protocol::Web | Protocol::Android | Protocol::Desktop => "页面响应头",
                 };
                 match s.map(|s| s.headers.len()).filter(|n| *n > 0) {
                     Some(n) => format!("{title} {n}"),
@@ -1019,7 +1020,7 @@ fn command_name(p: Protocol) -> &'static str {
         Protocol::Http => "cURL",
         Protocol::Grpc => "grpcurl",
         Protocol::Ws => "websocat",
-        Protocol::Web | Protocol::Android => "命令",
+        Protocol::Web | Protocol::Android | Protocol::Desktop => "命令",
     }
 }
 

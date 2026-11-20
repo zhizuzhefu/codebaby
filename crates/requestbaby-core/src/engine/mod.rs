@@ -1,6 +1,7 @@
 pub mod android;
 pub mod cdp;
 pub mod curl;
+pub mod desktop;
 pub mod grpc;
 pub mod proxy;
 pub mod tls;

@@ -229,6 +229,18 @@ pub fn new_android_case(dir: &Path, name: &str, app: &str) -> Result<PathBuf> {
     write_case(dir, name, &doc)
 }
 
+/// 新建 Mac 桌面用例：启动（或接管）应用即通过（自动留下启动后的截图），操作步骤在 desktop.steps 里补
+pub fn new_desktop_case(dir: &Path, name: &str, app: &str) -> Result<PathBuf> {
+    if app.trim().is_empty() {
+        bail!("写应用名称（如 TextEdit）或 bundle ID（如 com.apple.TextEdit）");
+    }
+    let doc = serde_json::json!({
+        "name": name.trim(),
+        "desktop": { "app": app.trim(), "steps": [] },
+    });
+    write_case(dir, name, &doc)
+}
+
 fn write_case(dir: &Path, name: &str, doc: &serde_json::Value) -> Result<PathBuf> {
     if name.trim().is_empty() {
         bail!("用例名不能为空");

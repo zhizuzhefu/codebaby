@@ -77,7 +77,7 @@ collections/
 - 有副作用的用例打 `write` 标签：`requestbaby run --tag smoke` 只跑只读的
 - 用例名写**预期**而不是操作：`03-重复提交被拒绝`
 
-## 多端混合：API + Web + Android 放进同一个流程
+## 多端混合：API + Web + Android + Mac 桌面放进同一个流程
 
 接口、网页、手机 App 的用例可以放在同一个流程里：运行时的变量是共用的，前一个用例捕获的值，后面任何端的用例都能用 `{{变量}}` 引用；整个流程得到一个结论，导出的报告是一个整体。
 
@@ -106,8 +106,8 @@ collections/
 }
 ```
 
-- 数据怎么传：API 用 `capture` 从响应里取；Web / Android 在任意一步上写 `capture`，从页面 / 界面的文字、输入框的值、属性、URL 里取（可加 `regex` 截取）。后面的用例在 URL、请求体、`fill` 的 `value` 里直接写 `{{orderNo}}`
+- 数据怎么传：API 用 `capture` 从响应里取；Web / Android / Mac 桌面在任意一步上写 `capture`，从页面 / 界面的文字、输入框的值、属性、URL 里取（可加 `regex` 截取）。后面的用例在 URL、请求体、`fill` 的 `value` 里直接写 `{{orderNo}}`
 - 顺序执行：界面用例与有依赖的用例一律串行，捕获一定先于引用；每个用例各自开浏览器 / 连设备，登录态不自动共享，各端各自登录（API 拿到的 token 可以捕获后填进页面）
-- 一个整体的结果：`requestbaby workflow mixed` 一次跑完；`requestbaby export` 导出的 HTML 里，每个用例标着自己的端（API / Web / Android）；多端混合时顶部有「时间线」，把所有端的用例和每一步按真实先后排在一起，点一行跳到对应步骤；脚本 `log(...)` 的输出跟在用例里；失败现场（页面结构、控制台、网络请求、logcat、崩溃日志）直接嵌在报告里，单独发给别人也能看
+- 一个整体的结果：`requestbaby workflow mixed` 一次跑完；`requestbaby export` 导出的 HTML 里，每个用例标着自己的端（API / Web / Android / Mac 桌面）；多端混合时顶部有「时间线」，把所有端的用例和每一步按真实先后排在一起，点一行跳到对应步骤；脚本 `log(...)` 的输出跟在用例里；失败现场（页面结构、控制台、网络请求、logcat、崩溃日志）直接嵌在报告里，单独发给别人也能看
 - 要贴进聊天或给 AI：`requestbaby export -f text`，输出结论 + 时间线 + 失败详情的纯文本
 - 异步联动（比如手机端操作后后台几秒才出数据）用 `waitFor` 等待，或调大那一步的 `timeoutMs`

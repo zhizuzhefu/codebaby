@@ -1331,7 +1331,7 @@ fn grpc_and_ws_cases_validate_dry_run_and_fmt() {
     has("07-bad-step.json", "ws-step", "第 1 步写了多个动作（send、wait）");
     has("07-bad-step.json", "ws-step", "第 2 步：capture 只能写在 receive / waitFor 步骤上");
     has("07-bad-step.json", "ws-step", "第 3 步没有动作");
-    has("08-both.json", "protocol", "request / grpc / ws / web / android 只能写一个");
+    has("08-both.json", "protocol", "request / grpc / ws / web / android / desktop 只能写一个");
     has("09-ws-url.json", "ws-url", "缺少协议");
 }
 
@@ -1397,17 +1397,94 @@ fn web_and_android_cases_scaffold_validate_and_dry_run() {
     let msgs: Vec<String> = v["issues"].as_array().unwrap().iter().map(|i| format!("{} {} {}", i["file"].as_str().unwrap().rsplit('/').next().unwrap(), i["rule"].as_str().unwrap(), i["message"].as_str().unwrap())).collect();
     let has = |file: &str, rule: &str, text: &str| assert!(msgs.iter().any(|m| m.starts_with(&format!("{file} {rule} ")) && m.contains(text)), "缺少 {file} {rule} {text}：{msgs:#?}");
     has("04-bad.json", "web-url", "写完整地址");
-    has("04-bad.json", "ui-step", "第 1 步：swipe 是 Android 专用的动作");
+    has("04-bad.json", "ui-step", "第 1 步：swipe 不能用在 Web 用例里");
     has("04-bad.json", "ui-locator", "第 2 步：定位只写一种（role、text）");
     has("04-bad.json", "ui-step", "第 3 步：fill 要写 value");
     has("04-bad.json", "ui-step", "第 4 步写了多个动作（click、hover）");
     has("04-bad.json", "ui-locator", "第 5 步：Web 用例不能写 id");
     has("04-bad.json", "capture-source", "第 6 步 capture.a");
     has("05-bad.json", "android-app", "写应用包名");
-    has("05-bad.json", "ui-step", "第 1 步：select 是 Web 专用的动作");
+    has("05-bad.json", "ui-step", "第 1 步：select 不能用在 Android 用例里");
     has("05-bad.json", "ui-locator", "第 2 步：Android 用例不能写 css");
     has("05-bad.json", "ui-step", "第 3 步：不认识的按键 Hyper");
     has("05-bad.json", "ui-locator", "第 4 步：state / count / value / hasText 是对元素的要求");
+
+    // Mac 桌面：新建、预览步骤、写错的地方（不运行：不需要 agent-desktop 和被测应用）
+    std::fs::remove_file(d.join("collections/ui/04-bad.json")).unwrap();
+    std::fs::remove_file(d.join("collections/ui/05-bad.json")).unwrap();
+    assert!(run_cli(&["new", "case", "collections/ui", "文本编辑", "--desktop", "TextEdit"], d).status.success());
+    let mac: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(d.join("collections/ui/04-文本编辑.json")).unwrap()).unwrap();
+    assert_eq!((mac["desktop"]["app"].as_str(), mac.get("expect")), (Some("TextEdit"), None));
+    std::fs::write(
+        d.join("collections/ui/05-写入.json"),
+        r#"{"name":"写入","desktop":{"app":"TextEdit","window":"Untitled","steps":[{"click":{"role":"button","name":"New Document"},"optional":true},{"fill":{"role":"textfield"},"value":"{{greeting}}"},{"press":"Meta+s"},{"expect":{"role":"textfield","value":"你好"}},{"wait":1,"capture":{"w":"window"}}]}}"#,
+    )
+    .unwrap();
+    std::fs::write(d.join("envs/dev.json"), r#"{"vars":{"webBase":"http://127.0.0.1:9","greeting":"你好"}}"#).unwrap();
+    let out = run_cli(&["validate", "--report", "json"], d);
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(v["issues"], serde_json::json!([]), "{v:#}");
+    let out = run_cli(&["run", "collections/ui/05-写入.json", "--dry-run", "-v"], d);
+    let text = String::from_utf8_lossy(&out.stdout);
+    assert!(text.contains("#2 填写 输入框 = 「你好」") && text.contains("#3 按键 Meta+s") && text.contains("MAC"), "{text}");
+    write("06-bad.json", r#"{"desktop":{"app":"","steps":[{"hover":{"text":"x"}},{"click":{"css":".x"}},{"press":"Hyper+"},{"swipe":"up"},{"wait":1,"capture":{"a":"activity"}},{"tap":{"text":"a"}}]}}"#);
+    let out = run_cli(&["validate", "--report", "json"], d);
+    assert_eq!(out.status.code(), Some(2));
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    let msgs: Vec<String> = v["issues"].as_array().unwrap().iter().map(|i| format!("{} {} {}", i["file"].as_str().unwrap().rsplit('/').next().unwrap(), i["rule"].as_str().unwrap(), i["message"].as_str().unwrap())).collect();
+    let has = |file: &str, rule: &str, text: &str| assert!(msgs.iter().any(|m| m.starts_with(&format!("{file} {rule} ")) && m.contains(text)), "缺少 {file} {rule} {text}：{msgs:#?}");
+    has("06-bad.json", "desktop-app", "desktop.app 不能为空");
+    has("06-bad.json", "ui-step", "第 1 步：hover 不能用在 Mac 桌面 用例里");
+    has("06-bad.json", "ui-locator", "第 2 步：Mac 桌面 用例不能写 css");
+    has("06-bad.json", "ui-step", "第 3 步：不认识的按键 Hyper+");
+    has("06-bad.json", "capture-source", "第 5 步 capture.a：写 \"window\" / \"app\"");
+}
+
+/// 真实 Mac 应用跑桌面用例：TextEdit 里输入、读回、追加、断言，每一步截图。
+/// 会启动并操作 TextEdit（需要 macOS、agent-desktop 与辅助功能 / 屏幕录制权限），所以默认不跑：
+/// `cargo test -p requestbaby --test integration -- --ignored desktop`
+#[test]
+#[ignore]
+fn desktop_case_drives_real_textedit_with_step_screenshots() {
+    if requestbaby_core::engine::desktop::find_agent_desktop(None).is_err() {
+        eprintln!("跳过：没有安装 agent-desktop");
+        return;
+    }
+    let dir = TempDir::new().unwrap();
+    let d = dir.path();
+    std::fs::write(d.join("requestbaby.json"), r#"{"version":1,"defaultEnv":"dev","timeoutMs":15000}"#).unwrap();
+    std::fs::create_dir_all(d.join("envs")).unwrap();
+    std::fs::write(d.join("envs/dev.json"), r#"{"vars":{"greeting":"你好 requestbaby"}}"#).unwrap();
+    std::fs::create_dir_all(d.join("collections/mac")).unwrap();
+    std::fs::write(
+        d.join("collections/mac/01-输入.json"),
+        r#"{"name":"TextEdit 输入并读回","desktop":{"app":"TextEdit","steps":[
+{"click":{"role":"button","name":"New Document"},"optional":true,"timeoutMs":1500},
+{"waitFor":{"role":"textfield"}},
+{"fill":{"role":"textfield"},"value":"{{greeting}}"},
+{"expect":{"role":"textfield","value":"{{greeting}}"}},
+{"type":"，追加"},
+{"expect":{"role":"textfield","value":"，追加"}},
+{"wait":1,"capture":{"body":{"role":"textfield"}}},
+{"press":"Meta+w"},
+{"click":{"role":"button","name":"Delete"},"optional":true,"timeoutMs":3000},
+{"stop":true}
+]}}"#,
+    )
+    .unwrap();
+    let out = run_cli(&["run", "--report", "json"], d);
+    let text = String::from_utf8_lossy(&out.stdout).to_string();
+    assert!(out.status.success(), "{text}\n{}", String::from_utf8_lossy(&out.stderr));
+    let v: serde_json::Value = serde_json::from_str(&text).unwrap();
+    let c = &v["results"][0];
+    assert_eq!((c["passed"].as_bool(), c["protocol"].as_str()), (Some(true), Some("desktop")), "{c:#}");
+    let ev = &c["response"]["evidence"];
+    assert!(ev["steps"].as_array().unwrap().iter().all(|s| s["status"] != "failed"), "{ev:#}");
+    assert!(ev["environment"].as_array().unwrap().iter().any(|e| e[0] == "系统"), "{ev:#}");
+    // 截图在证据目录里，并且是裁掉阴影后的窗口图
+    let first = ev["steps"].as_array().unwrap().iter().find_map(|s| s["screenshot"].as_str()).expect("至少一张截图");
+    let shot = d.join(ev["dir"].as_str().unwrap()).join(first);
+    assert!(shot.is_file(), "{}", shot.display());
 }
 
 /// 真实浏览器跑 Web 用例（本机没有 Chrome / Edge / Chromium 时跳过）：页面是临时目录里的 file://，不起服务。

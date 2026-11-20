@@ -594,8 +594,8 @@ pub(crate) fn key_event(spec: &str) -> Result<(u32, String, String, u32, Option<
 }
 
 impl UiDriver for WebPage<'_> {
-    fn android(&self) -> bool {
-        false
+    fn kind(&self) -> crate::config::UiKind {
+        crate::config::UiKind::Web
     }
 
     fn find(&mut self, loc: &Locator) -> Result<Vec<Element>> {

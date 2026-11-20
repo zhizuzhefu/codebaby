@@ -1,6 +1,6 @@
 # requestbaby 架构设计
 
-> AI 交付的独立验收层，辅助人对 AI 交付的成果验收：用例与实现分离，在接口边界（HTTP / gRPC / WebSocket）与真实界面（Web / Android）核对行为；文件目录为集合、JSON 配置 AI 可生成可校验，CLI 与桌面端共用同一核心与运行历史。
+> AI 交付的独立验收层，辅助人对 AI 交付的成果验收：用例与实现分离，在接口边界（HTTP / gRPC / WebSocket）与真实界面（Web / Android / Mac 桌面）核对行为；文件目录为集合、JSON 配置 AI 可生成可校验，CLI 与桌面端共用同一核心与运行历史。
 
 ## 1. 设计原则
 
@@ -112,8 +112,8 @@ TestCase ──load──► 合并变量作用域 ──pre 脚本──► Res
 | `config` | Project/Env/Collection/TestCase 模型与加载（serde 严格模式，未知字段报错） | 新配置字段由 Schema 同步约束 |
 | `vars` | 四层作用域栈、`{{}}` 替换 | 新变量来源（如 keychain） |
 | `engine::Transport` | `execute(ResolvedRequest) -> Response` | 替换为 libcurl FFI / 内置 HTTP（二期协议扩展） |
-| `engine::ui::UiDriver` | 界面驱动：find / actionable / click / fill / … / screenshot / failure_scene | Web = `engine::web`（CDP，`engine::cdp` 同步客户端 + 浏览器进程）；Android = `engine::android`（adb + uiautomator）；新平台实现同一 trait |
-| `runner::ui` | 界面步骤循环（自动等待、断言、捕获、截图标注、失败现场），两种驱动共用 | 新动作 / 新定位 |
+| `engine::ui::UiDriver` | 界面驱动：find / actionable / click / fill / … / screenshot / failure_scene | Web = `engine::web`（CDP，`engine::cdp` 同步客户端 + 浏览器进程）；Android = `engine::android`（adb + uiautomator）；Mac 桌面 = `engine::desktop`（agent-desktop 无障碍树）；新平台实现同一 trait，并在 `UiKind` 加一项 |
+| `runner::ui` | 界面步骤循环（自动等待、断言、捕获、截图标注、失败现场），各驱动共用 | 新动作 / 新定位 |
 | `script::ScriptHost` | `run_pre / run_post / eval_tests / compile_check` | 替换 JS 引擎；表达式方言 |
 | `runner` | 目录发现、排序、过滤、fail-fast、顺序执行、并发（二期） | 调度策略 |
 | `report::Reporter` | 终端美化 / JSON /（二期 junit、html） | 新报告格式 |
@@ -153,9 +153,9 @@ AI 依据报错自修复 → 循环直到通过
 - **编排层**：`workflows`（requestbaby.json）多阶段编排，runtime vars 跨步骤传递；取代外部 shell 脚本
 - **校验闭环（AI 原生）**：四类 JSON Schema 内置（validate 程序化校验防漂移）；退出码 0/1/2 语义；`validate --json` 结构化 issue（file/level/rule/message）；失败响应快照 + `-o` 响应落盘供 LLM 分析；`doctor` 环境预检——协议见 docs/guide/cli.md（`requestbaby guide cli`）
 - **导入生态**：OpenAPI 3 / Swagger 2 / Postman v2.1 / curl 命令
-- **界面验收（Web / Android）**：第 4、5 种「协议」，与接口用例共用断言 / 捕获 / 变量 / 集合 / 流程 / 历史。
+- **界面验收（Web / Android / Mac 桌面）**：第 4、5、6 种「协议」，与接口用例共用断言 / 捕获 / 变量 / 集合 / 流程 / 历史。
   Web 自写最小 CDP 客户端驱动本机 Chrome / Edge（不依赖 Playwright / Node），每个用例一个独立浏览器上下文，
-  角色 + 名称 / 表单标签走浏览器无障碍树；Android 走 adb + uiautomator。步骤循环只写一遍（`runner::ui`），
+  角色 + 名称 / 表单标签走浏览器无障碍树；Android 走 adb + uiautomator；Mac 桌面调用 agent-desktop 命令行读取 macOS 无障碍树（整棵树在本地匹配定位，操作走语义调用，不动鼠标，截图按不透明范围裁掉窗口阴影）。步骤循环只写一遍（`runner::ui`），
   每一步截图并标注（`engine::ui::annotate`，image crate），证据进 `.requestbaby/runs/<运行 ID>/<用例>/`，
   运行记录绑定 git 提交（`RunMeta.git`），同一提交上时过时不过的用例标为不稳定；最近 30 次的证据全保留、更早的只留失败的。
   界面用例强制串行；运行与判定全程确定性，不调用大模型。
@@ -169,5 +169,5 @@ AI 依据报错自修复 → 循环直到通过
 
 ## 10. 支持矩阵
 
-- 协议：http/https、gRPC、WebSocket；界面：Web（Chrome / Edge / Chromium，本机或远程）、Android（adb，本机 / 网络设备 / 远程 adb server）
+- 协议：http/https、gRPC、WebSocket；界面：Web（Chrome / Edge / Chromium，本机或远程）、Android（adb，本机 / 网络设备 / 远程 adb server）、Mac 桌面应用（agent-desktop，仅 macOS）
 - 平台：桌面端 macOS；命令行 macOS（Apple 芯片 / Intel）。发布只提供 macOS 版；代码本身不依赖 macOS 专有 API，其他平台可自行从源码构建

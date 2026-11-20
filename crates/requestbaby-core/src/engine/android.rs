@@ -529,8 +529,8 @@ pub(crate) fn keycode(key: &str) -> Result<String> {
 }
 
 impl UiDriver for Device {
-    fn android(&self) -> bool {
-        true
+    fn kind(&self) -> crate::config::UiKind {
+        crate::config::UiKind::Android
     }
 
     fn find(&mut self, loc: &Locator) -> Result<Vec<Element>> {

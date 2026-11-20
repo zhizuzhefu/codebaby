@@ -1,13 +1,13 @@
-//! 界面自动化：`web`（浏览器，Chrome DevTools 协议）与 `android`（adb + uiautomator）两种「协议」。
+//! 界面自动化：`web`（浏览器，Chrome DevTools 协议）、`android`（adb + uiautomator）与 `desktop`（Mac 桌面应用，agent-desktop 无障碍树）三种「协议」。
 //!
 //! 和 WebSocket 一样一步一个动作，两端共用同一套步骤、定位与断言写法：
 //! - 定位按用户看得到的东西写：角色 + 名称（`{"role": "button", "name": "登录"}`）、表单标签、可见文字；
-//!   Android 用 `id`（resource-id）/ `text` / `desc`（无障碍描述）。CSS / testId 只作兜底
+//!   Android 用 `id`（resource-id）/ `text` / `desc`（无障碍描述）；Mac 桌面用 role + name（无障碍角色与名称）/ `id`（AXIdentifier）。CSS / testId 只作兜底
 //! - 每一步自动等待元素出现、可见、可操作，不写 sleep
 //! - 每一步自动截图留证：点击类截图标出点了哪里，断言截图标出验证到的元素；失败另存现场
 //!
 //! 结果映射到通用的 expect：`status` = Web 打开页面的 HTTP 状态（Android 无），
-//! `body` = 结束时的页面 / 界面（Web：`{"url", "title"}`，Android：`{"package", "activity"}`）。
+//! `body` = 结束时的页面 / 界面（Web：`{"url", "title"}`，Android：`{"package", "activity"}`，Mac 桌面：`{"app", "window"}`）。
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
@@ -49,6 +49,67 @@ pub struct AndroidSpec {
     pub timeout_ms: Option<u64>,
 }
 
+/// Mac 桌面应用里的一个用例：启动（或接管）`app`，按 `steps` 一步步操作与断言
+#[derive(Debug, Clone, Default, PartialEq, Deserialize, Serialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct DesktopSpec {
+    /// 应用名称（如 `TextEdit`）或 bundle ID（如 `com.apple.TextEdit`）
+    pub app: String,
+    /// 窗口标题包含这段文字的窗口（应用有多个窗口时用；缺省取唯一可见窗口）
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub window: Option<String>,
+    /// 开始前先退出应用再重新启动（缺省接管已在运行的应用，不动它）
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub restart: Option<bool>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub steps: Vec<UiStep>,
+    /// 每一步等待的默认超时毫秒（缺省 10000）
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub timeout_ms: Option<u64>,
+}
+
+/// 界面驱动的种类：步骤循环按它决定轮询节奏、可用动作与文案
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum UiKind {
+    Web,
+    Android,
+    Desktop,
+}
+
+impl UiKind {
+    /// 界面与报错里的名字
+    pub fn label(&self) -> &'static str {
+        match self {
+            UiKind::Web => "Web",
+            UiKind::Android => "Android",
+            UiKind::Desktop => "Mac 桌面",
+        }
+    }
+
+    /// 用例 JSON 里的请求键
+    pub fn key(&self) -> &'static str {
+        match self {
+            UiKind::Web => "web",
+            UiKind::Android => "android",
+            UiKind::Desktop => "desktop",
+        }
+    }
+
+    /// 每次轮询之间的间隔：读界面结构要跑一次 adb / agent-desktop，比浏览器慢
+    pub fn poll(&self) -> std::time::Duration {
+        std::time::Duration::from_millis(if *self == UiKind::Web { 100 } else { 250 })
+    }
+
+    /// 步骤里可选的动作
+    pub fn actions(&self) -> &'static [UiAction] {
+        match self {
+            UiKind::Web => &UiAction::WEB,
+            UiKind::Android => &UiAction::ANDROID,
+            UiKind::Desktop => &UiAction::DESKTOP,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Viewport {
@@ -70,6 +131,7 @@ impl Default for Viewport {
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
 pub struct Locator {
     /// 无障碍角色：button / link / textbox / checkbox / radio / combobox / heading / tab / menuitem / cell …
+    /// （Mac 桌面用系统的角色名：button / textfield / checkbox / radiobutton / combobox / menubutton / treeitem …）
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub role: Option<String>,
     /// 无障碍名称（按钮文字、链接文字、输入框标签…），配合 role
@@ -90,10 +152,10 @@ pub struct Locator {
     /// CSS 选择器（兜底：依赖页面实现，改版容易失效）
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub css: Option<String>,
-    /// Android resource-id：写全 `com.x:id/phone` 或只写 `phone`
+    /// Android resource-id：写全 `com.x:id/phone` 或只写 `phone`；Mac 桌面写 AXIdentifier
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub id: Option<String>,
-    /// Android 无障碍描述（content-desc）
+    /// Android 无障碍描述（content-desc）/ Mac 桌面的无障碍描述（AXDescription）
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub desc: Option<String>,
     /// 名称 / 文字完全相等（缺省包含即可，忽略大小写）
@@ -107,7 +169,7 @@ pub struct Locator {
     /// 当前地址包含（Web）
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub url: Option<String>,
-    /// 页面标题包含（Web）
+    /// 页面标题包含（Web）/ 窗口标题包含（Mac 桌面）
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub title: Option<String>,
     /// 当前 Activity 包含（Android）
@@ -192,22 +254,22 @@ pub struct UiStep {
     /// 下拉框选择 `value`（选项文字或值，Web）
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub select: Option<Locator>,
-    /// 往当前焦点输入文字（Android）
+    /// 往当前焦点输入文字（Android / Mac 桌面）
     #[serde(default, rename = "type", skip_serializing_if = "Option::is_none")]
     pub type_text: Option<String>,
-    /// 按键：Enter / Tab / Escape / Backspace / ArrowDown / Control+a …；Android 还有 BACK / HOME
+    /// 按键：Enter / Tab / Escape / Backspace / ArrowDown / Control+a …；Android 还有 BACK / HOME；Mac 桌面可写 Meta+s / cmd+s
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub press: Option<String>,
-    /// 滑动屏幕：up / down / left / right（手指移动的方向，Android）
+    /// 滑动屏幕：up / down / left / right（手指移动的方向，Android；Mac 桌面滚动窗口里最大的滚动区域，方向含义相同）
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub swipe: Option<String>,
     /// 返回上一页（Web 浏览器后退 / Android 返回键）
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub back: Option<bool>,
-    /// （重新）启动应用（Android）；配合 `clearData`
+    /// （重新）启动应用（Android / Mac 桌面）；配合 `clearData`（仅 Android）
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub launch: Option<bool>,
-    /// 关闭应用（Android）
+    /// 关闭应用（Android / Mac 桌面）
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub stop: Option<bool>,
     /// 一直等到条件满足（不满足则失败）
@@ -275,6 +337,20 @@ impl UiAction {
         UiAction::Screenshot,
         UiAction::Wait,
     ];
+    pub const DESKTOP: [UiAction; 12] = [
+        UiAction::Click,
+        UiAction::Fill,
+        UiAction::Select,
+        UiAction::Type,
+        UiAction::Press,
+        UiAction::Swipe,
+        UiAction::Launch,
+        UiAction::Stop,
+        UiAction::WaitFor,
+        UiAction::Expect,
+        UiAction::Screenshot,
+        UiAction::Wait,
+    ];
     pub const ANDROID: [UiAction; 13] = [
         UiAction::Click,
         UiAction::Fill,
@@ -292,10 +368,10 @@ impl UiAction {
     ];
 
     /// 写进文件的键（点击：Web 写 click，Android 写 tap）
-    pub fn key(&self, android: bool) -> &'static str {
+    pub fn key(&self, kind: UiKind) -> &'static str {
         match self {
             UiAction::Goto => "goto",
-            UiAction::Click if android => "tap",
+            UiAction::Click if kind == UiKind::Android => "tap",
             UiAction::Click => "click",
             UiAction::LongPress => "longPress",
             UiAction::Hover => "hover",
@@ -340,8 +416,8 @@ impl UiAction {
         matches!(self, UiAction::Click | UiAction::LongPress | UiAction::Hover | UiAction::Fill | UiAction::Select)
     }
 
-    pub fn supported(&self, android: bool) -> bool {
-        if android { Self::ANDROID.contains(self) } else { Self::WEB.contains(self) }
+    pub fn supported(&self, kind: UiKind) -> bool {
+        kind.actions().contains(self)
     }
 }
 
@@ -520,6 +596,11 @@ pub fn role_label(role: &str) -> &str {
         "heading" => "标题",
         "tab" => "标签页",
         "menuitem" => "菜单项",
+        "menubutton" => "菜单按钮",
+        "textfield" => "输入框",
+        "statictext" => "文字",
+        "radiobutton" => "单选框",
+        "treeitem" => "树节点",
         "cell" | "gridcell" => "单元格",
         "row" => "表格行",
         "img" | "image" => "图片",
@@ -550,6 +631,17 @@ pub struct WebConfig {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub viewport: Option<Viewport>,
     /// 截图：steps（每一步，缺省）/ failure（只截失败、最终画面与 screenshot 步骤）
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub screenshots: Option<ScreenshotPolicy>,
+}
+
+/// 项目级 Mac 桌面配置（requestbaby.json 的 `desktop`）
+#[derive(Debug, Clone, Default, PartialEq, Deserialize, Serialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct DesktopConfig {
+    /// agent-desktop 路径（缺省 PATH）；环境变量 REQUESTBABY_AGENT_DESKTOP 优先
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent_desktop: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub screenshots: Option<ScreenshotPolicy>,
 }

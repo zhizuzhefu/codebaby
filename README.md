@@ -2,7 +2,7 @@
 
 AI 交付的独立验收层，辅助人对 AI 交付的成果验收。
 
-用 JSON 文件写下「发什么请求、点哪些按钮，应该得到什么结果」，requestbaby 真的去跑一遍，告诉你通过还是失败。接口（HTTP / gRPC / WebSocket）和界面（Web / Android）都能验收，界面验收的每一步都会截图留证。
+用 JSON 文件写下「发什么请求、点哪些按钮，应该得到什么结果」，requestbaby 真的去跑一遍，告诉你通过还是失败。接口（HTTP / gRPC / WebSocket）和界面（Web / Android / Mac 桌面应用）都能验收，界面验收的每一步都会截图留证。
 
 有命令行，也有 macOS 桌面端，两边读写同一个项目目录。
 
@@ -32,14 +32,15 @@ AI 交付的独立验收层，辅助人对 AI 交付的成果验收。
 
 - Web：直接驱动本机的 Chrome / Edge，不需要 Playwright 或 Node；也可以连 Docker、云端的远程浏览器
 - Android：通过 adb 操作真机或模拟器，远程模拟器、云手机也可以
+- Mac 桌面应用：通过 [agent-desktop](https://github.com/vercel-labs/agent-desktop) 读取系统无障碍树来操作，默认不抢焦点、不动鼠标
 - 按人看到的样子找元素（名叫「登录」的按钮、标签是「手机号」的输入框），自动等元素就绪再操作，不用写 sleep
-- 每一步自动截图，并框出点了哪里、验证了哪个元素；失败时另存页面、控制台、网络请求（Android 是界面结构和 logcat）
+- 每一步自动截图，并框出点了哪里、验证了哪个元素；失败时另存页面、控制台、网络请求（Android 是界面结构和 logcat，Mac 桌面是无障碍树）
 - HTML 报告是单个文件，截图已经嵌在里面，发给别人直接打开
 
 **结果与协作**
 
 - 命令行退出码就是结论，方便放进 CI；也可以输出 JSON 或 HTML 报告
-- 一键导出结果给别人：桌面端「导出结果」（⌘E），命令行 `requestbaby export`。默认是全部用例的最新结果，一份 HTML，截图已嵌入，对方用浏览器直接打开；导出前会提示哪些用例没跑过、哪些结果已是旧的。API、Web、Android 用例可以放进同一个流程，变量在各端之间传递，报告是一个整体：每个用例标出所属的端，多端混合时有按真实先后排列的时间线，失败现场（页面结构、控制台、网络请求、logcat）直接嵌在里面
+- 一键导出结果给别人：桌面端「导出结果」（⌘E），命令行 `requestbaby export`。默认是全部用例的最新结果，一份 HTML，截图已嵌入，对方用浏览器直接打开；导出前会提示哪些用例没跑过、哪些结果已是旧的。API、Web、Android、Mac 桌面用例可以放进同一个流程，变量在各端之间传递，报告是一个整体：每个用例标出所属的端，多端混合时有按真实先后排列的时间线，失败现场（页面结构、控制台、网络请求、logcat）直接嵌在里面
 - 保留运行历史，记录每次运行对应的代码提交；同一个提交上时过时不过的用例会标成「不稳定」
 - 桌面端可以可视化地编辑用例、看响应和截图，每个操作都有对应的命令
 - 所有对外连接可以统一走代理（socks5 / http），也可以一键关掉
@@ -114,6 +115,7 @@ make mac-app && make install-mac                            # macOS 桌面端，
 
 - Web 用例需要本机装有 Chrome、Edge 或 Chromium（或者连接远程浏览器）
 - Android 用例需要 [adb](https://developer.android.com/tools/releases/platform-tools)，以及一台开着调试的设备或模拟器
+- Mac 桌面用例需要 `npm install -g agent-desktop`，并给运行 requestbaby 的程序（终端 / requestbaby.app）开启「辅助功能」（截图还需要「屏幕录制」）权限
 
 `requestbaby doctor` 会检查这些是否就绪。
 
@@ -174,7 +176,7 @@ requestbaby open                                            # 在桌面端打开
 }
 ```
 
-运行后，每一步都有一张截图，保存在 `.requestbaby/runs/` 下；加上 `--report html` 会得到一份带截图时间线的单文件报告。Android 用例把 `web` 换成 `android`，写应用包名和操作步骤即可。
+运行后，每一步都有一张截图，保存在 `.requestbaby/runs/` 下；加上 `--report html` 会得到一份带截图时间线的单文件报告。Android 用例把 `web` 换成 `android`，写应用包名和操作步骤即可；Mac 桌面应用换成 `desktop`，写应用名称（如 `TextEdit`）。
 
 ## 放进 CI
 
@@ -203,7 +205,7 @@ AI 写完之后，`requestbaby validate` 会检查用例并给出写法建议，
 | 变量与环境 | [vars](docs/guide/vars.md)、[env](docs/guide/env.md) |
 | 多个用例串成流程、按多组数据运行 | [flow](docs/guide/flow.md)、[data](docs/guide/data.md) |
 | gRPC / WebSocket | [grpc](docs/guide/grpc.md)、[ws](docs/guide/ws.md) |
-| Web / Android 界面验收 | [web](docs/guide/web.md)、[android](docs/guide/android.md) |
+| Web / Android / Mac 桌面界面验收 | [web](docs/guide/web.md)、[android](docs/guide/android.md)、[desktop](docs/guide/desktop.md) |
 | 代理 | [proxy](docs/guide/proxy.md) |
 | 全部命令 | [cli](docs/guide/cli.md)，或 `requestbaby --help` |
 

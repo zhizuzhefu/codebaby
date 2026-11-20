@@ -1,5 +1,5 @@
-//! 协议：一个用例的「请求」部分五选一 —— `request`（HTTP）/ `grpc` / `ws`（WebSocket）/
-//! `web`（浏览器）/ `android`（手机应用），后两者见 [`super::ui`]。
+//! 协议：一个用例的「请求」部分六选一 —— `request`（HTTP）/ `grpc` / `ws`（WebSocket）/
+//! `web`（浏览器）/ `android`（手机应用）/ `desktop`（Mac 桌面应用），后三者见 [`super::ui`]。
 //! 其余部分（expect / capture / 变量 / 集合 / 流程 / 报告）与 HTTP 完全一致：
 //! - gRPC：`expect.status` 是 gRPC 状态（`"OK"` / `"NOT_FOUND"` 或数字），`headers` 是响应元数据，
 //!   `body` 是响应消息（服务端流 / 双向流时是消息数组）
@@ -18,6 +18,7 @@ pub enum Protocol {
     Ws,
     Web,
     Android,
+    Desktop,
 }
 
 impl Protocol {
@@ -33,6 +34,7 @@ impl Protocol {
             Protocol::Ws => "WebSocket",
             Protocol::Web => "Web",
             Protocol::Android => "Android",
+            Protocol::Desktop => "Mac 桌面",
         }
     }
 
@@ -44,15 +46,27 @@ impl Protocol {
             Protocol::Ws => "ws",
             Protocol::Web => "web",
             Protocol::Android => "android",
+            Protocol::Desktop => "desktop",
         }
     }
 
     /// 界面自动化（逐步操作 + 截图留证）
     pub fn is_ui(&self) -> bool {
-        matches!(self, Protocol::Web | Protocol::Android)
+        self.ui_kind().is_some()
     }
 
-    pub const ALL: [Protocol; 5] = [Protocol::Http, Protocol::Grpc, Protocol::Ws, Protocol::Web, Protocol::Android];
+    /// 界面自动化的驱动种类（非界面协议为 None）
+    pub fn ui_kind(&self) -> Option<super::ui::UiKind> {
+        use super::ui::UiKind;
+        match self {
+            Protocol::Web => Some(UiKind::Web),
+            Protocol::Android => Some(UiKind::Android),
+            Protocol::Desktop => Some(UiKind::Desktop),
+            _ => None,
+        }
+    }
+
+    pub const ALL: [Protocol; 6] = [Protocol::Http, Protocol::Grpc, Protocol::Ws, Protocol::Web, Protocol::Android, Protocol::Desktop];
 }
 
 /// gRPC 调用

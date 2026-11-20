@@ -60,7 +60,7 @@ enum Cmd {
     },
     /// 使用文档（与本版本一致，人和 AI 都读这一份）：缺省输出速查卡；guide <主题> 按场景深入
     Guide {
-        /// 主题：expect capture vars flow auth e2e data setup env grpc ws scripts cli ref all（也接受中文：断言 / 捕获 / 流程 …）
+        /// 主题：expect capture vars flow auth e2e data setup env grpc ws web android desktop scripts cli ref all（也接受中文：断言 / 捕获 / 流程 …）
         topic: Option<String>,
         /// 在项目根写入 AGENTS.md / CLAUDE.md 入口（已存在的跳过）
         #[arg(long)]
@@ -83,6 +83,11 @@ enum Cmd {
     Android {
         #[command(subcommand)]
         action: AndroidCmd,
+    },
+    /// Mac 桌面应用：apps 列出正在运行的应用；snapshot 列出应用窗口里的元素与可直接粘贴的定位（需要 agent-desktop）
+    Desktop {
+        #[command(subcommand)]
+        action: DesktopCmd,
     },
     /// 关于：版本、官网、源码、文档与反馈地址
     About,
@@ -367,6 +372,23 @@ enum ProxyCmd {
 }
 
 #[derive(Subcommand)]
+enum DesktopCmd {
+    /// 列出正在运行的 Mac 应用（名称与 bundle ID，用例的 app 写其中之一）
+    Apps,
+    /// 读取应用窗口当前的界面，列出元素与推荐定位，并截一张图
+    Snapshot {
+        /// 应用名称（如 TextEdit）或 bundle ID
+        app: String,
+        /// 应用有多个窗口时：窗口标题里的一段文字
+        #[arg(long)]
+        window: Option<String>,
+        /// 输出 JSON
+        #[arg(long)]
+        json: bool,
+    },
+}
+
+#[derive(Subcommand)]
 enum AndroidCmd {
     /// 列出已连接的设备（adb devices）
     Devices,
@@ -418,6 +440,9 @@ struct NewCaseArgs {
     /// 新建 Android 界面用例：应用包名
     #[arg(long, value_name = "PACKAGE", conflicts_with_all = ["method", "url", "curl", "grpc", "ws", "web"])]
     android: Option<String>,
+    /// 新建 Mac 桌面应用用例：应用名称（如 TextEdit）或 bundle ID
+    #[arg(long, value_name = "APP", conflicts_with_all = ["method", "url", "curl", "grpc", "ws", "web", "android"])]
+    desktop: Option<String>,
     /// 改写 baseUrl 时参考的环境（缺省 defaultEnv）
     #[arg(short, long)]
     env: Option<String>,
@@ -693,6 +718,7 @@ fn main() -> ExitCode {
         Cmd::Grpc { action } => cmd_grpc(action),
         Cmd::Web { action } => cmd_web(action),
         Cmd::Android { action } => cmd_android(action),
+        Cmd::Desktop { action } => cmd_desktop(action),
         Cmd::Proxy { action } => cmd_proxy(action),
         Cmd::About => {
             println!("{}", requestbaby_core::about::text());
@@ -1087,6 +1113,26 @@ fn cmd_android(action: AndroidCmd) -> u8 {
     }
 }
 
+fn cmd_desktop(action: DesktopCmd) -> u8 {
+    let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+    let root = session::project_root(&cwd);
+    match action {
+        DesktopCmd::Apps => match protocols::desktop_apps(root.as_deref()) {
+            Ok(apps) => {
+                for (name, bundle) in apps {
+                    println!("{name}  \x1b[2m{bundle}\x1b[0m");
+                }
+                0
+            }
+            Err(e) => err(format!("{e:#}")),
+        },
+        DesktopCmd::Snapshot { app, window, json } => match protocols::desktop_snapshot(root.as_deref(), &app, window.as_deref()) {
+            Ok(s) => print_snapshot(&s, json, "定位粘贴进步骤：{\"click\": <定位>} / {\"fill\": <定位>, \"value\": \"…\"} / {\"expect\": <定位>}（requestbaby guide desktop）"),
+            Err(e) => err(format!("{e:#}")),
+        },
+    }
+}
+
 fn cmd_new(what: NewCmd) -> u8 {
     let created = match what {
         NewCmd::Case(NewCaseArgs { dir, name, curl: Some(curl), env, .. }) => new_case_from_curl(&dir, name.as_deref(), &curl, env.as_deref()),
@@ -1095,6 +1141,7 @@ fn cmd_new(what: NewCmd) -> u8 {
         NewCmd::Case(NewCaseArgs { dir, name: Some(name), ws: Some(url), .. }) => scaffold::new_ws_case(&PathBuf::from(dir), &name, &url),
         NewCmd::Case(NewCaseArgs { dir, name: Some(name), web: Some(url), .. }) => scaffold::new_web_case(&PathBuf::from(dir), &name, &url),
         NewCmd::Case(NewCaseArgs { dir, name: Some(name), android: Some(app), .. }) => scaffold::new_android_case(&PathBuf::from(dir), &name, &app),
+        NewCmd::Case(NewCaseArgs { dir, name: Some(name), desktop: Some(app), .. }) => scaffold::new_desktop_case(&PathBuf::from(dir), &name, &app),
         NewCmd::Case(NewCaseArgs { dir, name: Some(name), method, url, .. }) => scaffold::new_case(&PathBuf::from(dir), &name, &method, &url),
         NewCmd::Collection(NewCollectionArgs { parent, name }) => scaffold::new_collection(&PathBuf::from(parent), &name),
         NewCmd::Env(NewEnvArgs { name, from }) => match session::project_root(std::path::Path::new(".")) {
@@ -1710,6 +1757,7 @@ fn cmd_send(case: &str, env: Option<&str>, suggest: bool, save_body: Option<&str
             Protocol::Ws => ("握手响应头", "收到的消息"),
             Protocol::Web => ("页面响应头", "结束时的页面"),
             Protocol::Android => ("", "结束时的界面"),
+            Protocol::Desktop => ("", "结束时的窗口"),
         };
         // 界面用例：步骤时间线（每一步的截图）+ 运行环境 + 失败现场
         if let Some(ev) = &resp.evidence {

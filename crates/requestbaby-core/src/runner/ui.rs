@@ -1,11 +1,11 @@
-//! 界面用例（Web / Android）的步骤循环：两种驱动共用。
+//! 界面用例（Web / Android / Mac 桌面）的步骤循环：各驱动共用。
 //!
 //! 每一步：替换变量 → 自动等待目标（出现、可见、可用、位置稳定、没被遮挡）→ 操作 → 等界面稳定 → 截图留证。
 //! 点击类截图在操作前拍并标出点击位置（红框 + 圆点），输入类在操作后拍并框出输入框，
 //! 断言 / 等待通过时框出验证到的元素（绿框）；失败时另存现场（页面结构、控制台、网络 / logcat）。
 use super::{discover, leftover_error, CaseResult, Exchanged, RunEvent, RunOptions, Runner};
 use crate::config::ui::ScreenshotPolicy;
-use crate::config::{CaptureSource, Locator, Protocol, TestCase, UiAction, UiState, UiStep};
+use crate::config::{CaptureSource, Locator, Protocol, TestCase, UiAction, UiKind, UiState, UiStep};
 use crate::engine::cdp::{self, Browser};
 use crate::engine::ui::{self as eui, Actionable, Element, Mark, MarkKind, StepRecord, UiDriver, UiEvidence, UiStepStatus};
 use crate::script::{ReqData, RespData, TestOutcome};
@@ -99,7 +99,7 @@ fn render_locator(l: &Locator, v: &Vars) -> Locator {
 }
 
 /// 步骤的人话描述（变量已替换）：点击 按钮「登录」/ 填写 输入框「手机号」= 138…
-pub fn describe_ui_step(s: &UiStep, android: bool) -> String {
+pub fn describe_ui_step(s: &UiStep, kind: UiKind) -> String {
     let Some(a) = s.action() else { return "（每一步只能写一个动作）".into() };
     let target = s.locator().map(|l| l.describe()).unwrap_or_default();
     let clip = |t: &str| {
@@ -112,14 +112,18 @@ pub fn describe_ui_step(s: &UiStep, android: bool) -> String {
     };
     let mut d = match a {
         UiAction::Goto => format!("打开 {}", s.goto.clone().unwrap_or_default()),
-        UiAction::Click | UiAction::LongPress | UiAction::Hover => format!("{} {target}", if android && a == UiAction::Click { "点按" } else { a.label() }),
+        UiAction::Click | UiAction::LongPress | UiAction::Hover => format!("{} {target}", if kind == UiKind::Android && a == UiAction::Click { "点按" } else { a.label() }),
         UiAction::Fill => format!("填写 {target} = 「{}」", clip(s.value.as_deref().unwrap_or_default())),
         UiAction::Select => format!("在{} 选择「{}」", target.replacen("输入框", "下拉框", 1), s.value.clone().unwrap_or_default()),
         UiAction::Type => format!("输入「{}」", clip(s.type_text.as_deref().unwrap_or_default())),
         UiAction::Press => format!("按键 {}", s.press.clone().unwrap_or_default()),
         UiAction::Swipe => format!("向{}滑动", match s.swipe.as_deref().unwrap_or_default() { "up" => "上", "down" => "下", "left" => "左", "right" => "右", other => other }),
         UiAction::Back => "返回".into(),
-        UiAction::Launch => if s.clear_data == Some(true) { "清除数据后启动应用".into() } else { "启动应用".into() },
+        UiAction::Launch => match (kind, s.clear_data == Some(true)) {
+            (UiKind::Desktop, _) => "重新启动应用".into(),
+            (_, true) => "清除数据后启动应用".into(),
+            _ => "启动应用".into(),
+        },
         UiAction::Stop => "关闭应用".into(),
         UiAction::WaitFor | UiAction::Expect => format!("{} {}", a.label(), s.locator().map(|l| l.describe_condition()).unwrap_or_default()),
         UiAction::Screenshot => format!("截图「{}」", s.screenshot.clone().unwrap_or_default()),
@@ -142,7 +146,7 @@ fn file_slug(s: &str) -> String {
 /// 等到唯一的目标元素（need_action：还要可用、位置稳定、没被遮挡）
 fn wait_element(d: &mut dyn UiDriver, loc: &Locator, deadline: Instant, need_action: bool, cancelled: &dyn Fn() -> bool) -> Result<Element, WaitErr> {
     let desc = loc.describe();
-    let poll = if d.android() { Duration::from_millis(250) } else { Duration::from_millis(100) };
+    let poll = d.kind().poll();
     let mut why = String::new();
     let mut last: Option<Element>;
     loop {
@@ -344,7 +348,7 @@ impl Runner {
         }
         result.url = url.clone();
         if opts.dry_run {
-            result.body_preview = Some(super::clip_preview(&describe_steps(&spec.steps, vars, false)));
+            result.body_preview = Some(super::clip_preview(&describe_steps(&spec.steps, vars, UiKind::Web)));
             self.redact_result(result);
             return None;
         }
@@ -441,7 +445,7 @@ impl Runner {
             None => app.clone(),
         };
         if opts.dry_run {
-            result.body_preview = Some(super::clip_preview(&describe_steps(&spec.steps, vars, true)));
+            result.body_preview = Some(super::clip_preview(&describe_steps(&spec.steps, vars, UiKind::Android)));
             self.redact_result(result);
             return None;
         }
@@ -498,7 +502,64 @@ impl Runner {
         Some(Exchanged { resp, outcomes })
     }
 
-    /// 步骤循环（两种驱动共用）
+    /// Mac 桌面：找到 agent-desktop → 启动（或接管）应用 → 逐步执行
+    pub(super) fn exchange_desktop(
+        &mut self,
+        dc: &discover::DiscoveredCase,
+        case: &TestCase,
+        row: Option<&crate::config::DataRow>,
+        vars: &Vars,
+        result: &mut CaseResult,
+        opts: &RunOptions,
+    ) -> Option<Exchanged> {
+        use crate::engine::desktop;
+        let spec = case.desktop.as_ref().expect("Mac 桌面用例");
+        result.method = "MAC".into();
+        let app = vars.render(&spec.app);
+        let window = spec.window.as_ref().map(|w| vars.render(w));
+        result.url = match &window {
+            Some(w) => format!("{app} · {w}"),
+            None => app.clone(),
+        };
+        if opts.dry_run {
+            result.body_preview = Some(super::clip_preview(&describe_steps(&spec.steps, vars, UiKind::Desktop)));
+            self.redact_result(result);
+            return None;
+        }
+        if let Some(e) = leftover_error(&[app.clone(), window.clone().unwrap_or_default()]) {
+            result.error = Some(e);
+            return None;
+        }
+        let cfg = self.ctx.project.desktop.clone();
+        let started = Instant::now();
+        let ad = match desktop::AgentDesktop::from_config(&cfg) {
+            Ok(a) => a,
+            Err(e) => {
+                result.error = Some(format!("{e:#}"));
+                return None;
+            }
+        };
+        let launch_timeout = Duration::from_millis(self.ctx.project.timeout_ms.max(5000));
+        let mut app_driver = desktop::App::new(ad, app, window, launch_timeout);
+        let (dir, display) = self.evidence_dir(dc, &result.name, opts);
+        let policy = cfg.screenshots.unwrap_or_default();
+        let step_timeout = spec.timeout_ms.unwrap_or(DEFAULT_STEP_TIMEOUT_MS);
+        let (outcomes, evidence) = self.ui_steps(&mut app_driver, dc, row, &spec.steps, Open::Launch(spec.restart.unwrap_or(false)), step_timeout, &dir, display, policy, opts);
+        let info = app_driver.page().unwrap_or_default();
+        let resp = RespData {
+            status: 0,
+            time_ms: started.elapsed().as_millis() as u64,
+            size: 0,
+            headers: vec![],
+            body: serde_json::json!({ "app": info.location, "window": info.title }).to_string(),
+            protocol: Protocol::Desktop,
+            frames: vec![],
+            evidence: Some(evidence),
+        };
+        Some(Exchanged { resp, outcomes })
+    }
+
+    /// 步骤循环（各驱动共用）
     #[allow(clippy::too_many_arguments)]
     fn ui_steps(
         &mut self,
@@ -513,12 +574,11 @@ impl Runner {
         policy: ScreenshotPolicy,
         opts: &RunOptions,
     ) -> (Vec<TestOutcome>, UiEvidence) {
-        let android = d.android();
+        let kind = d.kind();
         let started = Instant::now();
         let mut ev = UiEvidence { dir: display, ..Default::default() };
         let mut outcomes: Vec<TestOutcome> = vec![];
         let _ = std::fs::create_dir_all(dir);
-        ev.environment = d.environment();
         let all_shots = policy == ScreenshotPolicy::Steps;
         let rel = dc.rel.clone();
         let cancel = opts.cancel.clone();
@@ -535,11 +595,21 @@ impl Runner {
         // ---- 步骤 0：打开页面 / 启动应用 ----
         let (open_title, open_res) = match &open {
             Open::Goto(u) => (format!("打开 {u}"), d.goto(u)),
-            Open::Launch(clear) => (if *clear { "清除数据后启动应用".to_string() } else { "启动应用".to_string() }, d.launch(*clear)),
+            Open::Launch(clear) => {
+                let title = match (kind, *clear) {
+                    (UiKind::Desktop, true) => "重新启动应用",
+                    (UiKind::Desktop, false) => "启动应用（已在运行则接管）",
+                    (_, true) => "清除数据后启动应用",
+                    _ => "启动应用",
+                };
+                (title.to_string(), d.launch(*clear))
+            }
         };
         if open_res.is_ok() {
             d.settle(Duration::from_millis(default_timeout));
         }
+        // 运行环境在打开之后读：桌面应用的版本、窗口要启动后才知道
+        ev.environment = d.environment();
         let t_open = started.elapsed().as_millis() as u64;
         let open_failed = open_res.is_err();
         let shot = if all_shots || open_failed { snap(d, "00-open.jpg", &[]).ok() } else { None };
@@ -581,19 +651,19 @@ impl Runner {
                 v
             };
             let step = render_step(raw, &v);
-            let title = describe_ui_step(&step, android);
+            let title = describe_ui_step(&step, kind);
             let at = started.elapsed().as_millis() as u64;
             let timeout = Duration::from_millis(step.timeout_ms.unwrap_or(default_timeout).max(1));
             let deadline = Instant::now() + timeout;
-            let key = step.action().map(|a| a.key(android)).unwrap_or("step");
+            let key = step.action().map(|a| a.key(kind)).unwrap_or("step");
             let shot_name = |suffix: &str| format!("{n:02}-{suffix}.jpg");
 
             let res: Result<Done, Failed> = (|| {
                 let Some(action) = step.action() else {
                     return Err(Failed::new("每一步只能写一个动作"));
                 };
-                if !action.supported(android) {
-                    return Err(Failed::new(format!("{} 用例不支持 {}", if android { "Android" } else { "Web" }, action.key(android))));
+                if !action.supported(kind) {
+                    return Err(Failed::new(format!("{} 用例不支持 {}", kind.label(), action.key(kind))));
                 }
                 if let Some(e) = leftover_error(&step.texts()) {
                     return Err(Failed::new(e));
@@ -668,7 +738,7 @@ impl Runner {
                                 }
                                 Err(e) => return Err(Failed::new(format!("{e:#}{}", if last.is_empty() { String::new() } else { format!("（之前：{last}）") }))),
                             }
-                            std::thread::sleep(if android { Duration::from_millis(250) } else { Duration::from_millis(100) });
+                            std::thread::sleep(kind.poll());
                         }
                     }
                     UiAction::Goto => {
@@ -690,7 +760,8 @@ impl Runner {
                             UiAction::Press => d.press(step.press.as_deref().unwrap_or_default()),
                             UiAction::Swipe => d.swipe(step.swipe.as_deref().unwrap_or_default()),
                             UiAction::Back => d.back(),
-                            UiAction::Launch => d.launch(step.clear_data == Some(true)),
+                            // 桌面应用的 launch 步骤 = 重新启动（先正常退出）
+                            UiAction::Launch => d.launch(kind == UiKind::Desktop || step.clear_data == Some(true)),
                             UiAction::Stop => d.stop(),
                             _ => unreachable!(),
                         };
@@ -798,9 +869,9 @@ impl Runner {
                 CaptureSource::Builtin(b) => {
                     let p = d.page().map_err(|e| Failed::new(format!("捕获 {name}：{e:#}")))?;
                     match b.as_str() {
-                        "url" | "package" => p.location,
-                        "title" | "activity" => p.title,
-                        other => return Err(Failed::new(format!("捕获 {name}：不认识的来源 {other}（Web 写 url / title，Android 写 activity，或写一个元素定位）"))),
+                        "url" | "package" | "app" => p.location,
+                        "title" | "activity" | "window" => p.title,
+                        other => return Err(Failed::new(format!("捕获 {name}：不认识的来源 {other}（Web 写 url / title，Android 写 activity，Mac 桌面写 window，或写一个元素定位）"))),
                     }
                 }
                 CaptureSource::Element(loc) => {
@@ -868,6 +939,6 @@ fn render_step(s: &UiStep, v: &Vars) -> UiStep {
 }
 
 /// 步骤清单（dry-run 预览）
-pub fn describe_steps(steps: &[UiStep], vars: &Vars, android: bool) -> String {
-    steps.iter().enumerate().map(|(i, s)| format!("#{} {}", i + 1, describe_ui_step(&render_step(s, vars), android))).collect::<Vec<_>>().join("\n")
+pub fn describe_steps(steps: &[UiStep], vars: &Vars, kind: UiKind) -> String {
+    steps.iter().enumerate().map(|(i, s)| format!("#{} {}", i + 1, describe_ui_step(&render_step(s, vars), kind))).collect::<Vec<_>>().join("\n")
 }

@@ -96,6 +96,6 @@ requestbaby workflow needs order rm login        # 去掉依赖
 }
 ```
 
-命令行：`requestbaby workflow step add homework collections/20-answer --as student`。Android 用例的登录态保存在手机上，`as` 对它没有作用（需要换账号就在用例里退出再登录）。
+命令行：`requestbaby workflow step add homework collections/20-answer --as student`。Android / Mac 桌面用例的登录态保存在手机 / 应用里，`as` 对它们没有作用（需要换账号就在用例里退出再登录）。
 
 `requestbaby verify` 会依次跑：校验 → 全部用例 → 每个流程，一次给出结论。

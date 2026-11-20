@@ -1,6 +1,6 @@
-//! 新建用例对话框：选协议（HTTP / HTTPS、gRPC、WebSocket、Web、Android）→ 填名称与地址；HTTP 也可直接粘贴 cURL。
+//! 新建用例对话框：选协议（HTTP / HTTPS、gRPC、WebSocket、Web、Android、Mac 桌面）→ 填名称与地址；HTTP 也可直接粘贴 cURL。
 //!
-//! 与 `requestbaby new case <目录> <名称> [--method / --url | --curl | --grpc | --ws | --web | --android]` 同一实现（core::scaffold）。
+//! 与 `requestbaby new case <目录> <名称> [--method / --url | --curl | --grpc | --ws | --web | --android | --desktop]` 同一实现（core::scaffold）。
 //! 底部实时预览将要创建的文件；回车即创建。
 use crate::style;
 use gpui_kit::component::{
@@ -29,6 +29,7 @@ pub enum NewCaseMode {
     Ws,
     Web,
     Android,
+    Desktop,
 }
 
 type OnCreated = Rc<dyn Fn(PathBuf, &mut Window, &mut App)>;
@@ -46,6 +47,7 @@ pub struct NewCaseForm {
     ws_url: Entity<InputState>,
     web_url: Entity<InputState>,
     app: Entity<InputState>,
+    mac_app: Entity<InputState>,
     curl: Entity<EditorState>,
     /// 剪贴板里有 curl 命令：HTTP 模式下提示一键使用
     clipboard_curl: Option<String>,
@@ -90,6 +92,7 @@ impl NewCaseForm {
         let ws_url = cx.new(|cx| InputState::new(window, cx).placeholder("{{wsBase}}/chat").default_value("{{wsBase}}/"));
         let web_url = cx.new(|cx| InputState::new(window, cx).placeholder("{{webBase}}/login").default_value("{{webBase}}/"));
         let app = cx.new(|cx| InputState::new(window, cx).placeholder("com.example.shop"));
+        let mac_app = cx.new(|cx| InputState::new(window, cx).placeholder("TextEdit 或 com.apple.TextEdit"));
         let curl = cx.new(|cx| {
             EditorState::new(window, cx)
                 .soft_wrap(true)
@@ -102,7 +105,7 @@ impl NewCaseForm {
         }
         // 单行输入回车即创建；名称变化时刷新底部的文件预览
         let mut subs = vec![];
-        for input in [&name, &url, &grpc_target, &ws_url, &web_url, &app] {
+        for input in [&name, &url, &grpc_target, &ws_url, &web_url, &app, &mac_app] {
             subs.push(cx.subscribe_in(input, window, |this: &mut Self, _, ev: &InputEvent, window, cx| match ev {
                 InputEvent::PressEnter { .. } => this.submit(window, cx),
                 InputEvent::Change => {
@@ -124,6 +127,7 @@ impl NewCaseForm {
             ws_url,
             web_url,
             app,
+            mac_app,
             curl,
             clipboard_curl,
             error: None,
@@ -191,6 +195,7 @@ impl NewCaseForm {
             NewCaseMode::Ws => scaffold::new_ws_case(dir, &name, &Self::value(&self.ws_url, cx)),
             NewCaseMode::Web => scaffold::new_web_case(dir, &name, &Self::value(&self.web_url, cx)),
             NewCaseMode::Android => scaffold::new_android_case(dir, &name, &Self::value(&self.app, cx)),
+            NewCaseMode::Desktop => scaffold::new_desktop_case(dir, &name, &Self::value(&self.mac_app, cx)),
         };
         match created {
             Ok(path) => {
@@ -226,6 +231,7 @@ impl NewCaseForm {
             NewCaseMode::Ws => 2,
             NewCaseMode::Web => 3,
             NewCaseMode::Android => 4,
+            NewCaseMode::Desktop => 5,
         };
         ButtonGroup::new("new-case-protocol")
             .outline()
@@ -234,12 +240,14 @@ impl NewCaseForm {
             .child(Button::new("nc-ws").label("WebSocket").selected(current == 2))
             .child(Button::new("nc-web").label("Web").selected(current == 3))
             .child(Button::new("nc-android").label("Android").selected(current == 4))
+            .child(Button::new("nc-desktop").label("Mac 桌面").selected(current == 5))
             .on_click(cx.listener(|this, clicks: &Vec<usize>, window, cx| {
                 let mode = match clicks.first() {
                     Some(1) => NewCaseMode::Grpc,
                     Some(2) => NewCaseMode::Ws,
                     Some(3) => NewCaseMode::Web,
                     Some(4) => NewCaseMode::Android,
+                    Some(5) => NewCaseMode::Desktop,
                     _ if this.mode == NewCaseMode::Curl => NewCaseMode::Curl,
                     _ => NewCaseMode::Http,
                 };
@@ -306,6 +314,13 @@ impl NewCaseForm {
                 div().into_any_element(),
                 Input::new(&self.app),
                 Some("通过 adb 在已连接的手机 / 模拟器上启动。创建后在「步骤」里添加 点按 / 填写 / 断言，每一步自动截图留证".into()),
+                cx,
+            ),
+            NewCaseMode::Desktop => field_with_action(
+                "应用名称或 bundle ID",
+                div().into_any_element(),
+                Input::new(&self.mac_app),
+                Some("通过 agent-desktop 操作 Mac 应用（需先 npm install -g agent-desktop，并给运行 requestbaby 的程序开启辅助功能权限）。创建后在「步骤」里添加 点击 / 填写 / 断言，每一步自动截图留证".into()),
                 cx,
             ),
         }

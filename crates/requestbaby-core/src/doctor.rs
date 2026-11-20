@@ -126,12 +126,13 @@ fn dir_size(dir: &Path) -> u64 {
     walkdir::WalkDir::new(dir).into_iter().flatten().filter_map(|e| e.metadata().ok()).filter(|m| m.is_file()).map(|m| m.len()).sum()
 }
 
-/// 有界面用例时：Web 要有浏览器，Android 要有 adb 和一台可用设备
+/// 有界面用例时：Web 要有浏览器，Android 要有 adb 和一台可用设备，Mac 桌面要有 agent-desktop 和辅助功能权限
 fn check_ui(root: &Path, cases: &[discover::DiscoveredCase], proxy: &crate::engine::proxy::ProxyPolicy, checks: &mut Vec<Check>) {
     use crate::config::{Protocol, TestCase};
     let protocols: Vec<Protocol> = cases.iter().filter_map(|c| load_strict::<TestCase>(&c.path).ok()).map(|c| c.protocol()).collect();
     let web = protocols.iter().filter(|p| **p == Protocol::Web).count();
     let android = protocols.iter().filter(|p| **p == Protocol::Android).count();
+    let desktop = protocols.iter().filter(|p| **p == Protocol::Desktop).count();
     let project = discover::project_file(root).and_then(|p| load_strict::<Project>(&p).ok()).unwrap_or_default();
     if let (true, Some(ep)) = (web > 0, crate::engine::cdp::endpoint(project.web.endpoint.as_deref())) {
         let shown = crate::engine::cdp::redact_url(&ep);
@@ -158,6 +159,40 @@ fn check_ui(root: &Path, cases: &[discover::DiscoveredCase], proxy: &crate::engi
         };
         checks.push(c);
     }
+    if desktop > 0 {
+        checks.extend(check_desktop(&project.desktop, desktop));
+    }
+}
+
+/// Mac 桌面：agent-desktop 要装好，辅助功能权限（截图还要屏幕录制权限）要给运行 requestbaby 的程序
+fn check_desktop(cfg: &crate::config::ui::DesktopConfig, n: usize) -> Vec<Check> {
+    use crate::engine::desktop;
+    if !cfg!(target_os = "macos") {
+        return vec![Check { level: CheckLevel::Error, message: format!("{n} 个 Mac 桌面用例只能在 macOS 上运行") }];
+    }
+    let ad = match desktop::AgentDesktop::from_config(cfg) {
+        Ok(a) => a,
+        Err(e) => return vec![Check { level: CheckLevel::Error, message: format!("{n} 个 Mac 桌面用例无法运行：{e:#}") }],
+    };
+    let version = std::process::Command::new(&ad.path).arg("--version").output().ok().map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string()).filter(|v| !v.is_empty());
+    let mut out = vec![Check { level: CheckLevel::Ok, message: format!("{}（{n} 个 Mac 桌面用例）", version.unwrap_or_else(|| ad.path.display().to_string())) }];
+    match ad.call(&["permissions"], std::time::Duration::from_secs(10)) {
+        Ok(p) => {
+            let state = |k: &str| p.pointer(&format!("/{k}/state")).and_then(|v| v.as_str()).unwrap_or("unknown").to_string();
+            let (ax, rec) = (state("accessibility"), state("screen_recording"));
+            if ax != "granted" {
+                out.push(Check { level: CheckLevel::Error, message: "没有辅助功能权限：系统设置 → 隐私与安全性 → 辅助功能，给运行 requestbaby 的程序（终端 / requestbaby.app）打开；agent-desktop permissions --guide 会带你操作".into() });
+            }
+            if rec != "granted" {
+                out.push(Check { level: CheckLevel::Warn, message: "没有屏幕录制权限：用例能跑，但截图会失败（系统设置 → 隐私与安全性 → 屏幕录制）".into() });
+            }
+            if ax == "granted" && rec == "granted" {
+                out.push(Check { level: CheckLevel::Ok, message: "辅助功能与屏幕录制权限已授权".into() });
+            }
+        }
+        Err(e) => out.push(Check { level: CheckLevel::Warn, message: format!("读取 agent-desktop 权限失败：{e:#}") }),
+    }
+    out
 }
 
 /// 代理：说明当前规则；启用时确认代理本身连得上、账号密码对

@@ -71,12 +71,13 @@ requestbaby guide --init                  # 已有项目补 AGENTS.md / CLAUDE.m
 requestbaby schema --all                  # 四类配置文件的 JSON Schema
 requestbaby about                         # 版本、官网、源码、文档与反馈地址
 requestbaby upgrade                       # 升级到最新版本（--check 只检查，有新版本时 exit 1）
-requestbaby doctor                        # 环境自检：引擎 / 配置 / 环境文件 / baseUrl 可达 / 浏览器 / adb
+requestbaby doctor                        # 环境自检：引擎 / 配置 / 环境文件 / baseUrl 可达 / 浏览器 / adb / agent-desktop 与权限
 requestbaby import openapi.json -o api/   # OpenAPI 3 / Swagger 2 / Postman v2.1 → 用例
 requestbaby grpc list                     # gRPC 服务的全部方法；grpc describe <方法> 看请求消息骨架
-requestbaby new case collections/chat 连接 --ws "{{wsBase}}/chat"   # 也有 --grpc <方法> / --web <地址> / --android <包名>
+requestbaby new case collections/chat 连接 --ws "{{wsBase}}/chat"   # 也有 --grpc <方法> / --web <地址> / --android <包名> / --desktop <应用>
 requestbaby web snapshot "{{webBase}}/login"   # 页面上的按钮 / 输入框与可直接粘贴的定位（android snapshot 读设备当前界面）
 requestbaby android devices               # 已连接的 Android 设备（ANDROID_SERIAL=主机:端口 先自动连接远程设备）
+requestbaby desktop apps                  # 正在运行的 Mac 应用；desktop snapshot <应用> 读窗口里的元素与推荐定位（需要 agent-desktop）
 requestbaby proxy                         # 代理：查看并检查；proxy set <地址> / on / off / unset；任意命令加 --proxy <地址> / --no-proxy 只影响这一次
 requestbaby case cp collections/orders/02-创建.json 05-创建-vip    # 用例 / 集合：new / rename / cp / rm
 requestbaby collection rename collections/orders 订单

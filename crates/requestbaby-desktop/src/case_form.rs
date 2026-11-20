@@ -2,8 +2,8 @@
 //!
 //! 写回原则：只改用户改动过的字段。保存时把当前表单与「打开时的表单」逐字段比较，
 //! 没变的字段原样保留文件里的写法（多行 JS 断言、末尾换行、`[200]` 这样的写法都不会被改写）。
-//! 协议（request / grpc / ws / web / android）切换时，换掉请求部分、其余（断言、捕获、脚本…）保留。
-use requestbaby_core::config::{Locator, Protocol, UiAction, UiStep, WsAction};
+//! 协议（request / grpc / ws / web / android / desktop）切换时，换掉请求部分、其余（断言、捕获、脚本…）保留。
+use requestbaby_core::config::{Locator, Protocol, UiAction, UiKind, UiStep, WsAction};
 use serde_json::{Map, Value, json};
 
 /// gRPC 调用
@@ -133,11 +133,15 @@ impl StepForm {
     }
 }
 
-/// 界面用例（Web / Android）：打开的页面 / 启动的应用 + 步骤
+/// 界面用例（Web / Android / Mac 桌面）：打开的页面 / 启动的应用 + 步骤
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct UiForm {
-    /// Web：url；Android：app（包名）
+    /// Web：url；Android：app（包名）；Mac 桌面：app（名称或 bundle ID）
     pub target: String,
+    /// Mac 桌面：窗口标题包含的文字
+    pub window: String,
+    /// Mac 桌面：开始前先退出再启动
+    pub restart: bool,
     /// Android：启动的 Activity
     pub activity: String,
     /// Android：先安装的 APK
@@ -200,19 +204,19 @@ impl UiStepForm {
         UiStepForm { action, target, value: String::new(), capture: String::new(), timeout: String::new(), optional: false, clear_data: false, raw: None }
     }
 
-    pub fn from_value(v: &Value, android: bool) -> UiStepForm {
+    pub fn from_value(v: &Value, kind: UiKind) -> UiStepForm {
         let o = v.as_object().cloned().unwrap_or_default();
         let step: UiStep = serde_json::from_value(v.clone()).unwrap_or_default();
         let action = step.action().or_else(|| step.actions().first().copied()).unwrap_or(UiAction::Click);
         let compact = |x: &Value| serde_json::to_string(x).unwrap_or_default();
         let target = if ui_targets_locator(action) {
-            let key = action.key(android);
-            // 点击：Web 写 click、Android 写 tap，两种写法都认
+            let key = action.key(kind);
+            // 点击：Web / Mac 桌面写 click、Android 写 tap，两种写法都认
             o.get(key).or_else(|| o.get(if key == "tap" { "click" } else if key == "click" { "tap" } else { key })).map(compact).unwrap_or_default()
         } else {
             match action {
                 UiAction::Wait => o.get("wait").map(|x| x.to_string()).unwrap_or_default(),
-                a => o.get(a.key(android)).and_then(Value::as_str).unwrap_or_default().to_string(),
+                a => o.get(a.key(kind)).and_then(Value::as_str).unwrap_or_default().to_string(),
             }
         };
         UiStepForm {
@@ -228,9 +232,9 @@ impl UiStepForm {
     }
 
     /// 写回：与打开时相同就原样保留
-    pub fn to_value(&self, n: usize, android: bool) -> Result<Value, String> {
+    pub fn to_value(&self, n: usize, kind: UiKind) -> Result<Value, String> {
         if let Some(raw) = &self.raw {
-            if UiStepForm::from_value(raw, android) == (UiStepForm { raw: Some(raw.clone()), ..self.clone() }) {
+            if UiStepForm::from_value(raw, kind) == (UiStepForm { raw: Some(raw.clone()), ..self.clone() }) {
                 return Ok(raw.clone());
             }
         }
@@ -239,7 +243,7 @@ impl UiStepForm {
         let mut o = Map::new();
         if ui_targets_locator(a) {
             let loc = parse_locator(t).map_err(|e| format!("第 {n} 步：{e}"))?;
-            o.insert(a.key(android).into(), loc);
+            o.insert(a.key(kind).into(), loc);
         } else if a == UiAction::Wait {
             let ms: u64 = t.parse().map_err(|_| format!("第 {n} 步的静候时长「{t}」不是毫秒数"))?;
             o.insert("wait".into(), json!(ms));
@@ -247,9 +251,9 @@ impl UiStepForm {
             if t.is_empty() {
                 return Err(format!("第 {n} 步（{}）没有写内容", a.label()));
             }
-            o.insert(a.key(android).into(), Value::String(t.into()));
+            o.insert(a.key(kind).into(), Value::String(t.into()));
         } else {
-            o.insert(a.key(android).into(), Value::Bool(true));
+            o.insert(a.key(kind).into(), Value::Bool(true));
         }
         if matches!(a, UiAction::Fill | UiAction::Select) {
             o.insert("value".into(), Value::String(self.value.clone()));
@@ -293,7 +297,7 @@ pub struct CaseForm {
     pub protocol: Protocol,
     pub grpc: GrpcForm,
     pub ws: WsForm,
-    /// Web / Android（按 protocol 写进 web 或 android）
+    /// Web / Android / Mac 桌面（按 protocol 写进 web / android / desktop）
     pub ui: UiForm,
     pub method: String,
     pub url: String,
@@ -324,6 +328,11 @@ pub struct CaseForm {
     pub data_mode: usize,
     pub cases_inline: String,
     pub cases_file: String,
+}
+
+/// 界面协议对应的驱动种类（非界面协议按 Web 处理：界面表单只在界面协议下使用）
+pub fn ui_kind(p: Protocol) -> UiKind {
+    p.ui_kind().unwrap_or(UiKind::Web)
 }
 
 fn text(v: Option<&Value>) -> String {
@@ -371,6 +380,8 @@ impl CaseForm {
             Protocol::Web
         } else if d.get("android").is_some_and(Value::is_object) {
             Protocol::Android
+        } else if d.get("desktop").is_some_and(Value::is_object) {
+            Protocol::Desktop
         } else {
             Protocol::Http
         };
@@ -394,14 +405,16 @@ impl CaseForm {
             subprotocols: d.pointer("/ws/subprotocols").and_then(Value::as_array).map(|a| a.iter().filter_map(Value::as_str).collect::<Vec<_>>().join(", ")).unwrap_or_default(),
             steps: d.pointer("/ws/steps").and_then(Value::as_array).map(|a| a.iter().map(StepForm::from_value).collect()).unwrap_or_default(),
         };
-        let android = protocol == Protocol::Android;
-        let ui_key = if android { "/android" } else { "/web" };
+        let kind = ui_kind(protocol);
+        let ui_key = format!("/{}", kind.key());
         let ui = UiForm {
-            target: text(d.pointer(if android { "/android/app" } else { "/web/url" })),
+            target: text(d.pointer(if kind == UiKind::Web { "/web/url" } else if kind == UiKind::Android { "/android/app" } else { "/desktop/app" })),
+            window: text(d.pointer("/desktop/window")),
+            restart: d.pointer("/desktop/restart").and_then(Value::as_bool).unwrap_or(false),
             activity: text(d.pointer("/android/activity")),
             apk: text(d.pointer("/android/apk")),
             clear_data: d.pointer("/android/clearData").and_then(Value::as_bool).unwrap_or(false),
-            steps: d.pointer(&format!("{ui_key}/steps")).and_then(Value::as_array).map(|a| a.iter().map(|s| UiStepForm::from_value(s, android)).collect()).unwrap_or_default(),
+            steps: d.pointer(&format!("{ui_key}/steps")).and_then(Value::as_array).map(|a| a.iter().map(|s| UiStepForm::from_value(s, kind)).collect()).unwrap_or_default(),
         };
         let (data_mode, cases_inline, cases_file) = match d.get("cases") {
             Some(Value::Array(a)) => (1, serde_json::to_string_pretty(a).unwrap_or_default(), String::new()),
@@ -539,7 +552,7 @@ impl CaseForm {
             Protocol::Http => self.write_http(req, was)?,
             Protocol::Grpc => self.write_grpc(req, was)?,
             Protocol::Ws => self.write_ws(req, was)?,
-            Protocol::Web | Protocol::Android => self.write_ui(req, was)?,
+            Protocol::Web | Protocol::Android | Protocol::Desktop => self.write_ui(req, was)?,
         }
         let number = |t: &str| -> Result<Option<Value>, String> {
             let t = t.trim();
@@ -655,15 +668,23 @@ impl CaseForm {
 
 impl CaseForm {
     fn write_ui(&self, req: &mut Map<String, Value>, was: &CaseForm) -> Result<(), String> {
-        let android = self.protocol == Protocol::Android;
+        let kind = ui_kind(self.protocol);
         let (s, w) = (&self.ui, &was.ui);
-        let key = if android { "app" } else { "url" };
+        let key = if kind == UiKind::Web { "url" } else { "app" };
         if s.target != w.target || !req.contains_key(key) {
             let t = s.target.trim();
-            let t = if t.is_empty() && !android { "{{webBase}}/" } else { t };
+            let t = if t.is_empty() && kind == UiKind::Web { "{{webBase}}/" } else { t };
             req.insert(key.into(), Value::String(t.into()));
         }
-        if android {
+        if kind == UiKind::Desktop {
+            if s.window != w.window {
+                set(req, "window", (!s.window.trim().is_empty()).then(|| Value::String(s.window.trim().into())));
+            }
+            if s.restart != w.restart {
+                set(req, "restart", s.restart.then_some(Value::Bool(true)));
+            }
+        }
+        if kind == UiKind::Android {
             for (k, now, then) in [("activity", &s.activity, &w.activity), ("apk", &s.apk, &w.apk)] {
                 if now != then {
                     set(req, k, (!now.trim().is_empty()).then(|| Value::String(now.trim().into())));
@@ -680,7 +701,7 @@ impl CaseForm {
                 .steps
                 .iter()
                 .enumerate()
-                .map(|(i, st)| UiStepForm { raw: if fresh { None } else { st.raw.clone() }, ..st.clone() }.to_value(i + 1, android))
+                .map(|(i, st)| UiStepForm { raw: if fresh { None } else { st.raw.clone() }, ..st.clone() }.to_value(i + 1, kind))
                 .collect::<Result<_, _>>()?;
             req.insert("steps".into(), Value::Array(steps));
         }
@@ -699,8 +720,8 @@ pub fn status_value(t: &str, protocol: Protocol) -> Result<Option<Value>, String
         return Ok(Some(Value::String(t.into())));
     }
     let parts: Vec<&str> = t.split([',', ' ', '，']).map(str::trim).filter(|x| !x.is_empty()).collect();
-    if protocol == Protocol::Android {
-        return Err("Android 用例没有状态码：清空它，用步骤里的断言验证界面".into());
+    if matches!(protocol, Protocol::Android | Protocol::Desktop) {
+        return Err(format!("{} 用例没有状态码：清空它，用步骤里的断言验证界面", protocol.label()));
     }
     if protocol == Protocol::Grpc {
         let names: Vec<String> = parts
@@ -925,6 +946,21 @@ mod tests {
         assert_eq!(d["android"]["clearData"], true);
         assert_eq!(d["android"]["steps"][1], json!({"tap": {"role": "button", "name": "登录"}, "timeoutMs": 5000}));
         serde_json::from_value::<requestbaby_core::config::TestCase>(d).unwrap();
+
+        // 切到 Mac 桌面：点击仍写 click，窗口与重启写在 desktop 上
+        let mut m = CaseForm::from_doc(&base);
+        m.protocol = Protocol::Desktop;
+        m.ui.target = "TextEdit".into();
+        m.ui.window = "Untitled".into();
+        m.ui.restart = true;
+        m.status = String::new();
+        let d = m.to_doc(&base).unwrap();
+        assert!(d.get("web").is_none());
+        assert_eq!((&d["desktop"]["app"], &d["desktop"]["window"], &d["desktop"]["restart"]), (&json!("TextEdit"), &json!("Untitled"), &json!(true)));
+        assert_eq!(d["desktop"]["steps"][1], json!({"click": {"role": "button", "name": "登录"}, "timeoutMs": 5000}));
+        serde_json::from_value::<requestbaby_core::config::TestCase>(d.clone()).unwrap();
+        let back = CaseForm::from_doc(&d);
+        assert_eq!((back.protocol, back.ui.target.as_str(), back.ui.window.as_str(), back.ui.restart), (Protocol::Desktop, "TextEdit", "Untitled", true));
     }
 
     /// 对话步骤：没改的步骤原样写回，改过的按动作写；内容写错报第几步
