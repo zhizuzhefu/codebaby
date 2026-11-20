@@ -42,6 +42,13 @@ pub struct CaseReport {
     pub tests: Vec<TestReport>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub logs: Vec<String>,
+    /// 用例结束的时刻（Unix 毫秒）；缺省（旧记录）时时间线按顺序累加耗时估算
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub finished_at_ms: u64,
+}
+
+fn is_zero(n: &u64) -> bool {
+    *n == 0
 }
 
 impl CaseReport {
@@ -68,6 +75,7 @@ impl CaseReport {
                 .map(|t| TestReport { expr: t.expr.clone(), pass: t.pass, detail: t.detail.clone() })
                 .collect(),
             logs: r.logs.clone(),
+            finished_at_ms: r.finished_at_ms,
         }
     }
 
@@ -336,7 +344,14 @@ impl RunReport {
 /// 单文件 HTML 报告（模板见 report.html）：左侧目录 + 每个用例完整展开；界面用例的每一步与截图都在里面，
 /// 截图以 data URI 内嵌（root = 项目根），单独发给别人也能看，并带可翻页、可原始大小查看的图片查看器
 pub fn render_html(report: &RunReport, root: Option<&std::path::Path>) -> String {
-    let data = render_json(report).replace("</", "<\\/");
+    // 数据 = 协议 JSON + 时间线（多端混合时按真实先后排好）+ 失败现场文件的内容（logcat / 控制台 / 网络请求…，单独发给别人也能看）
+    let mut data = serde_json::to_value(report).unwrap_or_default();
+    if let Some(obj) = data.as_object_mut() {
+        obj.insert("timeline".into(), serde_json::to_value(crate::timeline::timeline(&report.results)).unwrap_or_default());
+        obj.insert("sides".into(), serde_json::to_value(crate::timeline::sides(&report.results)).unwrap_or_default());
+        obj.insert("artifactText".into(), serde_json::Value::Object(artifact_texts(report, root)));
+    }
+    let data = serde_json::to_string_pretty(&data).unwrap_or_default().replace("</", "<\\/");
     let mut images = serde_json::Map::new();
     for ev in report.results.iter().filter_map(|r| r.response.as_ref()?.evidence.as_ref()) {
         for shot in ev.steps.iter().filter_map(|s| s.screenshot.as_ref()) {
@@ -359,6 +374,35 @@ pub fn render_html(report: &RunReport, root: Option<&std::path::Path>) -> String
 }
 
 const HTML_TEMPLATE: &str = include_str!("report.html");
+
+/// 每个文件嵌入的字符上限（页面 HTML 取开头，日志类取结尾——最近发生的最有用）与整份报告的总上限
+const ARTIFACT_CHARS: usize = 200_000;
+const ARTIFACT_TOTAL_CHARS: usize = 3_000_000;
+
+/// 失败现场里的文本文件（页面结构、控制台、网络请求、logcat、崩溃日志…）：键为「证据目录/文件名」
+fn artifact_texts(report: &RunReport, root: Option<&std::path::Path>) -> serde_json::Map<String, serde_json::Value> {
+    let mut out = serde_json::Map::new();
+    let mut total = 0usize;
+    for ev in report.results.iter().filter_map(|r| r.response.as_ref()?.evidence.as_ref()) {
+        for a in &ev.artifacts {
+            let Ok(bytes) = std::fs::read(ev.file(root, &a.file)) else { continue };
+            let text = String::from_utf8_lossy(&bytes);
+            let n = text.chars().count();
+            let keep_head = matches!(a.file.rsplit('.').next(), Some("html" | "xml"));
+            let shown: String = match (n > ARTIFACT_CHARS, keep_head) {
+                (false, _) => text.into_owned(),
+                (true, true) => format!("{}\n…（内容太长，只保留开头 {ARTIFACT_CHARS} 个字符）", text.chars().take(ARTIFACT_CHARS).collect::<String>()),
+                (true, false) => format!("…（内容太长，只保留结尾 {ARTIFACT_CHARS} 个字符）\n{}", text.chars().skip(n - ARTIFACT_CHARS).collect::<String>()),
+            };
+            if total + shown.chars().count() > ARTIFACT_TOTAL_CHARS {
+                continue;
+            }
+            total += shown.chars().count();
+            out.insert(format!("{}/{}", ev.dir, a.file), serde_json::Value::String(shown));
+        }
+    }
+    out
+}
 
 /// 协议 JSON（`--report json`、Desktop 导出、历史文件同一形态）
 pub fn render_json(report: &RunReport) -> String {
@@ -387,6 +431,7 @@ mod tests {
             response: None,
             tests: vec![],
             logs: vec![],
+            finished_at_ms: 0,
         }
     }
 

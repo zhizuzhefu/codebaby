@@ -11,6 +11,8 @@ use std::path::Path;
 pub enum Format {
     Html,
     Json,
+    /// 纯文本：结论、按时间先后排的多端时间线、失败详情（贴进聊天 / 工单 / 给 AI）
+    Text,
 }
 
 impl Format {
@@ -18,7 +20,8 @@ impl Format {
         match s.to_ascii_lowercase().as_str() {
             "html" => Ok(Format::Html),
             "json" => Ok(Format::Json),
-            other => bail!("不支持的导出格式 {other}（可选 html / json）"),
+            "text" | "txt" => Ok(Format::Text),
+            other => bail!("不支持的导出格式 {other}（可选 html / json / text）"),
         }
     }
 
@@ -26,6 +29,16 @@ impl Format {
         match self {
             Format::Html => "html",
             Format::Json => "json",
+            Format::Text => "txt",
+        }
+    }
+
+    /// 命令行 `-f` 的取值
+    pub fn name(self) -> &'static str {
+        match self {
+            Format::Html => "html",
+            Format::Json => "json",
+            Format::Text => "text",
         }
     }
 }
@@ -100,7 +113,27 @@ pub fn render(report: &RunReport, root: &Path, format: Format) -> String {
     match format {
         Format::Html => render_html(report, Some(root)),
         Format::Json => render_json(report),
+        Format::Text => render_text(report),
     }
+}
+
+/// 纯文本报告：一行结论、时间线（多端按真实先后）、失败摘要
+fn render_text(report: &RunReport) -> String {
+    let mut out = vec![format!("{} 个用例：{} 通过 · {} 失败{}", report.total, report.passed, report.failed, if report.skipped > 0 { format!(" · {} 跳过", report.skipped) } else { String::new() })];
+    if let Some(m) = &report.meta {
+        out.push(format!("环境 {} · {}", m.env, m.command));
+    }
+    out.push(String::new());
+    out.push("时间线（按真实发生的先后）".into());
+    out.push(crate::timeline::render_text(&report.results));
+    let failures = report.failure_text();
+    if !failures.is_empty() {
+        out.push(String::new());
+        out.push("失败详情".into());
+        out.push(failures);
+    }
+    out.push(String::new());
+    out.join("\n")
 }
 
 /// 汇总报告是按哪些集合取的（从记录的等价命令里读 `-c`）；空 = 全部

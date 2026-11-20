@@ -283,7 +283,7 @@ enum Cmd {
         /// 只导出这些集合（如 -c 03-布置作业 -c 04-布置测验，可省略 collections/，可多次）：每个用例的全部步骤与截图在同一份 HTML 里
         #[arg(short, long)]
         collection: Vec<String>,
-        /// 格式：html（缺省）/ json
+        /// 格式：html（缺省）/ json / text（纯文本：结论 + 多端时间线 + 失败详情，可直接贴进聊天或给 AI）
         #[arg(short, long, default_value = "html")]
         format: String,
         /// 输出文件或目录（缺省：当前目录下 验收报告-<项目>-<环境>.html）

@@ -1526,6 +1526,73 @@ fn web_live_step_events_redact_secret_values() {
     assert!(stream.contains("****"), "{stream}");
 }
 
+/// 多端混合：同一个流程里先跑 API，再跑 Web；API 捕获的值被 Web 用例填进页面（数据在端与端之间传递），
+/// 导出的 HTML 是一个整体：时间线按先后排列两个端、脚本输出随用例带上、失败现场的文件内容直接嵌进报告
+#[test]
+fn mixed_api_and_web_share_data_and_export_one_report_with_timeline() {
+    if requestbaby_core::engine::cdp::find_browser(None).is_err() {
+        eprintln!("跳过：本机没有 Chrome / Edge / Chromium");
+        return;
+    }
+    let port = spawn_json_api();
+    let dir = TempDir::new().unwrap();
+    let d = dir.path();
+    std::fs::create_dir_all(d.join("site")).unwrap();
+    std::fs::create_dir_all(d.join("envs")).unwrap();
+    std::fs::create_dir_all(d.join("collections/10-api")).unwrap();
+    std::fs::create_dir_all(d.join("collections/20-web")).unwrap();
+    std::fs::write(
+        d.join("requestbaby.json"),
+        r#"{"version":1,"defaultEnv":"dev","workflows":{"mixed":{"steps":[{"run":"collections/10-api"},{"run":"collections/20-web"}]}}}"#,
+    )
+    .unwrap();
+    std::fs::write(d.join("site/form.html"), r#"<!doctype html><meta charset="utf-8"><title>表单</title><label>用户编号 <input id="u"></label><button>提交</button>"#).unwrap();
+    let base = format!("file://{}", d.join("site").display());
+    std::fs::write(d.join("envs/dev.json"), serde_json::json!({ "vars": { "apiBase": format!("http://127.0.0.1:{port}"), "site": base } }).to_string()).unwrap();
+    std::fs::write(
+        d.join("collections/10-api/01-登录.json"),
+        r#"{"name":"登录","request":{"method":"GET","url":"{{apiBase}}/login"},"expect":{"status":200},"capture":{"uid":"data.uid"},"post":"log('登录完成')"}"#,
+    )
+    .unwrap();
+    std::fs::write(
+        d.join("collections/20-web/01-填写.json"),
+        r#"{"name":"网页填写","web":{"url":"{{site}}/form.html","steps":[{"fill":{"label":"用户编号"},"value":"{{uid}}"},{"expect":{"label":"用户编号","value":"42"}}]}}"#,
+    )
+    .unwrap();
+    std::fs::write(
+        d.join("collections/20-web/02-找不到.json"),
+        r#"{"name":"找不到按钮","web":{"url":"{{site}}/form.html","timeoutMs":600,"steps":[{"click":{"role":"button","name":"不存在"}}]}}"#,
+    )
+    .unwrap();
+    let out = run_cli(&["workflow", "mixed", "--report", "json"], d);
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap_or_else(|_| panic!("{}{}", String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr)));
+    let r = v["results"].as_array().unwrap();
+    assert_eq!(r[0]["passed"], true, "{}", r[0]);
+    assert_eq!(r[1]["passed"], true, "API 捕获的 uid 应传到 Web 用例：{}", r[1]);
+    assert_eq!(r[2]["passed"], false);
+    assert!(r.iter().all(|c| c["finished_at_ms"].as_u64().is_some_and(|t| t > 0)), "每个用例都记录了结束时刻");
+
+    let out_dir = d.join("out");
+    std::fs::create_dir_all(&out_dir).unwrap();
+    let html_path = out_dir.join("all.html");
+    assert_eq!(run_cli(&["export", "-o", html_path.to_str().unwrap()], d).status.code(), Some(0));
+    let html = std::fs::read_to_string(&html_path).unwrap();
+    assert!(html.contains("\"timeline\"") && html.contains("\"sides\""), "报告里有时间线与端的列表");
+    assert!(html.contains("\"artifactText\"") && html.contains("accessibility.txt"), "失败现场的内容嵌进了报告");
+    assert!(html.contains("登录完成"), "脚本输出带进了报告");
+    assert!(html.contains("id=\"v-tl\"") || html.contains("v-tl"), "页面带「时间线」切换");
+    // 嵌进去的失败现场是真实内容（无障碍树里有页面上的按钮），不只是文件名
+    let art = html.split("\"artifactText\"").nth(1).unwrap();
+    assert!(art.contains("提交"), "{}", &art[..art.len().min(400)]);
+
+    // 纯文本导出：结论 + 按先后排的多端时间线 + 失败详情，API 在前、Web 在后
+    let txt_path = out_dir.join("all.txt");
+    assert_eq!(run_cli(&["export", "-f", "text", "-o", txt_path.to_str().unwrap()], d).status.code(), Some(0));
+    let txt = std::fs::read_to_string(&txt_path).unwrap();
+    let (api, web) = (txt.find("[API]").expect("有 API 行"), txt.find("[Web]").expect("有 Web 行"));
+    assert!(api < web && txt.contains("时间线") && txt.contains("失败详情") && txt.contains("找不到按钮"), "{txt}");
+}
+
 /// 远程浏览器：另起一个开着调试端口的 Chrome（相当于 Docker / 另一台机器上的浏览器），用 web.endpoint 连接
 #[test]
 fn web_case_runs_on_remote_browser_via_endpoint() {

@@ -20,6 +20,7 @@ pub mod inspect;
 pub mod protocols;
 pub mod proxy_setting;
 pub mod report;
+pub mod timeline;
 pub mod runner;
 pub mod scaffold;
 pub mod script;

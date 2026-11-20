@@ -129,9 +129,20 @@ pub struct CaseResult {
     /// 脚本 console.log 输出（已脱敏）
     #[serde(default)]
     pub logs: Vec<String>,
+    /// 用例结束的时刻（Unix 毫秒）；多端混合运行的时间线据此排序。0 = 未记录
+    #[serde(default)]
+    pub finished_at_ms: u64,
 }
 
 impl CaseResult {
+    /// 记下结束时刻（只记一次：并发工作线程里已记过的不覆盖）
+    pub(crate) fn stamped(mut self) -> Self {
+        if self.finished_at_ms == 0 {
+            self.finished_at_ms = crate::history::now_ms();
+        }
+        self
+    }
+
     pub fn passed(&self) -> bool {
         !self.skipped && self.error.is_none() && self.tests.iter().all(|t| t.pass)
     }
@@ -171,6 +182,7 @@ impl CaseResult {
             full_response: None,
             raw_body: None,
             logs: vec![],
+            finished_at_ms: 0,
         }
     }
 }
@@ -484,6 +496,7 @@ impl Runner {
             pending.insert(i, rs);
             while let Some(rs) = pending.remove(&emit) {
                 for r in rs {
+                    let r = r.stamped();
                     sink(&r);
                     results.push(r);
                 }
@@ -493,6 +506,7 @@ impl Runner {
         // fail_fast / 取消时序号可能不连续：剩下的按序补上
         for (_, rs) in pending {
             for r in rs {
+                let r = r.stamped();
                 sink(&r);
                 results.push(r);
             }
@@ -557,6 +571,7 @@ impl Runner {
                     active_dirs.push(lvl.clone());
                     if !opts.dry_run {
                         if let Some(r) = self.run_collection_script(lvl, "setup") {
+                            let r = r.stamped();
                             sink(&r);
                             results.push(r);
                             if opts.fail_fast {
@@ -582,6 +597,7 @@ impl Runner {
                         .to_string_lossy()
                         .into_owned();
                     let r = CaseResult::placeholder(&dc.rel, &name, Some(e));
+                    let r = r.stamped();
                     sink(&r);
                     results.push(r);
                     if opts.fail_fast {
@@ -606,6 +622,7 @@ impl Runner {
                         Ok(_) => vec![None],
                         Err(e) => {
                             let r = self.error_result(dc, &name, &all_tags, format!("数据文件加载失败: {e}"));
+                            let r = r.stamped();
                             sink(&r);
                             results.push(r);
                             if opts.fail_fast {
@@ -632,6 +649,7 @@ impl Runner {
                 };
                 let r = self.execute_case(dc, &case, &all_tags, &inst_name, row.as_ref(), opts);
                 let bad = !r.passed();
+                let r = r.stamped();
                 sink(&r);
                 results.push(r);
                 if opts.fail_fast && bad {
@@ -731,6 +749,7 @@ impl Runner {
             full_response: None,
             raw_body: None,
             logs: vec![],
+            finished_at_ms: 0,
         }
     }
 
@@ -766,6 +785,7 @@ impl Runner {
             full_response: None,
             raw_body: None,
             logs: vec![],
+            finished_at_ms: 0,
         };
         if case.skip {
             return result;

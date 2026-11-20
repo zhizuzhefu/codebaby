@@ -412,6 +412,7 @@ mod tests {
             response: None,
             tests: vec![],
             logs: vec![],
+            finished_at_ms: 0,
         }
     }
 

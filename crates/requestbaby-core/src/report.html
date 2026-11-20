@@ -61,6 +61,19 @@ table.api td{padding:2px 12px 2px 0}
 #lb .film img.failed{border-color:var(--bad)}
 #lb .hint{font-size:12px;color:var(--dim)}
 .th img:not([src]),.step img:not([src]){font-size:11px;color:var(--dim);padding:6px}
+.side{font-size:11px;padding:0 6px;border-radius:4px;font-weight:600;flex:none;background:#334155;color:#cbd5e1}
+.side.s-http,.side.s-grpc,.side.s-ws{background:#1e3a5f;color:#93c5fd}.side.s-web{background:#14532d;color:#86efac}.side.s-android{background:#581c87;color:#d8b4fe}
+.tabs{display:inline-flex;gap:0;margin-right:6px}.tabs button{border-radius:0}.tabs button:first-child{border-radius:6px 0 0 6px}.tabs button:last-child{border-radius:0 6px 6px 0}
+details.art{margin:4px 0}details.art>summary{cursor:pointer;font-size:12px}
+details.art pre{max-height:420px}
+#tl .row{display:flex;gap:10px;align-items:baseline;padding:3px 8px;border-radius:6px;cursor:pointer;font-size:13px}
+#tl .row:hover{background:#1e293b}
+#tl .row.k-case{margin-top:10px;font-weight:600;border-top:1px solid var(--line);padding-top:8px;border-radius:0}
+#tl .row.k-step,#tl .row.k-log{padding-left:28px;font-weight:400}
+#tl .t{width:64px;flex:none;text-align:right;font-variant-numeric:tabular-nums}
+#tl .x{flex:1;min-width:0;word-break:break-word}
+#tl .x .d{display:block;font-size:12px;font-weight:400;white-space:pre-wrap}
+#tl .legend{font-size:12px;margin:0 0 8px}
 .hide{display:none!important}
 @media print{nav,.bar,#lb{display:none!important}details.case{break-inside:avoid}}
 </style>
@@ -74,6 +87,7 @@ table.api td{padding:2px 12px 2px 0}
 <div class="layout">
   <nav id="toc"></nav>
   <main id="cases"></main>
+  <main id="tl" class="hide"></main>
 </div>
 <div id="lb">
   <div class="top">
@@ -110,6 +124,7 @@ if (m) {
 const flaky = new Set(((R.compare || {}).flaky || []).map(c => c.file + '\u0000' + c.name));
 const state = r => r.skipped ? 'skip' : (r.passed ? 'pass' : 'fail');
 const mark = r => r.skipped ? '⇣' : (r.passed ? '✔' : '✘');
+const sideName = p => ({ http: 'API', grpc: 'gRPC', ws: 'WebSocket', web: 'Web', android: 'Android' })[p] || p;
 const bad = r => r.protocol === 'grpc' ? r.status_text !== 'OK' : r.protocol === 'ws' ? r.status !== 101 : r.protocol === 'android' ? false : (r.status >= 400 || (!r.status && r.protocol !== 'web'));
 const evOf = r => r.response && r.response.evidence;
 const shotKey = (ev, s) => s.screenshot ? ev.dir + '/' + s.screenshot : null;
@@ -118,6 +133,8 @@ $('bar').innerHTML =
   `<span class="chip">共 ${R.total} 个用例</span><span class="chip pass">✔ ${R.passed} 通过</span>` +
   (R.failed ? `<span class="chip fail">✘ ${R.failed} 失败</span>` : '') +
   (R.skipped ? `<span class="chip skip">⇣ ${R.skipped} 跳过</span>` : '') +
+  ((R.sides || []).length > 1 ? (R.sides || []).map(p => `<span class="chip"><span class="side s-${p}">${sideName(p)}</span> ${R.results.filter(r => (r.protocol || 'http') === p).length}</span>`).join('') : '') +
+  ((R.sides || []).length > 1 ? `<span class="tabs"><button id="v-cases" class="on">按用例</button><button id="v-tl">时间线</button></span>` : '') +
   `<button id="f-fail">只看失败</button><button id="f-open">展开全部</button><button id="f-close">收起全部</button>`;
 
 // ---------------------------------------------------------------- 用例
@@ -142,11 +159,15 @@ function stepsHtml(ci, ev) {
     if (s.screenshot) { pos++; img = `<img data-k="${esc(shotKey(ev, s))}" data-ci="${ci}" data-pos="${pos}" class="shot" alt="">`; }
     return `<div class="step ${s.status}" id="c${ci}s${s.index}">${img}<div><div class="t">${st} <span class="dim">#${s.index}</span> ${esc(s.title)}</div><div class="d dim">${secs(s.atMs)} · ${s.durationMs}ms</div>${s.detail ? `<div class="d ${s.status === 'failed' ? 'fail' : 'dim'}">${esc(s.detail)}</div>` : ''}</div></div>`;
   }).join('');
-  const arts = (ev.artifacts || []).map(a => `<div>${esc(a.label)}：<span class="dim">${esc(ev.dir + '/' + a.file)}</span></div>`).join('');
+  const arts = (ev.artifacts || []).map(a => {
+    const k = ev.dir + '/' + a.file, txt = (R.artifactText || {})[k];
+    return txt == null ? `<div>${esc(a.label)}：<span class="dim">${esc(k)}（未嵌入）</span></div>`
+      : `<details class="art"><summary>${esc(a.label)} <span class="dim">${esc(a.file)} · ${txt.length} 字符</span></summary><pre>${esc(txt)}</pre></details>`;
+  }).join('');
   return `<div class="env dim">${env}</div>` +
     (strip ? `<div class="sub">全部截图（${shotsOf[ci].length} 张，点击放大查看）</div><div class="strip">${strip}</div>` : '') +
     `<div class="sub">步骤明细（${ev.steps.length} 步）</div><div class="steps">${steps}</div>` +
-    (arts ? `<div class="sub">失败现场（未嵌入，保存在运行电脑的证据目录）</div><div class="env">${arts}</div>` : '');
+    (arts ? `<div class="sub">失败现场（页面结构 / 控制台 / 网络请求 / logcat 等，点开查看）</div><div class="env">${arts}</div>` : '');
 }
 
 $('cases').innerHTML = R.results.map((r, i) => {
@@ -160,10 +181,13 @@ $('cases').innerHTML = R.results.map((r, i) => {
     ? `<span class="dim">${ev.steps.length} 步 · ${shotsOf[i].length} 张截图</span>`
     : `<span class="${bad(r) ? 'fail' : 'pass'}">${esc(r.status_text || r.status || '-')}</span>`;
   const open = (ev || st === 'fail') ? ' open' : '';
+  const mixed = (R.sides || []).length > 1;
+  const side = mixed ? `<span class="side s-${r.protocol || 'http'}">${sideName(r.protocol || 'http')}</span>` : '';
+  const logs = (r.logs || []).length ? `<div class="sub">脚本输出（log(...) 打印的内容）</div><pre>${esc(r.logs.join('\n'))}</pre>` : '';
   const api = ev ? '' : `<table class="api"><tr><td class="dim">请求</td><td>${esc(r.method)} ${esc(r.url)}</td></tr><tr><td class="dim">状态</td><td>${esc(r.status_text || r.status || '-')}</td></tr></table>`;
   return `<details class="case ${st === 'fail' ? 'bad' : ''}" id="c${i}" data-state="${st}"${open}>` +
-    `<summary><span class="${st}">${mark(r)}</span><h2>${esc(r.name)}${tag}</h2><span class="badge">${esc(r.method)}</span>${head}<span class="dim">${r.duration_ms}ms</span></summary>` +
-    `<div class="body"><div class="url dim">${esc(r.file)}${ev ? ' · ' + esc(r.url) : ''}${jump}</div>${fails}${api}${ev ? stepsHtml(i, ev) : ''}</div></details>`;
+    `<summary><span class="${st}">${mark(r)}</span>${side}<h2>${esc(r.name)}${tag}</h2><span class="badge">${esc(r.method)}</span>${head}<span class="dim">${r.duration_ms}ms</span></summary>` +
+    `<div class="body"><div class="url dim">${esc(r.file)}${ev ? ' · ' + esc(r.url) : ''}${jump}</div>${fails}${api}${ev ? stepsHtml(i, ev) : ''}${logs}</div></details>`;
 }).join('');
 
 $('toc').innerHTML = [...groups].map(([g, idx]) => {
@@ -194,6 +218,39 @@ $('cases').addEventListener('click', e => {
   if (t) { e.preventDefault(); openLB(+t.dataset.ci, +t.dataset.pos); }
 });
 $('toc').addEventListener('click', e => { const a = e.target.closest('a[data-ci]'); if (a) { const d = $('c' + a.dataset.ci); if (d) d.open = true; } });
+
+// ---------------------------------------------------------------- 时间线（多端混合：按真实发生的先后排在一起）
+const TL = { side: '', fail: false };
+function renderTL() {
+  const mark = e => e.status === 'failed' ? '<span class="fail">✘</span>' : e.status === 'skipped' ? '<span class="skip">⇣</span>' : e.status === 'passed' ? '<span class="pass">✔</span>' : '<span class="dim">·</span>';
+  const failedCases = new Set(R.timeline.filter(e => e.status === 'failed').map(e => e.case));
+  const rows = R.timeline.filter(e => (!TL.side || e.protocol === TL.side) && (!TL.fail || failedCases.has(e.case) && (e.kind === 'case' || e.status === 'failed')));
+  const chips = ['', ...R.sides].map(p => `<button data-side="${p}" class="${TL.side === p ? 'on' : ''}">${p ? sideName(p) : '全部端'}</button>`).join(' ');
+  $('tl').innerHTML = `<div class="legend dim">所有端的用例按真实发生的先后排在一起；点任意一行跳到对应用例 / 步骤。 ${chips} <button id="tl-fail" class="${TL.fail ? 'on' : ''}">只看失败</button></div>` +
+    rows.map(e => `<div class="row k-${e.kind}" data-ci="${e.case}"${e.step != null ? ` data-step="${e.step}"` : ''}><span class="t dim">+${secs(e.atMs)}</span><span class="side s-${e.protocol}">${sideName(e.protocol)}</span><span class="x">${mark(e)} ${e.kind === 'log' ? '<span class="dim">' + esc(e.text) + ' 输出</span> ' + esc(e.detail) : esc(e.text) + (e.detail ? `<span class="d ${e.status === 'failed' ? 'fail' : 'dim'}">${esc(e.detail)}</span>` : '')}</span></div>`).join('');
+}
+function showView(v) {
+  $('cases').classList.toggle('hide', v !== 'cases'); $('tl').classList.toggle('hide', v !== 'tl');
+  $('toc').classList.toggle('hide', v !== 'cases');
+  $('v-cases').classList.toggle('on', v === 'cases'); $('v-tl').classList.toggle('on', v === 'tl');
+  if (v === 'tl') renderTL();
+}
+if ($('v-tl')) {
+  $('v-cases').onclick = () => showView('cases'); $('v-tl').onclick = () => showView('tl');
+  $('tl').addEventListener('click', e => {
+    const b = e.target.closest('button');
+    if (b && b.id === 'tl-fail') { TL.fail = !TL.fail; renderTL(); return; }
+    if (b && b.dataset.side !== undefined) { TL.side = b.dataset.side; renderTL(); return; }
+    const row = e.target.closest('.row');
+    if (!row) return;
+    showView('cases');
+    const d = $('c' + row.dataset.ci); if (d) d.open = true;
+    const t = (row.dataset.step != null && $('c' + row.dataset.ci + 's' + row.dataset.step)) || d;
+    if (t) t.scrollIntoView({ block: 'center' });
+  });
+}
+
+if ($('v-tl') && location.hash === '#timeline') showView('tl');
 
 // ---------------------------------------------------------------- 工具栏
 $('f-fail').onclick = e => {

@@ -109,6 +109,8 @@ pub struct Workspace {
     response: Entity<ResponsePanel>,
     run: Entity<RunState>,
     bottom_tab: BottomTab,
+    /// 运行结果：多端混合时可切到「时间线」（所有端按真实先后排在一起）
+    results_timeline: bool,
     selected_row: Option<usize>,
     statuses: HashMap<String, CaseStatus>,
     seen_runs: HashSet<String>,
@@ -191,6 +193,7 @@ impl Workspace {
             response,
             run,
             bottom_tab: BottomTab::Results,
+            results_timeline: false,
             selected_row: None,
             statuses: HashMap::new(),
             seen_runs,

@@ -24,7 +24,9 @@ use gpui_kit::{
 use requestbaby_core::history;
 use requestbaby_core::validate::ValidationIssue;
 use requestbaby_core::report::{CaseReport, CompareMark, Comparison};
+use requestbaby_core::timeline::{self, EntryKind, EntryStatus, TimelineEntry};
 use std::path::PathBuf;
+use std::rc::Rc;
 
 impl Workspace {
     pub(super) fn render_bottom(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
@@ -97,6 +99,9 @@ impl Workspace {
                 .unwrap_or_else(|| "历史".into()),
         };
         let muted = cx.theme().muted_foreground;
+        // 一次运行里有两种以上的端（API / Web / Android…）才提供时间线
+        let mixed = timeline::sides(rows).len() > 1;
+        let show_timeline = mixed && self.results_timeline;
 
         if rows.is_empty() && steps.is_empty() && !running {
             let hint = match phase {
@@ -118,6 +123,35 @@ impl Workspace {
                 },
                 cx,
             ))
+            .when(mixed, |this| {
+                this.child(
+                    h_flex()
+                        .gap_1()
+                        .child(
+                            Button::new("view-cases")
+                                .xsmall()
+                                .when(show_timeline, |b| b.ghost())
+                                .when(!show_timeline, |b| b.primary())
+                                .label("按用例")
+                                .on_click(cx.listener(|this, _, _, cx| {
+                                    this.results_timeline = false;
+                                    cx.notify();
+                                })),
+                        )
+                        .child(
+                            Button::new("view-timeline")
+                                .xsmall()
+                                .when(show_timeline, |b| b.primary())
+                                .when(!show_timeline, |b| b.ghost())
+                                .label("时间线")
+                                .tooltip("API / Web / Android 的用例与步骤，按真实发生的先后排在一起")
+                                .on_click(cx.listener(|this, _, _, cx| {
+                                    this.results_timeline = true;
+                                    cx.notify();
+                                })),
+                        ),
+                )
+            })
             .when(dry_run, |this| this.child(Tag::info().outline().xsmall().child("dry-run")))
             .child(Tag::success().outline().xsmall().child(format!("{passed} 通过")))
             .when(failed > 0, |this| this.child(Tag::danger().outline().xsmall().child(format!("{failed} 失败"))))
@@ -209,6 +243,7 @@ impl Workspace {
                 "断言".into_any_element(),
             ],
         );
+        let timeline_body = show_timeline.then(|| self.timeline_list(Rc::new(timeline::timeline(rows)), cx));
         let row_count = rows.len();
         let body = uniform_list(
             "results-list",
@@ -229,7 +264,8 @@ impl Workspace {
             .flex_1()
             .min_h_0()
             .child(header)
-            .when(!steps.is_empty(), |this| {
+            // 时间线里每个用例已按先后排开，流程阶段条就不再占地方
+            .when(!steps.is_empty() && !show_timeline, |this| {
                 // 已结束 / 进行中的最后一步作为 stepper 的进度位置
                 let at = steps.iter().rposition(|s| !matches!(s.state, StepState::Pending | StepState::NotRun)).unwrap_or(0);
                 let items = steps.iter().map(|s| {
@@ -278,8 +314,10 @@ impl Workspace {
                         }),
                 )
             })
-            .child(div().px_2().child(head))
-            .child(div().flex_1().min_h_0().px_2().child(body))
+            .map(|this| match timeline_body {
+                Some(t) => this.child(div().flex_1().min_h_0().px_2().child(t)),
+                None => this.child(div().px_2().child(head)).child(div().flex_1().min_h_0().px_2().child(body)),
+            })
             .into_any_element()
     }
 
@@ -348,6 +386,90 @@ impl Workspace {
             None => menu,
         })
         .into_any_element()
+    }
+
+    /// 时间线：所有端的用例（界面用例展开成每一步）按真实先后排在一起；点一行打开对应用例的结果
+    fn timeline_list(&self, entries: Rc<Vec<TimelineEntry>>, cx: &Context<Self>) -> AnyElement {
+        let n = entries.len();
+        uniform_list(
+            "timeline-list",
+            n,
+            cx.processor(move |this, range: std::ops::Range<usize>, _window, cx| {
+                let end = range.end.min(entries.len());
+                entries[range.start.min(end)..end].iter().enumerate().map(|(i, e)| this.timeline_row(range.start + i, e, cx)).collect::<Vec<_>>()
+            }),
+        )
+        .size_full()
+        .into_any_element()
+    }
+
+    fn timeline_row(&self, ix: usize, e: &TimelineEntry, cx: &Context<Self>) -> AnyElement {
+        let theme = cx.theme();
+        let muted = theme.muted_foreground;
+        let (icon, color) = match e.status {
+            EntryStatus::Passed => (IconName::CircleCheck, theme.success),
+            EntryStatus::Failed => (IconName::CircleX, theme.danger),
+            EntryStatus::Skipped => (IconName::Ban, muted),
+            EntryStatus::Info => (IconName::FileText, muted),
+        };
+        let side = match e.protocol {
+            Protocol::Http | Protocol::Grpc | Protocol::Ws => Tag::info(),
+            Protocol::Web => Tag::primary(),
+            Protocol::Android => Tag::secondary(),
+        }
+        .outline()
+        .xsmall()
+        .flex_shrink_0()
+        .child(timeline::side_label(e.protocol));
+        let first_detail = e.detail.lines().next().unwrap_or("").to_string();
+        let case = e.case;
+        let selected = self.selected_row == Some(case);
+        let (hover, active) = (theme.table_hover, theme.table_active);
+        let text = match e.kind {
+            EntryKind::Log => div().text_color(muted).child(format!("输出  {first_detail}")).into_any_element(),
+            kind => h_flex()
+                .gap_2()
+                .min_w_0()
+                .child(
+                    div()
+                        .min_w_0()
+                        .overflow_hidden()
+                        .text_ellipsis()
+                        .whitespace_nowrap()
+                        .when(kind == EntryKind::Case, |d| d.font_weight(FontWeight::MEDIUM))
+                        .child(e.text.clone()),
+                )
+                .when(!first_detail.is_empty(), |this| {
+                    this.child(
+                        div()
+                            .min_w_0()
+                            .flex_1()
+                            .overflow_hidden()
+                            .text_ellipsis()
+                            .whitespace_nowrap()
+                            .text_color(if e.status == EntryStatus::Failed { theme.danger } else { muted })
+                            .child(first_detail.clone()),
+                    )
+                })
+                .into_any_element(),
+        };
+        h_flex()
+            .id(("timeline-row", ix))
+            .w_full()
+            .h(px(26.))
+            .px_2()
+            .gap_2()
+            .text_xs()
+            .when(e.kind == EntryKind::Case, |d| d.border_t_1().border_color(theme.table_row_border))
+            .when(selected, |d| d.bg(active))
+            .hover(|d| d.bg(hover))
+            .on_click(cx.listener(move |this, _, window, cx| this.select_row(case, window, cx)))
+            .child(div().w(px(56.)).flex_shrink_0().flex().justify_end().text_color(muted).child(format!("+{:.1}s", e.at_ms as f64 / 1000.)))
+            .child(div().w(px(64.)).flex_shrink_0().child(side))
+            .when(e.kind != EntryKind::Case, |d| d.child(div().w(px(14.)).flex_shrink_0()))
+            .child(Icon::new(icon).xsmall().text_color(color).flex_shrink_0())
+            .child(div().flex_1().min_w_0().child(text))
+            .into_any_element()
     }
 
     fn select_row(&mut self, ix: usize, window: &mut Window, cx: &mut Context<Self>) {

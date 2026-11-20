@@ -53,13 +53,13 @@ pub struct ExportPanel {
     run: Option<RunChoice>,
     /// 选的是「当前这一次运行」
     use_run: bool,
-    html: bool,
+    format: Format,
 }
 
 impl ExportPanel {
     pub fn new(env: String, items: Vec<CollectionItem>, run: Option<RunChoice>) -> Self {
         let use_run = items.is_empty() && run.is_some();
-        Self { env, items, run, use_run, html: true }
+        Self { env, items, run, use_run, format: Format::Html }
     }
 
     fn picked(&self) -> Vec<&CollectionItem> {
@@ -67,7 +67,7 @@ impl ExportPanel {
     }
 
     pub fn selection(&self) -> Result<(Selection, Format), &'static str> {
-        let format = if self.html { Format::Html } else { Format::Json };
+        let format = self.format;
         if self.use_run {
             let r = self.run.as_ref().ok_or("没有可导出的运行")?;
             return Ok((Selection::Run(Box::new(r.report.clone())), format));
@@ -82,7 +82,7 @@ impl ExportPanel {
     }
 
     fn command(&self) -> String {
-        let format = if self.html { "" } else { " -f json" };
+        let format = if self.format == Format::Html { String::new() } else { format!(" -f {}", self.format.name()) };
         if self.use_run {
             return format!("requestbaby export {}{format}", self.run.as_ref().map(|r| r.id.as_str()).unwrap_or(""));
         }
@@ -179,10 +179,18 @@ impl Render for ExportPanel {
             .child(
                 v_flex().gap_2().child(label("格式")).child(
                     RadioGroup::vertical("export-format")
-                        .children(["HTML 报告：每个用例的全部步骤与截图都在里面，可翻页、放大到原始大小；单个文件，发给别人直接用浏览器打开", "JSON：给程序或 AI 处理"])
-                        .selected_index(Some(if self.html { 0 } else { 1 }))
+                        .children([
+                            "HTML 报告：每个用例的全部步骤与截图、失败现场和多端时间线都在里面，可翻页、放大到原始大小；单个文件，发给别人直接用浏览器打开",
+                            "文本：结论 + 多端按先后排的时间线 + 失败详情，可直接贴进聊天、工单或给 AI",
+                            "JSON：给程序处理",
+                        ])
+                        .selected_index(Some(match self.format {
+                            Format::Html => 0,
+                            Format::Text => 1,
+                            Format::Json => 2,
+                        }))
                         .on_change(cx.listener(|this, ix: &usize, _, cx| {
-                            this.html = *ix == 0;
+                            this.format = [Format::Html, Format::Text, Format::Json][(*ix).min(2)];
                             cx.notify();
                         })),
                 ),
