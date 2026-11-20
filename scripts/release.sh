@@ -39,7 +39,7 @@ while [[ $# -gt 0 ]]; do
 done
 
 CURRENT=$(awk -F'"' '/^\[workspace.package\]/{s=1} s && /^version/{print $2; exit}' Cargo.toml)
-[[ "$CURRENT" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "✘ 无法从 Cargo.toml 读取版本号（得到「$CURRENT」）" >&2; exit 1; }
+[[ "$CURRENT" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "✘ 无法从 Cargo.toml 读取版本号（得到「${CURRENT}」）" >&2; exit 1; }
 VERSION="$CURRENT"   # 下面按策略可能被改成新版本
 TAG="v$VERSION"
 DMG="build/mac/requestbaby-$VERSION.dmg"
@@ -112,7 +112,7 @@ fi
 
 echo "    版本 $VERSION · 提交 $(git rev-parse --short HEAD)"
 if [[ "$DRY_RUN" == "1" ]]; then
-  [[ "$VERSION" != "$CURRENT" ]] && echo "    发布时会先把 Cargo.toml 的版本号改成 $VERSION，提交并推送"
+  [[ "$VERSION" != "$CURRENT" ]] && echo "    发布时会先把 Cargo.toml 的版本号改成 ${VERSION}，提交并推送"
   OLD="$(old_tags | paste -sd' ' -)"
   if [[ "$KEEP_OLD" == "1" ]]; then echo "    发布后保留旧版本（--keep-old）"; else echo "    发布后将清理旧版本：${OLD:-（没有）}"; fi
   echo "✓ 检查通过（--dry-run：未构建、未发布）"
@@ -160,7 +160,7 @@ git push origin "$TAG"
 N=$(gh release view "$TAG" --json assets --jq '.assets | length')
 if [[ "$N" -ne "$EXPECTED_ASSETS" ]]; then
   echo "✘ 附件数量不对（现有 $N 个，应有 $EXPECTED_ASSETS 个）。Release 仍是草稿，未发布。" >&2
-  echo "  核对：gh release view $TAG；无误后发布：gh release edit $TAG --draft=false --latest" >&2
+  echo "  核对：gh release view ${TAG}；无误后发布：gh release edit $TAG --draft=false --latest" >&2
   exit 1
 fi
 
@@ -173,6 +173,6 @@ if [[ "$KEEP_OLD" == "1" ]]; then
 else
   echo "==> 清理旧版本"
   for t in $(old_tags); do
-    gh release delete "$t" --cleanup-tag --yes && echo "    已删除 $t（Release 与标签）"
+    gh release delete "$t" --cleanup-tag --yes && echo "    已删除 ${t}（Release 与标签）"
   done
 fi
