@@ -2,19 +2,29 @@
 
 发布渠道只有 GitHub Release。版本号以 `Cargo.toml` 的 `[workspace.package] version` 为准，标签 `vX.Y.Z`。
 
+## 版本号策略
+
+- **不复用版本号**：任何改动要发给用户，都发新版本；已发布过的版本号不再覆盖附件、不再移动标签
+- **补丁号 z 自动加一**：例如已发布的最高版本是 0.3.1，下一次 `make release` 就是 0.3.2。脚本自己把 `Cargo.toml` / `Cargo.lock` 改好，提交 `chore(release): vX.Y.Z` 并推送，再发布，不用手动改
+- **x.y 变化需要人工确认**：`scripts/release.sh --bump minor`（0.3.z → 0.4.0）或 `--bump major`（→ 1.0.0），或者手动把 `Cargo.toml` 改成更高的 x.y。无论哪种，发布前都必须在终端里输入新版本号确认；非交互环境（脚本 / AI 代跑）要由人确认后加 `--confirm-version X.Y.Z`，值必须等于将发布的版本
+- **只留最新版**：新版本发布成功后，更旧的 Release 与标签全部删除（见下）
+
 ## 一次发版
 
-1. 提升 `Cargo.toml` 的版本号。提交并推送到 `main`
-2. `make release`（等同 `scripts/release.sh`），脚本依次：
-   - 检查：在 main、工作区干净、与 origin/main 一致、标签未被占用
+1. 提交并推送到 `main`（工作区干净、与 origin/main 一致）
+2. `make release`（等同 `scripts/release.sh`；`--dry-run` 先看将发布哪个版本、将清理哪些旧版本），脚本依次：
+   - 检查：在 main、工作区干净、与 origin/main 一致；按上面的策略定出版本号（z 自动加一；x.y 变化要确认）
    - `cargo test` + `clippy -D warnings`
    - **本机**构建 universal DMG：Developer ID 签名 + 公证，生成 `.sha256`
    - 打包 macOS 命令行（Apple 芯片 / Intel），各带 `.sha256`；建 GitHub Release **草稿**并上传全部 6 个附件，推送 `vX.Y.Z` 标签
    - 附件数量核对无误后发布；此后用户的「检查更新」才会看到新版本
+   - **清理旧版本**：新版本发布成功后，比它旧的所有 Release 连同标签一并删除（Release 页只留最新版）；`--keep-old` 可以保留
 
-`scripts/release.sh --dry-run` 只做检查。附件数量不对时草稿保留，核对后 `gh release edit vX.Y.Z --draft=false --latest` 手动发布。
+`scripts/release.sh --dry-run` 只做检查（并列出发布后将清理的旧版本）。附件数量不对时草稿保留，核对后 `gh release edit vX.Y.Z --draft=false --latest` 手动发布。
 
 发布全程在本机完成，仓库不使用 CI（GitHub Actions）；测试与 clippy 由发布脚本在发布前跑。只发布 macOS 版（桌面端与命令行）。
+
+版本号不复用：哪怕只想换一个安装包，也发新的补丁版本。
 
 ## 为什么签名公证在本机
 
