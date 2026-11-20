@@ -278,6 +278,9 @@ impl Workspace {
                     }))
                     .child(div().flex_1().min_w_0().overflow_hidden().text_ellipsis().text_sm().child(label))
                     .when_some(wf.env.clone(), |this, e| this.child(Tag::info().outline().xsmall().child(e)))
+                    .when(!wf.needs.is_empty(), |this| {
+                        this.child(Tag::secondary().outline().xsmall().child(format!("依赖 {}", wf.needs.join("、"))))
+                    })
                     .child(div().text_xs().text_color(muted).child(format!("{} 步", wf.steps.len())))
                     .child(
                         Button::new(("wf-dry", ix))

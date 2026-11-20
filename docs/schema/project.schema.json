@@ -34,17 +34,21 @@
       "additionalProperties": {
         "type": "object",
         "additionalProperties": false,
-        "required": ["steps"],
         "properties": {
           "name": { "type": "string", "description": "流程显示名" },
+          "needs": {
+            "type": "array",
+            "items": { "type": "string" },
+            "uniqueItems": true,
+            "description": "依赖的流程（如登录）：运行本流程前先运行它们，同一次运行里每个依赖只跑一次，它们留下的登录态（Cookie、网页存储、捕获的变量）本流程所有步骤沿用"
+          },
           "env": {
             "type": "string",
             "description": "固定运行环境（如本地 fixture 只能跑 local）：缺省跟随 -e / defaultEnv；显式 -e 其他环境会被拒绝；verify 在其他环境时跳过它（未执行）"
           },
           "steps": {
             "type": "array",
-            "minItems": 1,
-            "description": "按顺序执行的步骤；某一步失败即停止，捕获的变量传给后续步骤",
+            "description": "按顺序执行的步骤；某一步失败即停止，捕获的变量传给后续步骤（只有依赖、没有自己的步骤也可以）",
             "items": {
               "type": "object",
               "additionalProperties": false,
@@ -57,7 +61,8 @@
                   "items": { "type": "string" },
                   "description": "只跑带这些标签的用例（同 run --tag）"
                 },
-                "nameFilter": { "type": "string", "description": "只跑名称或文件名包含该文本的用例（同 run --name）" }
+                "nameFilter": { "type": "string", "description": "只跑名称或文件名包含该文本的用例（同 run --name）" },
+                "as": { "type": "string", "description": "以哪个用户运行（如 teacher / student）：每个用户有独立的登录态（Cookie、网页存储），换名字即切换用户；捕获的变量仍然共享。缺省 = 默认用户" }
               }
             }
           }

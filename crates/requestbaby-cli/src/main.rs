@@ -186,6 +186,9 @@ enum Cmd {
         /// 不写入运行历史
         #[arg(long)]
         no_history: bool,
+        /// 不运行依赖的流程（needs）：只跑本流程自己的步骤
+        #[arg(long)]
+        no_needs: bool,
     },
     /// 环境：list / show / new / rename / cp / rm / default（与 Desktop 环境管理页同一实现）
     Env {
@@ -510,6 +513,15 @@ enum WorkflowCmd {
         /// 固定运行环境（如本地 fixture 只能跑 local）：verify 会在该环境运行它
         #[arg(short, long)]
         env: Option<String>,
+        /// 依赖的流程（可多次，如 --needs login）：先运行它们，登录态沿用到本流程所有步骤
+        #[arg(long = "needs")]
+        needs: Vec<String>,
+    },
+    /// 流程依赖：`workflow needs <流程>` 查看；`needs <流程> add <依赖>` / `needs <流程> rm <依赖>`
+    Needs {
+        key: String,
+        #[command(subcommand)]
+        action: Option<NeedsCmd>,
     },
     /// 固定 / 取消固定流程的运行环境：`workflow env <key> local`、`workflow env <key> --unset`
     Env {
@@ -574,6 +586,14 @@ enum GrpcCmd {
 }
 
 #[derive(Subcommand)]
+enum NeedsCmd {
+    /// 增加依赖的流程
+    Add { need: String },
+    /// 去掉依赖的流程
+    Rm { need: String },
+}
+
+#[derive(Subcommand)]
 enum StepCmd {
     /// 添加步骤（缺省追加到末尾）
     Add {
@@ -592,6 +612,9 @@ enum StepCmd {
         /// 插入位置（从 1 开始）
         #[arg(long)]
         at: Option<usize>,
+        /// 以哪个用户运行（如 teacher / student）：每个用户有独立的登录态，换名字 = 切换用户
+        #[arg(long = "as")]
+        as_user: Option<String>,
     },
     /// 删除第 N 个步骤
     Rm { key: String, index: usize },
@@ -719,7 +742,8 @@ fn main() -> ExitCode {
         Cmd::Send { case, env, suggest, save_body, headed } => cmd_send(&case, env.as_deref(), suggest, save_body.as_deref(), headed),
         Cmd::Workflow { action: Some(a), .. } => cmd_workflow_manage(a),
         Cmd::Workflow { action: None, name: None, .. } => cmd_workflow_manage(WorkflowCmd::List { json: false }),
-        Cmd::Workflow { action: None, name: Some(name), env, dry_run, verbose, report, json_stream, no_history } => cmd_workflow(WorkflowArgs {
+        Cmd::Workflow { action: None, name: Some(name), env, dry_run, verbose, report, json_stream, no_history, no_needs } => cmd_workflow(WorkflowArgs {
+            no_needs,
             name,
             env,
             dry_run,
@@ -1216,6 +1240,7 @@ fn cmd_run(req: session::RunRequest, report: Option<&str>, json_stream: bool, no
 }
 
 struct WorkflowArgs {
+    no_needs: bool,
     name: String,
     env: Option<String>,
     dry_run: bool,
@@ -1244,6 +1269,8 @@ fn cmd_workflow(a: WorkflowArgs) -> u8 {
         record_history: !a.no_history,
         cancel: None,
         artifacts: None,
+        skip_needs: a.no_needs,
+        base: None,
     };
     let is_term = fmt == "term" && !a.json_stream;
     let hook = run_hook(a.json_stream, fmt == "term");
@@ -1325,7 +1352,8 @@ fn cmd_workflow_manage(action: WorkflowCmd) -> u8 {
                 for (k, w) in &all {
                     let name = if w.name.is_empty() { String::new() } else { format!(" \x1b[2m{}\x1b[0m", w.name) };
                     let env = w.env.as_ref().map(|e| format!(" · 环境 {e}")).unwrap_or_default();
-                    println!("\x1b[1m{k}\x1b[0m{name} \x1b[2m· {} 步{env}\x1b[0m", w.steps.len());
+                    let needs = if w.needs.is_empty() { String::new() } else { format!(" · 依赖 {}", w.needs.join("、")) };
+                    println!("\x1b[1m{k}\x1b[0m{name} \x1b[2m· {} 步{env}{needs}\x1b[0m", w.steps.len());
                 }
             }
             Ok(0)
@@ -1340,7 +1368,10 @@ fn cmd_workflow_manage(action: WorkflowCmd) -> u8 {
             if let Some(e) = &w.env {
                 println!("  \x1b[2m固定环境 {e}\x1b[0m");
             }
-            if w.steps.is_empty() {
+            if !w.needs.is_empty() {
+                println!("  \x1b[2m依赖 {}（先运行，登录态沿用到下面所有步骤）\x1b[0m", w.needs.join(" → "));
+            }
+            if w.steps.is_empty() && w.needs.is_empty() {
                 println!("  （没有步骤：requestbaby workflow step add {key} <目录或用例>）");
             }
             for (i, st) in w.steps.iter().enumerate() {
@@ -1351,19 +1382,41 @@ fn cmd_workflow_manage(action: WorkflowCmd) -> u8 {
                 if !st.name_filter.is_empty() {
                     extra.push_str(&format!(" --name {}", st.name_filter));
                 }
+                if let Some(u) = &st.as_user {
+                    extra.push_str(&format!(" · 用户 {u}"));
+                }
                 let label = if st.name.is_empty() { String::new() } else { format!("{}  ", st.name) };
                 println!("  {}. {label}\x1b[2m{}{extra}\x1b[0m", i + 1, st.run);
             }
             Ok(0)
         }
-        WorkflowCmd::New { key, name, steps, env } => {
+        WorkflowCmd::New { key, name, steps, env, needs } => {
             let wf = config::Workflow {
                 name: name.unwrap_or_default(),
                 env,
+                needs,
                 steps: steps.into_iter().map(|run| config::WorkflowStep { run, ..Default::default() }).collect(),
             };
             workflow::save(&root, None, &key, &wf)?;
-            Ok(done(format!("已新建流程 {key}（{} 步）", wf.steps.len())))
+            let needs = if wf.needs.is_empty() { String::new() } else { format!("，依赖 {}", wf.needs.join("、")) };
+            Ok(done(format!("已新建流程 {key}（{} 步{needs}）", wf.steps.len())))
+        }
+        WorkflowCmd::Needs { key, action: None } => {
+            let w = workflow::get(&root, &key)?;
+            if w.needs.is_empty() {
+                println!("流程 {key} 没有依赖（requestbaby workflow needs {key} add <流程>）");
+            } else {
+                println!("流程 {key} 依赖（按顺序先运行）：{}", w.needs.join(" → "));
+            }
+            Ok(0)
+        }
+        WorkflowCmd::Needs { key, action: Some(NeedsCmd::Add { need }) } => {
+            let needs = workflow::add_need(&root, &key, &need)?;
+            Ok(done(format!("流程 {key} 依赖：{}", needs.join("、"))))
+        }
+        WorkflowCmd::Needs { key, action: Some(NeedsCmd::Rm { need }) } => {
+            let needs = workflow::remove_need(&root, &key, &need)?;
+            Ok(done(if needs.is_empty() { format!("流程 {key} 不再有依赖") } else { format!("流程 {key} 依赖：{}", needs.join("、")) }))
         }
         WorkflowCmd::Rename { key, new_key, name } => {
             let mut wf = workflow::get(&root, &key)?;
@@ -1391,12 +1444,13 @@ fn cmd_workflow_manage(action: WorkflowCmd) -> u8 {
             workflow::delete(&root, &key)?;
             Ok(done(format!("已删除流程 {key}")))
         }
-        WorkflowCmd::Step { action: StepCmd::Add { key, run, name, tag, name_filter, at } } => {
+        WorkflowCmd::Step { action: StepCmd::Add { key, run, name, tag, name_filter, at, as_user } } => {
             let step = config::WorkflowStep {
                 name: name.unwrap_or_default(),
                 run: run.clone(),
                 tags: tag.iter().flat_map(|t| t.split(',')).map(|t| t.trim().to_string()).filter(|t| !t.is_empty()).collect(),
                 name_filter: name_filter.unwrap_or_default(),
+                as_user: as_user.filter(|u| !u.trim().is_empty()),
             };
             let at = at.map(pos).transpose()?;
             let ix = workflow::add_step(&root, &key, step, at)?;

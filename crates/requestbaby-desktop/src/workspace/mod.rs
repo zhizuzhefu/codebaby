@@ -47,7 +47,7 @@ use notify::Watcher as _;
 use requestbaby_core::report::{CaseReport, RunReport};
 use requestbaby_core::session::RunRequest;
 use requestbaby_core::validate::ValidationIssue;
-use requestbaby_core::{doctor, export, fmt, guide, scaffold, validate, verify, workflow};
+use requestbaby_core::{doctor, export, fmt, scaffold, validate, verify, workflow};
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -862,17 +862,13 @@ impl Workspace {
     }
 
     fn run_workflow(&mut self, name: String, dry_run: bool, window: &mut Window, cx: &mut Context<Self>) {
-        // 开始前就展示完整步骤（与 requestbaby.json 中的编排一致）
-        let steps = self
-            .project
-            .config()
-            .workflows
-            .get(&name)
-            .map(|wf| {
-                wf.steps
-                    .iter()
-                    .map(|s| StepView {
-                        label: workflow::step_label(s),
+        // 开始前就展示完整步骤（与 requestbaby.json 中的编排一致；依赖的流程先跑，它们的步骤排在前面）
+        let steps = workflow::plan_steps(self.project.root(), &name, false)
+            .map(|planned| {
+                planned
+                    .into_iter()
+                    .map(|(label, s)| StepView {
+                        label,
                         run: s.run.clone(),
                         planned: 0,
                         state: StepState::Pending,
@@ -966,6 +962,7 @@ impl Workspace {
         let suggested = target.rsplit('/').next().unwrap_or("workflow").trim_end_matches(".json").to_string();
         dialogs::prompt_text(window, cx, "新建流程", format!("第一步：{target}"), suggested, "创建", move |key, window, cx| {
             let wf = requestbaby_core::config::Workflow {
+                needs: vec![],
                 name: String::new(),
                 env: None,
                 steps: vec![requestbaby_core::config::WorkflowStep { run: target.clone(), ..Default::default() }],
@@ -1510,10 +1507,9 @@ impl Workspace {
     fn render_more_menu(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let view = cx.entity().downgrade();
         let proxy = self.proxy_mode();
-        let style_brief = {
-            let b = validate::ai_brief(&self.validation.issues, &self.env);
-            (!b.is_empty()).then_some(b)
-        };
+        // 「复制给 AI」只有一个入口：有待改的写法建议时附上修改指令，没有就是写法速查
+        let pending = !validate::ai_brief(&self.validation.issues, &self.env).is_empty();
+        let ai_prompt = validate::ai_prompt(&self.validation.issues, &self.env);
         Button::new("more-menu").small().ghost().icon(IconName::Ellipsis).tooltip("更多").dropdown_menu(move |menu, _, _| {
             let menu = menu
                 .item(menu_item(&view, "运行配置…（选范围、标签、并发）", IconName::Settings2, |w, window, cx| w.open_run_dialog(None, window, cx)))
@@ -1533,20 +1529,21 @@ impl Workspace {
                 .item(menu_item(&view, "整理用例格式", IconName::FileText, |w, window, cx| w.format_project(window, cx)))
                 .item(menu_item(&view, "运行环境自检", IconName::Settings, |w, window, cx| w.run_doctor(window, cx)))
                 .separator()
-                .item(menu_item(&view, "复制用例写法速查（粘贴给 AI 对话）", IconName::Bot, |_, window, cx| {
-                    cx.write_to_clipboard(ClipboardItem::new_string(guide::quickstart()));
-                    window.push_notification(
-                        Notification::success("已复制用例写法速查卡：粘贴到 ChatGPT / Claude 等对话里，AI 就会按 requestbaby 的格式写用例"),
-                        cx,
-                    );
+                .item(PopupMenuItem::new(if pending { "复制给 AI（待改的写法 + 写法速查）" } else { "复制给 AI（写法速查）" }).icon(IconName::Bot).on_click({
+                    let prompt = ai_prompt.clone();
+                    move |_, window, cx| {
+                        cx.write_to_clipboard(ClipboardItem::new_string(prompt.clone()));
+                        style::push_brief(
+                            window,
+                            cx,
+                            Notification::success(if pending {
+                                "已复制：粘贴给 AI，它会先改好待改的写法，再按速查写用例"
+                            } else {
+                                "已复制写法速查：粘贴到 ChatGPT / Claude 等对话里，AI 就会按 requestbaby 的格式写用例"
+                            }),
+                        );
+                    }
                 }));
-            let menu = match style_brief.clone() {
-                Some(brief) => menu.item(PopupMenuItem::new("复制写法修改指令（给 AI）").icon(IconName::Bot).on_click(move |_, window, cx| {
-                    cx.write_to_clipboard(ClipboardItem::new_string(brief.clone()));
-                    style::push_brief(window, cx, Notification::success("已复制修改指令：粘贴给 AI 即可"));
-                })),
-                None => menu,
-            };
             menu.separator()
                 .item(Workspace::check_update_item(&view))
                 .item(Workspace::auto_update_item(&view))

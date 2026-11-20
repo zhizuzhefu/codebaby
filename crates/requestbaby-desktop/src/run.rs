@@ -31,7 +31,7 @@ impl RunJob {
         match self {
             RunJob::Run(r) => r.command_line(),
             RunJob::Send { path, rel, env } => session::send_spec(path.clone(), rel, Some(env.clone()), "desktop", None).command,
-            RunJob::Workflow { name, env, dry_run } => workflow::command_line(name, Some(env), *dry_run),
+            RunJob::Workflow { name, env, dry_run } => workflow::command_line(name, Some(env), *dry_run, false),
             RunJob::Verify { env } => verify::command_line(Some(env), None),
         }
     }
@@ -353,6 +353,8 @@ impl RunState {
                         record_history: true,
                         cancel: Some(cancel),
                         artifacts: None,
+                        skip_needs: false,
+                        base: None,
                     };
                     workflow::run(&spec, Some(hook), |_| {}).map(|o| (o.results, o.report, Some(o.state)))
                 }

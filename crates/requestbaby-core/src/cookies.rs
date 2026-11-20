@@ -238,3 +238,14 @@ mod tests {
         assert_eq!(parse_http_date("Wed, 21 Oct 2015 07:28:00 GMT"), Some(1_445_412_480_000));
     }
 }
+
+/// 一个站点（origin）在浏览器里的网页存储：localStorage / sessionStorage。
+/// 前端应用常把登录令牌放在这里，不是 Cookie；登录态要在 Web 用例之间沿用，两者都得带上
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct OriginStorage {
+    pub local: std::collections::BTreeMap<String, String>,
+    pub session: std::collections::BTreeMap<String, String>,
+}
+
+/// 按 origin（`https://host:port`，file:// 页面为 `null`）分的网页存储
+pub type WebStorage = std::collections::BTreeMap<String, OriginStorage>;

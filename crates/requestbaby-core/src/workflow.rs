@@ -8,6 +8,7 @@ use crate::report::{RunMeta, RunReport, StepReport, StepStatus};
 use crate::runner::{self, discover, CancelToken, CaseResult, EventHook, RunEvent, RunOptions, Runner, SessionState};
 use crate::session::quote;
 use anyhow::{anyhow, Context, Result};
+use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
 pub struct WorkflowSpec {
@@ -26,6 +27,25 @@ pub struct WorkflowSpec {
     pub cancel: Option<CancelToken>,
     /// 证据目录（verify 内运行时用 verify 的目录）；None = 按本次运行 ID
     pub artifacts: Option<crate::runner::ArtifactsDir>,
+    /// 不运行依赖的流程（`--no-needs`）：只跑本流程自己的步骤
+    pub skip_needs: bool,
+    /// 别的流程已经跑好的同一组依赖留下的登录态（verify 里依赖相同的业务流程共用同一次登录）。
+    /// 只有依赖的流程集合完全一致才会采用，否则本流程从零开始自己跑依赖
+    pub base: Option<SessionBase>,
+}
+
+/// 一组依赖流程跑完之后的登录态：`satisfied` 是这组依赖（含间接依赖）
+#[derive(Debug, Clone, Default)]
+pub struct SessionBase {
+    pub state: SessionState,
+    pub satisfied: BTreeSet<String>,
+}
+
+/// 展开后的一个步骤：来自哪个依赖流程（None = 本流程自己的）
+#[derive(Debug, Clone)]
+pub struct PlannedStep {
+    pub from: Option<String>,
+    pub step: WorkflowStep,
 }
 
 /// 步骤信息（开始前已知）
@@ -40,6 +60,10 @@ pub struct StepInfo {
     pub name_filter: String,
     /// 该步骤发现的用例数（过滤前）
     pub planned: usize,
+    /// 来自哪个依赖流程（key）；None = 本流程自己的步骤
+    pub from: Option<String>,
+    /// 以哪个用户运行（None = 默认用户）
+    pub user: Option<String>,
 }
 
 pub enum StepPhase<'a> {
@@ -59,6 +83,9 @@ pub struct WorkflowOutcome {
     pub history_path: Option<PathBuf>,
     /// 结束时的会话状态（各步骤累计捕获的变量 + Cookie）
     pub state: SessionState,
+    /// 依赖流程全部跑通后的登录态（还没有自己的步骤改动它）：verify 把它交给依赖相同的下一个流程。
+    /// 没有依赖、依赖没跑通、或跳过了依赖时 satisfied 为空
+    pub base: SessionBase,
 }
 
 /// 读取项目配置中的流程；不存在时列出已定义名称
@@ -76,7 +103,7 @@ pub fn load(root: &Path, name: &str) -> Result<(Project, Workflow)> {
 }
 
 /// 等价 CLI 命令
-pub fn command_line(name: &str, env: Option<&str>, dry_run: bool) -> String {
+pub fn command_line(name: &str, env: Option<&str>, dry_run: bool, skip_needs: bool) -> String {
     let mut s = format!("requestbaby workflow {}", quote(name));
     if let Some(e) = env {
         s.push_str(&format!(" -e {}", quote(e)));
@@ -84,7 +111,84 @@ pub fn command_line(name: &str, env: Option<&str>, dry_run: bool) -> String {
     if dry_run {
         s.push_str(" --dry-run");
     }
+    if skip_needs {
+        s.push_str(" --no-needs");
+    }
     s
+}
+
+/// 流程的显示名（缺省用 key）
+pub fn display_name(key: &str, wf: &Workflow) -> String {
+    if wf.name.is_empty() {
+        key.to_string()
+    } else {
+        wf.name.clone()
+    }
+}
+
+/// 流程 `key` 依赖的全部流程（含间接依赖），按「先被依赖的在前」排好、去重，不含 key 自己。
+/// 依赖的流程不存在、或依赖成环时报错
+pub fn needs_closure(project: &Project, key: &str) -> Result<Vec<String>> {
+    fn visit(project: &Project, key: &str, stack: &mut Vec<String>, done: &mut Vec<String>) -> Result<()> {
+        if done.iter().any(|d| d == key) {
+            return Ok(());
+        }
+        if let Some(pos) = stack.iter().position(|s| s == key) {
+            let mut cycle: Vec<&str> = stack[pos..].iter().map(String::as_str).collect();
+            cycle.push(key);
+            return Err(anyhow!("流程依赖成环：{}", cycle.join(" → ")));
+        }
+        let wf = project.workflows.get(key).ok_or_else(|| anyhow!("流程 {key} 不存在"))?;
+        stack.push(key.to_string());
+        for need in &wf.needs {
+            if !project.workflows.contains_key(need) {
+                let defined: Vec<&str> = project.workflows.keys().map(String::as_str).collect();
+                return Err(anyhow!("流程 {key} 依赖的流程 {need} 不存在。已定义: {}", defined.join(", ")));
+            }
+            visit(project, need, stack, done)?;
+        }
+        stack.pop();
+        done.push(key.to_string());
+        Ok(())
+    }
+    let mut done = vec![];
+    visit(project, key, &mut vec![], &mut done)?;
+    done.retain(|d| d != key);
+    Ok(done)
+}
+
+/// 展开：依赖流程的步骤（先被依赖的在前）+ 本流程自己的步骤。`satisfied` 里的依赖本次已经跑过，不再展开
+pub fn expand(project: &Project, key: &str, satisfied: &BTreeSet<String>, skip_needs: bool) -> Result<Vec<PlannedStep>> {
+    let wf = project.workflows.get(key).ok_or_else(|| anyhow!("流程 {key} 不存在"))?;
+    let mut out = vec![];
+    let closure = needs_closure(project, key)?; // 即使跳过依赖也检查：配置错误要尽早暴露
+    if !skip_needs {
+        for dep in closure.iter().filter(|d| !satisfied.contains(*d)) {
+            out.extend(project.workflows[dep].steps.iter().map(|s| PlannedStep { from: Some(dep.clone()), step: s.clone() }));
+        }
+    }
+    out.extend(wf.steps.iter().map(|s| PlannedStep { from: None, step: s.clone() }));
+    Ok(out)
+}
+
+/// 步骤展示名：依赖流程的步骤前面带上流程名（`登录 › 打开登录页`），指定了用户的后面带上用户
+fn planned_label(project: &Project, p: &PlannedStep) -> String {
+    let mut label = step_label(&p.step);
+    if let Some(from) = &p.from {
+        let name = project.workflows.get(from).map(|w| display_name(from, w)).unwrap_or_else(|| from.clone());
+        label = format!("{name} › {label}");
+    }
+    if let Some(u) = &p.step.as_user {
+        label.push_str(&format!("（用户 {u}）"));
+    }
+    label
+}
+
+/// 流程运行前的步骤清单（含依赖流程的步骤）：桌面端据此一次画出完整的进度条
+pub fn plan_steps(root: &Path, name: &str, skip_needs: bool) -> Result<Vec<(String, WorkflowStep)>> {
+    let pf = discover::project_file(root).ok_or_else(|| anyhow!("缺少 requestbaby.json（{}）", root.display()))?;
+    let project = load_strict::<Project>(&pf).context("项目配置错误")?;
+    Ok(expand(&project, name, &BTreeSet::new(), skip_needs)?.into_iter().map(|p| (planned_label(&project, &p), p.step)).collect())
 }
 
 pub fn step_label(step: &WorkflowStep) -> String {
@@ -111,32 +215,52 @@ pub fn run(spec: &WorkflowSpec, hook: Option<EventHook>, mut on_step: impl FnMut
     let (project, wf) = load(&spec.root, &spec.name)?;
     let env = resolve_env(&project, &spec.name, &wf, spec.env.as_deref())?;
     let ctx = runner::load_project_ctx(&spec.root, &env)?;
-    let display_name = if wf.name.is_empty() { spec.name.clone() } else { wf.name.clone() };
+    let display_name = display_name(&spec.name, &wf);
 
-    if wf.steps.is_empty() {
+    let closure = needs_closure(&project, &spec.name)?;
+    let closure_set: BTreeSet<String> = closure.iter().cloned().collect();
+    // 依赖相同的流程共用同一份登录态；依赖不一样就不采用（否则会带进不属于本流程依赖的登录态）
+    let reuse = spec.base.as_ref().filter(|b| !spec.skip_needs && !closure_set.is_empty() && b.satisfied == closure_set);
+    let incoming = reuse.cloned().unwrap_or_default();
+    // 依赖的流程要在同一个环境里跑
+    for dep in &closure {
+        if let Some(pinned) = project.workflows[dep.as_str()].env.as_deref().filter(|e| *e != env) {
+            return Err(anyhow!("流程 {} 依赖的流程 {dep} 固定在环境 {pinned}，与本次环境 {env} 不一致：去掉依赖流程的 env，或把本流程也固定到 {pinned}", spec.name));
+        }
+    }
+    let expanded = expand(&project, &spec.name, &incoming.satisfied, spec.skip_needs)?;
+    if expanded.is_empty() {
         return Err(anyhow!("流程 {} 还没有步骤（requestbaby workflow step add {} <目录或用例>）", spec.name, spec.name));
     }
     // 先发现全部步骤：配置错误在执行任何请求前暴露
-    let total = wf.steps.len();
+    let total = expanded.len();
     let mut planned = vec![];
-    for (index, step) in wf.steps.iter().enumerate() {
+    for (index, p) in expanded.iter().enumerate() {
+        let step = &p.step;
         let target = spec.root.join(&step.run);
+        let whose = p.from.as_deref().map(|f| format!("依赖流程 {f} 的")).unwrap_or_default();
         if !target.exists() {
-            return Err(anyhow!("步骤 {} 的路径不存在: {}", index + 1, step.run));
+            return Err(anyhow!("{whose}步骤 {} 的路径不存在: {}", index + 1, step.run));
         }
         let cases = discover::discover(std::slice::from_ref(&target))
             .with_context(|| format!("步骤 {} 发现用例失败", step.run))?;
         let info = StepInfo {
             index,
             total,
-            label: step_label(step),
+            label: planned_label(&project, p),
             run: step.run.clone(),
             tags: step.tags.clone(),
             name_filter: step.name_filter.clone(),
             planned: cases.len(),
+            from: p.from.clone(),
+            user: step.as_user.clone(),
         };
         planned.push((info, cases));
     }
+    // 依赖流程的步骤数：它们全部跑通的那一刻，登录态就绪
+    let needs_steps = planned.iter().filter(|(i, _)| i.from.is_some()).count();
+    // 本流程依赖的登录态：采用别人跑好的；或自己跑完依赖后得到（跳过依赖时没有）
+    let mut base = if spec.skip_needs { SessionBase::default() } else { SessionBase { state: incoming.state.clone(), satisfied: if reuse.is_some() { closure_set.clone() } else { BTreeSet::new() } } };
 
     let emit = |ev: RunEvent| {
         if let Some(h) = &hook {
@@ -155,6 +279,9 @@ pub fn run(spec: &WorkflowSpec, hook: Option<EventHook>, mut on_step: impl FnMut
     });
 
     let mut runner = Runner::new(ctx);
+    if reuse.is_some() {
+        runner.seed(incoming.state.clone());
+    }
     if let Some(h) = &hook {
         runner.set_hook(h.clone());
     }
@@ -187,6 +314,7 @@ pub fn run(spec: &WorkflowSpec, hook: Option<EventHook>, mut on_step: impl FnMut
             artifacts: if spec.dry_run { None } else { Some(spec.artifacts.clone().unwrap_or_else(|| history::artifacts_for(&spec.root, &id, spec.record_history))) },
             ..Default::default()
         };
+        runner.switch_user(info.user.as_deref());
         let results = runner.run(cases, &opts, |_| {}).with_context(|| format!("步骤 {} 执行失败", info.label))?;
         let failed = results.iter().any(|r| !r.passed() && !r.skipped);
         let report = step_report(info, &results, if failed { StepStatus::Failed } else { StepStatus::Passed });
@@ -202,6 +330,10 @@ pub fn run(spec: &WorkflowSpec, hook: Option<EventHook>, mut on_step: impl FnMut
         if failed && !spec.dry_run {
             failed_step = Some(info.index);
         }
+        // 依赖流程全部跑通：此刻的登录态交给后面的流程共用
+        if needs_steps > 0 && info.index + 1 == needs_steps && (!failed || spec.dry_run) {
+            base = SessionBase { state: runner.state(), satisfied: closure_set.clone() };
+        }
     }
 
     let notices = runner.take_notices();
@@ -210,7 +342,7 @@ pub fn run(spec: &WorkflowSpec, hook: Option<EventHook>, mut on_step: impl FnMut
         id,
         source: spec.source.clone(),
         // 固定环境的流程：等价命令不带 -e（带了反而会被拒绝）
-        command: command_line(&spec.name, wf.env.is_none().then_some(env.as_str()), spec.dry_run),
+        command: command_line(&spec.name, wf.env.is_none().then_some(env.as_str()), spec.dry_run, spec.skip_needs),
         env: env.clone(),
         started_at_ms,
         finished_at_ms: history::now_ms(),
@@ -238,6 +370,7 @@ pub fn run(spec: &WorkflowSpec, hook: Option<EventHook>, mut on_step: impl FnMut
         notices,
         history_path,
         state,
+        base,
     })
 }
 
@@ -261,7 +394,7 @@ fn step_report(info: &StepInfo, results: &[CaseResult], status: StepStatus) -> S
 // 直接编辑 requestbaby.json 的 workflows 字段，其余字段与顺序原样保留。
 
 /// 与 `requestbaby workflow <子命令>` 冲突的名称不能作为流程 key
-pub const RESERVED_KEYS: &[&str] = &["list", "show", "new", "rename", "cp", "rm", "step", "env", "help"];
+pub const RESERVED_KEYS: &[&str] = &["list", "show", "new", "rename", "cp", "rm", "step", "env", "needs", "help"];
 
 /// 流程 key：CLI 参数直接使用，禁止空白 / 路径分隔 / 保留字
 pub fn check_key(key: &str) -> Result<()> {
@@ -296,6 +429,7 @@ pub fn get(root: &Path, key: &str) -> Result<Workflow> {
 pub fn save(root: &Path, original: Option<&str>, key: &str, wf: &Workflow) -> Result<()> {
     check_key(key)?;
     check_steps(root, wf)?;
+    check_needs(root, original, key, wf)?;
     if let Some(env) = &wf.env {
         if !crate::config::env_path(root, env).exists() {
             return Err(anyhow!("环境不存在: {env}（envs/{env}.json）"));
@@ -316,6 +450,16 @@ pub fn save(root: &Path, original: Option<&str>, key: &str, wf: &Workflow) -> Re
                         map.insert(k, v);
                     }
                 }
+                // 重命名：别的流程里对它的依赖一并改名
+                if o != key {
+                    for (_, v) in map.iter_mut() {
+                        if let Some(needs) = v.get_mut("needs").and_then(|n| n.as_array_mut()) {
+                            for n in needs.iter_mut().filter(|n| n.as_str() == Some(o)) {
+                                *n = serde_json::Value::String(key.to_string());
+                            }
+                        }
+                    }
+                }
             }
             None if original.is_some() => return Err(anyhow!("流程 {} 不存在（可能已在外部被删除）", original.unwrap_or_default())),
             None => {
@@ -327,7 +471,32 @@ pub fn save(root: &Path, original: Option<&str>, key: &str, wf: &Workflow) -> Re
 }
 
 pub fn delete(root: &Path, key: &str) -> Result<()> {
+    let users: Vec<String> = list(root)?.into_iter().filter(|(k, w)| k != key && w.needs.iter().any(|n| n == key)).map(|(k, _)| k).collect();
+    if !users.is_empty() {
+        return Err(anyhow!("流程 {key} 被 {} 依赖：先从它们的依赖里去掉 {key}（requestbaby workflow needs <流程> rm {key}）", users.join("、")));
+    }
     edit(root, |map| map.shift_remove(key).map(|_| ()).ok_or_else(|| anyhow!("流程 {key} 不存在")))
+}
+
+/// 增加一个依赖流程（已有则不变），返回新的依赖列表
+pub fn add_need(root: &Path, key: &str, need: &str) -> Result<Vec<String>> {
+    let mut wf = get(root, key)?;
+    if !wf.needs.iter().any(|n| n == need) {
+        wf.needs.push(need.to_string());
+    }
+    save(root, Some(key), key, &wf)?;
+    Ok(wf.needs)
+}
+
+/// 去掉一个依赖流程，返回新的依赖列表
+pub fn remove_need(root: &Path, key: &str, need: &str) -> Result<Vec<String>> {
+    let mut wf = get(root, key)?;
+    if !wf.needs.iter().any(|n| n == need) {
+        return Err(anyhow!("流程 {key} 没有依赖 {need}（现有依赖：{}）", if wf.needs.is_empty() { "无".to_string() } else { wf.needs.join("、") }));
+    }
+    wf.needs.retain(|n| n != need);
+    save(root, Some(key), key, &wf)?;
+    Ok(wf.needs)
 }
 
 /// 复制为新 key（显示名追加「副本」）
@@ -367,6 +536,33 @@ pub fn move_step(root: &Path, key: &str, from: usize, to: usize) -> Result<()> {
     let step = wf.steps.remove(from);
     wf.steps.insert(to, step);
     save(root, Some(key), key, &wf)
+}
+
+/// 保存前检查依赖：依赖的流程要存在、不能依赖自己、不能成环
+fn check_needs(root: &Path, original: Option<&str>, key: &str, wf: &Workflow) -> Result<()> {
+    if wf.needs.is_empty() {
+        return Ok(());
+    }
+    let pf = discover::project_file(root).ok_or_else(|| anyhow!("缺少 requestbaby.json（{}）", root.display()))?;
+    let mut project = load_strict::<Project>(&pf).context("项目配置错误")?;
+    if let Some(o) = original.filter(|o| *o != key) {
+        if let Some(old) = project.workflows.remove(o) {
+            project.workflows.insert(key.to_string(), old);
+        }
+        // 重命名后别的流程对它的依赖也会跟着改名（见 save），这里按改名后的状态检查
+        for w in project.workflows.values_mut() {
+            for n in w.needs.iter_mut().filter(|n| *n == o) {
+                *n = key.to_string();
+            }
+        }
+    }
+    project.workflows.insert(key.to_string(), wf.clone());
+    for n in &wf.needs {
+        if n == key {
+            return Err(anyhow!("流程 {key} 不能依赖自己"));
+        }
+    }
+    needs_closure(&project, key).map(|_| ())
 }
 
 fn check_steps(root: &Path, wf: &Workflow) -> Result<()> {
@@ -478,5 +674,59 @@ mod tests {
         assert!(save(root, None, "bad", &bad).unwrap_err().to_string().contains("环境不存在"));
         save(root, None, "fx", &pinned).unwrap();
         assert_eq!(read_doc(root).unwrap()["workflows"]["fx"]["env"], "dev");
+    }
+
+    fn wf(needs: &[&str], runs: &[&str]) -> Workflow {
+        Workflow { needs: needs.iter().map(|n| n.to_string()).collect(), steps: runs.iter().map(|r| step(r)).collect(), ..Default::default() }
+    }
+
+    /// 依赖：先被依赖的在前、去重；缺失与成环都有明确的错误
+    #[test]
+    fn needs_expand_in_dependency_order_and_dedupe() {
+        let dir = project();
+        let root = dir.path();
+        std::fs::create_dir_all(root.join("collections/a")).unwrap();
+        save(root, None, "login", &wf(&[], &["collections/a"])).unwrap();
+        save(root, None, "admin", &wf(&["login"], &["collections"])).unwrap();
+        save(root, None, "biz", &wf(&["login", "admin"], &["collections/a"])).unwrap();
+        let pf = discover::project_file(root).unwrap();
+        let project = load_strict::<Project>(&pf).unwrap();
+        assert_eq!(needs_closure(&project, "biz").unwrap(), ["login", "admin"], "login 只出现一次，且在 admin 前");
+        let planned = expand(&project, "biz", &BTreeSet::new(), false).unwrap();
+        let from: Vec<Option<&str>> = planned.iter().map(|p| p.from.as_deref()).collect();
+        assert_eq!(from, [Some("login"), Some("admin"), None]);
+        // 已经跑过的依赖不再展开；跳过依赖只剩自己的步骤
+        let done: BTreeSet<String> = ["login".to_string()].into();
+        assert_eq!(expand(&project, "biz", &done, false).unwrap().len(), 2);
+        assert_eq!(expand(&project, "biz", &BTreeSet::new(), true).unwrap().len(), 1);
+        let labels = plan_steps(root, "biz", false).unwrap();
+        assert_eq!(labels[0].0, "login › collections/a");
+    }
+
+    #[test]
+    fn needs_reject_missing_self_and_cycles_and_follow_rename_and_delete() {
+        let dir = project();
+        let root = dir.path();
+        std::fs::create_dir_all(root.join("collections/a")).unwrap();
+        save(root, None, "login", &wf(&[], &["collections/a"])).unwrap();
+        assert!(save(root, None, "x", &wf(&["nope"], &["collections/a"])).unwrap_err().to_string().contains("依赖的流程 nope 不存在"));
+        assert!(save(root, None, "x", &wf(&["x"], &["collections/a"])).unwrap_err().to_string().contains("不能依赖自己"));
+        save(root, None, "biz", &wf(&["login"], &["collections/a"])).unwrap();
+        // 成环：login 反过来依赖 biz
+        let err = save(root, Some("login"), "login", &wf(&["biz"], &["collections/a"])).unwrap_err().to_string();
+        assert!(err.contains("成环") && err.contains("login → biz → login"), "{err}");
+        // 被依赖的流程不能直接删；重命名时依赖跟着改
+        assert!(delete(root, "login").unwrap_err().to_string().contains("被 biz 依赖"));
+        save(root, Some("login"), "signin", &get(root, "login").unwrap()).unwrap();
+        assert_eq!(get(root, "biz").unwrap().needs, ["signin"]);
+        // 命令式增删依赖
+        save(root, None, "other", &wf(&[], &["collections/a"])).unwrap();
+        assert_eq!(add_need(root, "biz", "other").unwrap(), ["signin", "other"]);
+        assert_eq!(remove_need(root, "biz", "signin").unwrap(), ["other"]);
+        assert!(remove_need(root, "biz", "signin").unwrap_err().to_string().contains("没有依赖 signin"));
+        delete(root, "signin").unwrap();
+        // 只有依赖、没有自己步骤的流程是合法的
+        save(root, None, "just-login", &wf(&["other"], &[])).unwrap();
+        assert!(read_doc(root).unwrap()["workflows"]["just-login"]["steps"].as_array().unwrap().is_empty());
     }
 }

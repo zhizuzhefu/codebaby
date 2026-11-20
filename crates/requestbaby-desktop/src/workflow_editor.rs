@@ -1,4 +1,4 @@
-//! 流程编辑器：一个流程一个页面——key / 显示名 / 有序步骤（增删、上下移动、目标 / 标签 / 用例名过滤）。
+//! 流程编辑器：一个流程一个页面——key / 显示名 / 依赖的流程（如登录）/ 有序步骤（增删、上下移动、目标 / 标签 / 用例名过滤 / 以哪个用户运行）。
 //!
 //! 读写走 core 的 `workflow::{get, save, delete, duplicate}`（与 CLI `requestbaby workflow …` 同一实现），
 //! 只改 requestbaby.json 的 workflows 字段；项目设置等其他编辑器不会覆盖这里的修改。
@@ -41,6 +41,8 @@ struct StepRow {
     name: Entity<InputState>,
     tags: Entity<InputState>,
     name_filter: Entity<InputState>,
+    /// 以哪个用户运行（空 = 默认用户）：每个用户有独立的登录态
+    user: Entity<InputState>,
 }
 
 pub struct WorkflowEditor {
@@ -53,6 +55,8 @@ pub struct WorkflowEditor {
     name: Entity<InputState>,
     /// 运行环境：第一项 = 跟随当前环境，其余为固定环境
     env: Entity<SelectState<Vec<SharedString>>>,
+    /// 依赖的流程（先运行它们，登录态沿用到本流程所有步骤）
+    needs: Vec<String>,
     steps: Vec<StepRow>,
     targets: Vec<SharedString>,
     error: Option<String>,
@@ -72,7 +76,7 @@ impl WorkflowEditor {
                 let taken: Vec<String> = workflow::list(&root).map(|l| l.into_iter().map(|(k, _)| k).collect()).unwrap_or_default();
                 let key = (1..).map(|n| format!("workflow{n}")).find(|k| !taken.contains(k)).unwrap_or_default();
                 let first = targets.first().cloned().unwrap_or_else(|| "collections".into());
-                (key, Workflow { name: String::new(), env: None, steps: vec![WorkflowStep { run: first, ..Default::default() }] })
+                (key, Workflow { name: String::new(), env: None, needs: vec![], steps: vec![WorkflowStep { run: first, ..Default::default() }] })
             }
         };
         let key_input = cx.new(|cx| InputState::new(window, cx).placeholder("流程 key（英文，用于运行与引用）").default_value(key_text));
@@ -88,6 +92,7 @@ impl WorkflowEditor {
             key: key_input.clone(),
             name: name_input.clone(),
             env: env_select.clone(),
+            needs: wf.needs.clone(),
             steps: vec![],
             targets: targets.into_iter().map(SharedString::from).collect(),
             error: None,
@@ -134,6 +139,7 @@ impl WorkflowEditor {
                 self.name.update(cx, |s, cx| s.set_value(wf.name.clone(), window, cx));
                 let env: SharedString = wf.env.clone().unwrap_or_else(|| FOLLOW_ENV.into()).into();
                 self.env.update(cx, |s, cx| s.set_selected_value(&env, window, cx));
+                self.needs = wf.needs.clone();
                 self.steps.clear();
                 for step in &wf.steps {
                     self.push_step(step, None, window, cx);
@@ -185,6 +191,7 @@ impl WorkflowEditor {
             name: self.input(&step.name, "步骤名（可选）", window, cx),
             tags: self.input(&step.tags.join(", "), "标签，逗号分隔", window, cx),
             name_filter: self.input(&step.name_filter, "用例名包含…", window, cx),
+            user: self.input(step.as_user.as_deref().unwrap_or(""), "默认用户", window, cx),
         };
         let at = at.unwrap_or(self.steps.len()).min(self.steps.len());
         self.steps.insert(at, row);
@@ -200,10 +207,11 @@ impl WorkflowEditor {
                 run: s.run.read(cx).selected_value().map(|v| v.to_string()).unwrap_or_default(),
                 tags: text(&s.tags).split(',').map(str::trim).filter(|t| !t.is_empty()).map(String::from).collect(),
                 name_filter: text(&s.name_filter),
+                as_user: Some(text(&s.user)).filter(|u| !u.is_empty()),
             })
             .collect();
         let env = self.env.read(cx).selected_value().map(|v| v.to_string()).filter(|v| v != FOLLOW_ENV);
-        (text(&self.key), Workflow { name: text(&self.name), env, steps })
+        (text(&self.key), Workflow { name: text(&self.name), env, needs: self.needs.clone(), steps })
     }
 
     pub fn save(&mut self, cx: &mut Context<Self>) -> bool {
@@ -271,6 +279,66 @@ impl WorkflowEditor {
         });
     }
 
+    /// 依赖的流程：先运行它们（同一次运行里每个只跑一次），登录态沿用到本流程所有步骤
+    fn render_needs(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let muted = cx.theme().muted_foreground;
+        let (root, mine, view) = (self.root.clone(), self.needs.clone(), cx.entity().downgrade());
+        let own_key = self.original.clone();
+        v_flex()
+            .gap_2()
+            .child(
+                h_flex()
+                    .gap_2()
+                    .child(div().text_sm().font_weight(FontWeight::SEMIBOLD).child(format!("依赖的流程 · {}", self.needs.len())))
+                    .child(div().text_xs().text_color(muted).child("运行本流程前先运行它们（如「登录」），登录态沿用到下面所有步骤；同一次运行里每个依赖只跑一次")),
+            )
+            .child(
+                h_flex()
+                    .gap_2()
+                    .flex_wrap()
+                    .children(self.needs.iter().enumerate().map(|(i, n)| {
+                        h_flex()
+                            .id(("wf-need", i))
+                            .gap_1()
+                            .pl_2()
+                            .rounded(cx.theme().radius)
+                            .border_1()
+                            .border_color(cx.theme().border)
+                            .child(Icon::new(IconName::Network).xsmall().text_color(muted))
+                            .child(div().text_sm().child(n.clone()))
+                            .child(Button::new(("wf-need-rm", i)).ghost().xsmall().icon(IconName::Close).tooltip("去掉这个依赖").on_click(cx.listener(
+                                move |this, _, _, cx| {
+                                    if i < this.needs.len() {
+                                        this.needs.remove(i);
+                                        this.error = None;
+                                        cx.notify();
+                                    }
+                                },
+                            )))
+                    }))
+                    .child(Button::new("wf-need-add").xsmall().ghost().icon(IconName::Plus).label("添加依赖").dropdown_menu(move |menu, _, _| {
+                        let flows: Vec<String> = workflow::list(&root)
+                            .map(|l| l.into_iter().map(|(k, _)| k).filter(|k| Some(k.as_str()) != own_key.as_deref() && !mine.contains(k)).collect())
+                            .unwrap_or_default();
+                        if flows.is_empty() {
+                            return menu.item(PopupMenuItem::new("没有可依赖的其他流程：先新建一个（如「登录」）").disabled(true));
+                        }
+                        flows.into_iter().fold(menu, |menu, k| {
+                            let view = view.clone();
+                            let key = k.clone();
+                            menu.item(PopupMenuItem::new(k).icon(IconName::Network).on_click(move |_, _, cx| {
+                                let key = key.clone();
+                                let _ = view.update(cx, |this, cx| {
+                                    this.needs.push(key);
+                                    this.error = None;
+                                    cx.notify();
+                                });
+                            }))
+                        })
+                    })),
+            )
+    }
+
     fn render_step(&self, ix: usize, s: &StepRow, total: usize, cx: &mut Context<Self>) -> impl IntoElement {
         let muted = cx.theme().muted_foreground;
         let id = s.id;
@@ -311,7 +379,8 @@ impl WorkflowEditor {
                             .gap_2()
                             .child(div().flex_1().child(field("步骤名", Input::new(&s.name).small().into_any_element())))
                             .child(div().flex_1().child(field("只跑这些标签", Input::new(&s.tags).small().into_any_element())))
-                            .child(div().flex_1().child(field("只跑名称包含", Input::new(&s.name_filter).small().into_any_element()))),
+                            .child(div().flex_1().child(field("只跑名称包含", Input::new(&s.name_filter).small().into_any_element())))
+                            .child(div().w(px(120.)).child(field("用户（切换登录身份）", Input::new(&s.user).small().into_any_element()))),
                     ),
             )
             .child(
@@ -391,7 +460,7 @@ impl Render for WorkflowEditor {
                             .icon(IconName::Eye)
                             .label("Dry-run")
                             .tooltip("只编译不发送（先保存）")
-                            .disabled(total == 0)
+                            .disabled(total == 0 && wf.needs.is_empty())
                             .on_click(cx.listener(|this, _, _, cx| this.run(true, cx))),
                     )
                     .child(
@@ -401,7 +470,7 @@ impl Render for WorkflowEditor {
                             .icon(IconName::Play)
                             .label("运行")
                             .tooltip("保存并运行（requestbaby workflow <key>）")
-                            .disabled(total == 0)
+                            .disabled(total == 0 && wf.needs.is_empty())
                             .on_click(cx.listener(|this, _, _, cx| this.run(false, cx))),
                     )
                     .child(
@@ -478,6 +547,7 @@ impl Render for WorkflowEditor {
                             ),
                     )
 
+                    .child(self.render_needs(cx))
                     .child(
                         v_flex()
                             .gap_2()

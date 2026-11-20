@@ -12,7 +12,7 @@ use crate::report::{IssueReport, RunMeta, RunReport, StepReport, StepStatus};
 use crate::runner::{discover, CancelToken, CaseResult, EventHook, RunEvent};
 use crate::session::{self, quote, RunRequest};
 use crate::validate::{self, ValidationIssue};
-use crate::workflow::{self, WorkflowSpec};
+use crate::workflow::{self, SessionBase, WorkflowSpec};
 use anyhow::{anyhow, Context, Result};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -127,6 +127,8 @@ pub fn plan(root: &Path, env: Option<&str>) -> Result<(Project, String, Vec<Stag
     }
     kinds.extend(project.workflows.keys().map(|k| StageKind::Workflow(k.clone())));
     let total = kinds.len();
+    // 依赖相同的流程（如都依赖「登录」）在 verify 里共用同一次登录：先用到的负责跑，后面的直接沿用
+    let mut seen: Vec<std::collections::BTreeSet<String>> = vec![];
     let stages = kinds
         .into_iter()
         .enumerate()
@@ -138,13 +140,22 @@ pub fn plan(root: &Path, env: Option<&str>) -> Result<(Project, String, Vec<Stag
                 StageKind::Workflow(k) => {
                     let wf = &project.workflows[k];
                     let name = if wf.name.is_empty() { k.clone() } else { wf.name.clone() };
-                    let targets: Vec<PathBuf> = wf.steps.iter().map(|s| root.join(&s.run)).collect();
                     match wf.env.as_ref().filter(|e| **e != env) {
                         Some(own) => {
                             skip = Some(format!("固定在环境 {own}，本次跳过（requestbaby workflow {k} 或 verify -e {own} 运行）"));
                             (format!("流程 {name}（{own}）"), 0)
                         }
-                        None => (format!("流程 {name}"), count(&targets)),
+                        None => {
+                            let closure: std::collections::BTreeSet<String> = workflow::needs_closure(&project, k).unwrap_or_default().into_iter().collect();
+                            let shared = !closure.is_empty() && seen.contains(&closure);
+                            let none = std::collections::BTreeSet::new();
+                            let steps = workflow::expand(&project, k, if shared { &closure } else { &none }, false).unwrap_or_default();
+                            let targets: Vec<PathBuf> = steps.iter().map(|p| root.join(&p.step.run)).collect();
+                            if !closure.is_empty() && !shared {
+                                seen.push(closure);
+                            }
+                            (format!("流程 {name}"), count(&targets))
+                        }
                     }
                 }
             };
@@ -155,7 +166,7 @@ pub fn plan(root: &Path, env: Option<&str>) -> Result<(Project, String, Vec<Stag
 }
 
 pub fn run(spec: &VerifySpec, hook: Option<EventHook>, mut on_stage: impl FnMut(StagePhase<'_>)) -> Result<VerifyOutcome> {
-    let (_, env, stages) = plan(&spec.root, spec.env.as_deref())?;
+    let (project, env, stages) = plan(&spec.root, spec.env.as_deref())?;
     let total = stages.len();
 
     let emit = |ev: RunEvent| {
@@ -192,6 +203,8 @@ pub fn run(spec: &VerifySpec, hook: Option<EventHook>, mut on_stage: impl FnMut(
     let mut notices: Vec<String> = vec![];
     let mut steps: Vec<StepReport> = vec![];
     let mut blocked: Option<String> = None;
+    // 流程依赖的登录态：依赖相同的流程共用，第一个用到的负责跑
+    let mut bases: Vec<SessionBase> = vec![];
 
     for stage in &stages {
         if blocked.is_some() || cancelled() {
@@ -255,9 +268,17 @@ pub fn run(spec: &VerifySpec, hook: Option<EventHook>, mut on_stage: impl FnMut(
                     record_history: false,
                     cancel: spec.cancel.clone(),
                     artifacts: Some(history::artifacts_for(&spec.root, &id, spec.record_history)),
+                    skip_needs: false,
+                    base: workflow::needs_closure(&project, key)
+                        .ok()
+                        .map(|c| c.into_iter().collect::<std::collections::BTreeSet<String>>())
+                        .and_then(|c| bases.iter().find(|b| b.satisfied == c).cloned()),
                 };
                 match workflow::run(&ws, inner_hook.clone(), |_| {}) {
                     Ok(o) => {
+                        if !o.base.satisfied.is_empty() && !bases.iter().any(|b| b.satisfied == o.base.satisfied) {
+                            bases.push(o.base);
+                        }
                         notices.extend(o.notices);
                         ran = o.results;
                         finished_ran(stage, &ran, &mut on_stage)

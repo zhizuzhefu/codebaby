@@ -385,6 +385,8 @@ impl Runner {
         if self.ctx.project.cookies {
             let jar: Vec<crate::cookies::Cookie> = self.cookies.iter().cloned().collect();
             let _ = page.set_cookies(&jar);
+            // 登录令牌在 localStorage / sessionStorage 里的应用：一并沿用
+            let _ = page.inject_storage(&self.storage);
         }
         let (dir, display) = self.evidence_dir(dc, &result.name, opts);
         let policy = cfg.screenshots.unwrap_or_default();
@@ -396,6 +398,9 @@ impl Runner {
                 if c.expires_at_ms.is_none_or(|t| t > now) {
                     self.cookies.insert(c);
                 }
+            }
+            if let Some((origin, st)) = page.read_storage() {
+                self.storage.insert(origin, st);
             }
         }
         let info = page.page().unwrap_or_default();

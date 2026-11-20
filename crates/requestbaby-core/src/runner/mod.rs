@@ -198,23 +198,41 @@ pub struct ProjectCtx {
     pub proxy: crate::engine::proxy::ProxyPolicy,
 }
 
-/// 跨请求的会话状态：运行时捕获的变量 + Cookie。
+pub use crate::cookies::{OriginStorage, WebStorage};
+
+/// 一个用户的登录态：Cookie + 网页存储。切换用户 = 换一份
+#[derive(Debug, Clone, Default)]
+pub struct UserSession {
+    pub cookies: CookieJar,
+    pub storage: WebStorage,
+}
+
+/// 跨请求的会话状态：运行时捕获的变量 + 默认用户的登录态（Cookie、网页存储）+ 其他用户各自的登录态。
 /// 一次运行内自动共享；Desktop 在本次会话内跨「发送」保持（[`Runner::seed`] / [`Runner::state`]）
 #[derive(Debug, Clone, Default)]
 pub struct SessionState {
     pub vars: BTreeMap<String, VarVal>,
     pub cookies: CookieJar,
+    pub storage: WebStorage,
+    /// 命名用户（流程步骤的 `as`）的登录态，不含默认用户
+    pub users: BTreeMap<String, UserSession>,
 }
 
 impl SessionState {
     pub fn is_empty(&self) -> bool {
-        self.vars.is_empty() && self.cookies.is_empty()
+        self.vars.is_empty() && self.cookies.is_empty() && self.storage.is_empty() && self.users.is_empty()
     }
 
-    /// 后来者覆盖：同名变量 / 同一 Cookie 以 other 为准
+    /// 后来者覆盖：同名变量 / 同一 Cookie / 同一站点的网页存储以 other 为准
     pub fn merge(&mut self, other: &SessionState) {
         self.vars.extend(other.vars.iter().map(|(k, v)| (k.clone(), v.clone())));
         self.cookies.merge(&other.cookies);
+        self.storage.extend(other.storage.iter().map(|(k, v)| (k.clone(), v.clone())));
+        for (name, u) in &other.users {
+            let mine = self.users.entry(name.clone()).or_default();
+            mine.cookies.merge(&u.cookies);
+            mine.storage.extend(u.storage.iter().map(|(k, v)| (k.clone(), v.clone())));
+        }
     }
 }
 
@@ -226,7 +244,13 @@ pub struct Runner {
     transport: CurlTransport,
     script: QuickJsHost,
     runtime_vars: BTreeMap<String, VarVal>,
+    /// 当前用户的登录态：Cookie + 网页存储（HTTP / Web 用例共用）
     cookies: CookieJar,
+    storage: WebStorage,
+    /// 暂时不用的用户的登录态（含被切走的默认用户，键为空字符串）
+    parked_users: BTreeMap<String, UserSession>,
+    /// 当前用户（None = 默认用户）
+    user: Option<String>,
     /// 运行期事件回调（caseStarted / log / caseFinished / notice）
     hook: Option<EventHook>,
     /// 非用例级提示（teardown 失败等），由上层渲染
@@ -243,6 +267,9 @@ impl Runner {
             transport: CurlTransport::new(),
             runtime_vars: BTreeMap::new(),
             cookies: CookieJar::default(),
+            storage: WebStorage::new(),
+            parked_users: BTreeMap::new(),
+            user: None,
             hook: None,
             notices: vec![],
             ui: Default::default(),
@@ -253,11 +280,38 @@ impl Runner {
     pub fn seed(&mut self, state: SessionState) {
         self.runtime_vars = state.vars;
         self.cookies = state.cookies;
+        self.storage = state.storage;
+        self.parked_users = state.users;
+        self.user = None;
     }
 
-    /// 当前会话状态（运行结束后回传给 Desktop 会话）
+    /// 当前会话状态（运行结束后回传给 Desktop 会话）：以默认用户为主，不管此刻正以谁的身份在跑
     pub fn state(&self) -> SessionState {
-        SessionState { vars: self.runtime_vars.clone(), cookies: self.cookies.clone() }
+        let mut users = self.parked_users.clone();
+        let current = UserSession { cookies: self.cookies.clone(), storage: self.storage.clone() };
+        let default = match &self.user {
+            None => current,
+            Some(name) => {
+                users.insert(name.clone(), current);
+                users.remove("").unwrap_or_default()
+            }
+        };
+        SessionState { vars: self.runtime_vars.clone(), cookies: default.cookies, storage: default.storage, users }
+    }
+
+    /// 切换用户：每个用户有各自的 Cookie 与网页存储，捕获的变量仍然共享。None = 默认用户；
+    /// 第一次用到的用户从空白登录态开始
+    pub fn switch_user(&mut self, name: Option<&str>) {
+        let want = name.filter(|n| !n.is_empty());
+        if want == self.user.as_deref() {
+            return;
+        }
+        let parked = UserSession { cookies: std::mem::take(&mut self.cookies), storage: std::mem::take(&mut self.storage) };
+        self.parked_users.insert(self.user.clone().unwrap_or_default(), parked);
+        let next = self.parked_users.remove(want.unwrap_or("")).unwrap_or_default();
+        self.cookies = next.cookies;
+        self.storage = next.storage;
+        self.user = want.map(String::from);
     }
 
     /// 安装事件回调（Desktop 进度 / CLI `--json-stream`）
@@ -1710,4 +1764,47 @@ pub fn load_project_ctx(start: &Path, env_name: &str) -> Result<ProjectCtx> {
         secret_values,
         proxy,
     })
+}
+
+#[cfg(test)]
+mod session_tests {
+    use super::*;
+
+    fn runner() -> (tempfile::TempDir, Runner) {
+        let dir = tempfile::tempdir().unwrap();
+        crate::scaffold::init_project(dir.path()).unwrap();
+        let ctx = load_project_ctx(dir.path(), "dev").unwrap();
+        (dir, Runner::new(ctx))
+    }
+
+    fn cookie(n: &str) -> crate::cookies::Cookie {
+        crate::cookies::Cookie { name: n.into(), value: "v".into(), domain: "h".into(), host_only: true, path: "/".into(), secure: false, expires_at_ms: None }
+    }
+
+    /// 切换用户：Cookie 与网页存储各用各的，变量共享；state() 以默认用户为主
+    #[test]
+    fn switch_user_isolates_login_state_but_shares_vars() {
+        let (_d, mut r) = runner();
+        r.cookies.insert(cookie("teacher"));
+        r.storage.insert("https://h".into(), OriginStorage { local: [("token".to_string(), "t1".to_string())].into(), session: Default::default() });
+        r.runtime_vars.insert("taskId".into(), VarVal::Str("7".into()));
+        r.switch_user(Some("student"));
+        assert!(r.cookies.is_empty() && r.storage.is_empty(), "新用户从空白登录态开始");
+        assert!(r.runtime_vars.contains_key("taskId"), "变量共享");
+        r.cookies.insert(cookie("student"));
+        let st = r.state();
+        assert_eq!(st.cookies.iter().map(|c| c.name.clone()).collect::<Vec<_>>(), ["teacher"], "state() 以默认用户为主");
+        assert_eq!(st.users["student"].cookies.len(), 1);
+        r.switch_user(None);
+        assert_eq!(r.cookies.iter().next().unwrap().name, "teacher");
+        assert_eq!(r.storage["https://h"].local["token"], "t1");
+        r.switch_user(Some("student"));
+        assert_eq!(r.cookies.iter().next().unwrap().name, "student", "切回来登录态还在");
+        // seed 还原
+        let (_d2, mut r2) = runner();
+        r2.seed(r.state());
+        assert_eq!(r2.cookies.iter().next().unwrap().name, "teacher");
+        r2.switch_user(Some("student"));
+        assert_eq!(r2.cookies.iter().next().unwrap().name, "student");
+    }
 }

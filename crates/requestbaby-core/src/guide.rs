@@ -174,7 +174,7 @@ pub const AGENTS_MD: &str = r#"# requestbaby 接口测试项目
 
 ```bash
 requestbaby guide          # 速查卡：5 个概念、典型用例、expect / capture 写法、闭环命令（与已安装版本一致，必读）
-requestbaby guide <主题>   # 按场景深入：expect capture vars flow auth e2e data setup env scripts cli ref
+requestbaby guide <主题>   # 按场景深入：expect capture vars flow auth e2e data setup env web android scripts cli ref
 ```
 
 闭环：写用例 → `requestbaby validate --report json`（exit 2 = 配置错误；warn 是写法建议，`requestbaby fmt --fix` 自动改写）
@@ -187,6 +187,8 @@ requestbaby guide <主题>   # 按场景深入：expect capture vars flow auth e
 - 断言照真实响应写：`requestbaby send <用例> --suggest`
 - URL 写 `{{baseUrl}}/路径`；变量用 `requestbaby vars set …` 写进环境，密钥加 `--secret`，本机真实值用 `--local <环境>`
 - 只能在某个环境跑的，用流程固定环境（`requestbaby workflow env <流程> <环境>`），不写环境守卫脚本
+- 界面用例（web / android）：先 `requestbaby web snapshot <url>` / `requestbaby android snapshot` 看元素与定位；API、Web、Android 可放进同一个流程，`capture` 的值互通
+- 每个场景都要先登录的：登录做成一个流程，其他流程 `needs` 依赖它，不要重复登录；切用户用步骤的 `as`（`requestbaby guide flow`）
 - 被测服务由你自己启动；`.requestbaby/` 是运行历史，不要修改
 "#;
 

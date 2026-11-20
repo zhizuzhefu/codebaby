@@ -86,7 +86,12 @@ pub struct Workflow {
     /// 设置后 `verify` 在该环境运行它，显式 -e 其他环境会被拒绝；verify 在其他环境时跳过它
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub env: Option<String>,
-    /// 有序步骤
+    /// 依赖的流程（如「登录」）：运行本流程前先运行它们，同一次运行里每个依赖只跑一次，
+    /// 它们留下的登录态（Cookie、网页存储、捕获的变量）本流程的所有步骤直接沿用
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub needs: Vec<String>,
+    /// 有序步骤（只有依赖、没有自己的步骤也可以）
+    #[serde(default)]
     pub steps: Vec<WorkflowStep>,
 }
 
@@ -105,6 +110,10 @@ pub struct WorkflowStep {
     /// 用例名过滤
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub name_filter: String,
+    /// 以哪个用户运行（如 teacher / student）：每个用户有各自独立的登录态（Cookie、网页存储），
+    /// 切换用户 = 换一个名字；捕获的变量仍然共享。缺省 = 默认用户
+    #[serde(default, rename = "as", skip_serializing_if = "Option::is_none")]
+    pub as_user: Option<String>,
 }
 
 fn default_version() -> u32 {

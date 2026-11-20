@@ -1593,6 +1593,102 @@ fn mixed_api_and_web_share_data_and_export_one_report_with_timeline() {
     assert!(api < web && txt.contains("时间线") && txt.contains("失败详情") && txt.contains("找不到按钮"), "{txt}");
 }
 
+/// 流程依赖与登录态：登录放在一个流程里，业务流程用 needs 依赖它，登录令牌在 localStorage 里（不是 Cookie），
+/// 业务流程不用重复登录；步骤的 `as` 切换用户，每个用户登录态独立；没有依赖的流程是干净的；
+/// verify 里依赖相同的流程只登录一次
+#[test]
+fn workflow_needs_share_login_state_across_flows_and_users() {
+    if requestbaby_core::engine::cdp::find_browser(None).is_err() {
+        eprintln!("跳过：本机没有 Chrome / Edge / Chromium");
+        return;
+    }
+    let dir = TempDir::new().unwrap();
+    let d = dir.path();
+    for sub in ["site", "envs", "flows/auth", "flows/biz", "flows/guest"] {
+        std::fs::create_dir_all(d.join(sub)).unwrap();
+    }
+    std::fs::write(
+        d.join("site/login.html"),
+        r#"<!doctype html><meta charset="utf-8"><title>登录</title><label>用户名 <input id="n"></label><button id="b">登录</button>
+<script>b.onclick=()=>{localStorage.setItem('token','tk-'+n.value);location.href='app.html'}</script>"#,
+    )
+    .unwrap();
+    std::fs::write(
+        d.join("site/app.html"),
+        r#"<!doctype html><meta charset="utf-8"><title>首页</title><p id="who"></p><script>who.textContent=localStorage.getItem('token')?'已登录 '+localStorage.getItem('token'):'未登录'</script>"#,
+    )
+    .unwrap();
+    let base = format!("file://{}", d.join("site").display());
+    std::fs::write(d.join("envs/dev.json"), serde_json::json!({ "vars": { "site": base } }).to_string()).unwrap();
+    let login = |who: &str| format!(r#"{{"name":"{who}登录","web":{{"url":"{{{{site}}}}/login.html","steps":[{{"fill":{{"label":"用户名"}},"value":"{who}"}},{{"click":{{"role":"button","name":"登录"}}}},{{"waitFor":{{"text":"已登录 tk-{who}"}}}}]}}}}"#);
+    let see = |name: &str, text: &str| format!(r#"{{"name":"{name}","web":{{"url":"{{{{site}}}}/app.html","timeoutMs":3000,"steps":[{{"expect":{{"text":"{text}"}}}}]}}}}"#);
+    std::fs::write(d.join("flows/auth/01-teacher.json"), login("teacher")).unwrap();
+    std::fs::write(d.join("flows/auth/02-student.json"), login("student")).unwrap();
+    std::fs::write(d.join("flows/biz/01-老师看首页.json"), see("老师看首页", "已登录 tk-teacher")).unwrap();
+    std::fs::write(d.join("flows/biz/02-学生看首页.json"), see("学生看首页", "已登录 tk-student")).unwrap();
+    std::fs::write(d.join("flows/guest/01-访客.json"), see("访客看首页", "未登录")).unwrap();
+    std::fs::write(
+        d.join("requestbaby.json"),
+        serde_json::json!({
+            "version": 1, "defaultEnv": "dev",
+            "workflows": {
+                "login-teacher": { "steps": [{ "run": "flows/auth/01-teacher.json" }] },
+                "login-student": { "steps": [{ "run": "flows/auth/02-student.json", "as": "student" }] },
+                "biz": { "needs": ["login-teacher"], "steps": [{ "run": "flows/biz/01-老师看首页.json" }] },
+                "biz3": { "needs": ["login-teacher"], "steps": [{ "run": "flows/biz/01-老师看首页.json" }] },
+                "biz2": {
+                    "needs": ["login-teacher", "login-student"],
+                    "steps": [
+                        { "run": "flows/biz/01-老师看首页.json" },
+                        { "run": "flows/biz/02-学生看首页.json", "as": "student" },
+                        { "run": "flows/biz/01-老师看首页.json" }
+                    ]
+                },
+                "guest": { "steps": [{ "run": "flows/guest/01-访客.json" }] }
+            }
+        })
+        .to_string(),
+    )
+    .unwrap();
+    let names = |args: &[&str]| -> (i32, Vec<String>) {
+        let out = run_cli(args, d);
+        let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap_or_else(|_| panic!("{}{}", String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr)));
+        let list = v["results"].as_array().map(|r| r.iter().map(|c| format!("{}{}", if c["passed"] == true { "✔" } else { "✘" }, c["name"].as_str().unwrap_or_default())).collect()).unwrap_or_default();
+        (out.status.code().unwrap_or(-1), list)
+    };
+
+    assert_eq!(run_cli(&["validate"], d).status.code(), Some(0), "{}", String::from_utf8_lossy(&run_cli(&["validate"], d).stderr));
+    // 业务流程不自己写登录：依赖的登录流程先跑，令牌在 localStorage 里也被沿用
+    let (code, r) = names(&["workflow", "biz", "--report", "json"]);
+    assert_eq!((code, r), (0, vec!["✔teacher登录".into(), "✔老师看首页".into()]));
+    // 不跑依赖：没有登录态，业务步骤失败
+    let (code, r) = names(&["workflow", "biz", "--no-needs", "--report", "json"]);
+    assert_eq!((code, r), (1, vec!["✘老师看首页".into()]));
+    // 切用户：老师、学生各有各的登录态，来回切换互不影响
+    let (code, r) = names(&["workflow", "biz2", "--report", "json"]);
+    assert_eq!(code, 0, "{r:?}");
+    assert_eq!(r, ["✔teacher登录", "✔student登录", "✔老师看首页", "✔学生看首页", "✔老师看首页"]);
+    // 没有依赖的流程是干净的
+    assert_eq!(names(&["workflow", "guest", "--report", "json"]), (0, vec!["✔访客看首页".into()]));
+
+    // 管理命令：依赖的增删、重命名跟随、被依赖时不能删、成环被拒
+    assert_eq!(run_cli(&["workflow", "needs", "biz3", "add", "login-student"], d).status.code(), Some(0));
+    assert_eq!(run_cli(&["workflow", "needs", "biz3", "rm", "login-student"], d).status.code(), Some(0));
+    assert_eq!(run_cli(&["workflow", "rm", "login-teacher"], d).status.code(), Some(2));
+    assert_eq!(run_cli(&["workflow", "needs", "login-teacher", "add", "biz"], d).status.code(), Some(2));
+    let show = String::from_utf8_lossy(&run_cli(&["workflow", "show", "biz2"], d).stdout).to_string();
+    assert!(show.contains("依赖 login-teacher → login-student") && show.contains("用户 student"), "{show}");
+
+    // verify：依赖相同（都只依赖 login-teacher）的流程共用同一次登录；没有依赖的流程仍是干净的
+    let out = run_cli(&["verify", "--report", "json"], d);
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap_or_else(|_| panic!("{}{}", String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr)));
+    assert_eq!(out.status.code(), Some(0), "{} {}", v["blocked"], v["issues"]);
+    let total_of = |label: &str| v["steps"].as_array().unwrap().iter().find(|s| s["label"] == label).map(|s| s["total"].as_u64().unwrap()).unwrap_or_else(|| panic!("没有阶段 {label}：{}", v["steps"]));
+    assert_eq!(total_of("流程 biz"), 2, "biz 自己跑登录");
+    assert_eq!(total_of("流程 biz3"), 1, "biz3 与 biz 依赖相同，沿用登录态，不再登录");
+    assert_eq!(total_of("流程 guest"), 1);
+}
+
 /// 远程浏览器：另起一个开着调试端口的 Chrome（相当于 Docker / 另一台机器上的浏览器），用 web.endpoint 连接
 #[test]
 fn web_case_runs_on_remote_browser_via_endpoint() {

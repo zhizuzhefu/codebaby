@@ -141,7 +141,8 @@ pub fn style_notice(id: &'static str, issues: &[ValidationIssue], env: &str, cx:
         (0, m) => format!("另有 {m} 条写法建议，不影响验收结果，交给 AI 处理"),
         (k, m) => format!("另有 {} 条写法建议，不影响验收结果：{k} 条可以自动改写，{m} 条交给 AI 处理", k + m),
     };
-    let brief = validate::ai_brief(issues, env);
+    let pending = !validate::ai_brief(issues, env).is_empty();
+    let prompt = validate::ai_prompt(issues, env);
     Some(
         h_flex()
             .gap_2()
@@ -149,17 +150,17 @@ pub fn style_notice(id: &'static str, issues: &[ValidationIssue], env: &str, cx:
             .text_xs()
             .text_color(cx.theme().muted_foreground)
             .child(div().flex_1().min_w_0().child(text))
-            .when(!brief.is_empty(), |this| {
+            .when(pending, |this| {
                 this.child(
                     Button::new(id)
                         .xsmall()
                         .outline()
                         .icon(IconName::Bot)
                         .label("复制给 AI")
-                        .tooltip("复制修改指令：粘贴到 AI 对话，它会逐条改好并复验（命令行：requestbaby validate --report json）")
+                        .tooltip("复制给 AI：待改的写法 + 写法速查，粘贴到 AI 对话，它会逐条改好并复验（命令行：requestbaby validate --report json）")
                         .on_click(move |_, window, cx| {
-                            cx.write_to_clipboard(ClipboardItem::new_string(brief.clone()));
-                            push_brief(window, cx, Notification::success("已复制修改指令：粘贴给 AI 即可"));
+                            cx.write_to_clipboard(ClipboardItem::new_string(prompt.clone()));
+                            push_brief(window, cx, Notification::success("已复制：粘贴给 AI 即可"));
                         }),
                 )
             })

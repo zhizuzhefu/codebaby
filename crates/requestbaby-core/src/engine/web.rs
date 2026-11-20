@@ -38,6 +38,8 @@ pub struct WebPage<'b> {
     requests: std::collections::HashMap<String, String>,
     notes: Vec<String>,
     started: Instant,
+    /// 为沿用登录态注入网页存储的脚本：第一次打开页面后撤掉，之后页面自己怎么改存储都不再干预
+    storage_script: Option<String>,
 }
 
 impl<'b> WebPage<'b> {
@@ -65,6 +67,7 @@ impl<'b> WebPage<'b> {
             requests: Default::default(),
             notes: vec![],
             started: Instant::now(),
+            storage_script: None,
         };
         for m in ["Page.enable", "Runtime.enable", "Network.enable", "Log.enable", "DOM.enable", "Accessibility.enable"] {
             page.call(m, json!({}))?;
@@ -276,6 +279,39 @@ impl<'b> WebPage<'b> {
         let ctx = self.context.clone();
         self.b.cdp.call(None, "Storage.setCookies", json!({ "cookies": list, "browserContextId": ctx }), CALL)?;
         Ok(())
+    }
+
+    /// 把会话里已有的网页存储（localStorage / sessionStorage）放进页面：在页面自己的脚本启动前写入，
+    /// 只写与当前站点（origin）匹配的那份，且只在第一次打开页面时生效（前端应用因此认为「已登录」）
+    pub fn inject_storage(&mut self, storage: &crate::cookies::WebStorage) -> Result<()> {
+        if storage.is_empty() {
+            return Ok(());
+        }
+        let map: serde_json::Map<String, Value> = storage
+            .iter()
+            .map(|(origin, s)| (origin.clone(), json!({ "local": s.local, "session": s.session })))
+            .collect();
+        let source = format!(
+            "(()=>{{try{{const all={};const e=all[location.origin];if(!e)return;\
+             for(const [k,v] of Object.entries(e.local||{{}}))localStorage.setItem(k,v);\
+             for(const [k,v] of Object.entries(e.session||{{}}))sessionStorage.setItem(k,v);}}catch(_){{}}}})();",
+            Value::Object(map)
+        );
+        let r = self.call("Page.addScriptToEvaluateOnNewDocument", json!({ "source": source }))?;
+        self.storage_script = r["identifier"].as_str().map(String::from);
+        Ok(())
+    }
+
+    /// 页面当前站点的网页存储（用例结束时取走，给后面的用例沿用）；about:blank / 错误页没有，返回 None
+    pub fn read_storage(&mut self) -> Option<(String, crate::cookies::OriginStorage)> {
+        let expr = "(()=>{try{if(!['http:','https:','file:'].includes(location.protocol))return null;\
+            return JSON.stringify({o:location.origin,l:Object.fromEntries(Object.entries(localStorage)),s:Object.fromEntries(Object.entries(sessionStorage))});}catch(_){return null;}})()";
+        let text = self.eval(expr).ok()?;
+        let v: Value = serde_json::from_str(text.as_str()?).ok()?;
+        let pairs = |k: &str| -> std::collections::BTreeMap<String, String> {
+            v[k].as_object().map(|o| o.iter().filter_map(|(a, b)| Some((a.clone(), b.as_str()?.to_string()))).collect()).unwrap_or_default()
+        };
+        Some((v["o"].as_str()?.to_string(), crate::cookies::OriginStorage { local: pairs("l"), session: pairs("s") }))
     }
 
     /// 页面上用户看得到、能操作的元素（无障碍树）：(角色, 名称, 状态)
@@ -755,7 +791,11 @@ impl UiDriver for WebPage<'_> {
             self.loading = false;
         }
         let t = self.nav_timeout;
-        self.wait_loaded(t).with_context(|| format!("打开 {target}"))
+        let loaded = self.wait_loaded(t).with_context(|| format!("打开 {target}"));
+        if let Some(id) = self.storage_script.take() {
+            let _ = self.call("Page.removeScriptToEvaluateOnNewDocument", json!({ "identifier": id }));
+        }
+        loaded
     }
 
     fn launch(&mut self, _clear: bool) -> Result<()> {

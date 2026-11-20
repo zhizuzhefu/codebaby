@@ -32,7 +32,7 @@ pub fn ai_brief(issues: &[ValidationIssue], env: &str) -> String {
     }
     let mut files: Vec<&str> = todo.iter().map(|i| i.file.as_str()).collect();
     files.dedup();
-    let mut out = String::from("请修改 requestbaby 项目里下面这些用例的写法（路径相对项目根；只改写法，不改变验收的内容）。先读 `requestbaby guide` 了解写法。\n");
+    let mut out = String::from("请修改 requestbaby 项目里下面这些文件的写法（路径相对项目根；只改写法与编排，不改变验收的内容）。先读 `requestbaby guide` 了解写法（流程相关读 `requestbaby guide flow`）。\n");
     for f in files {
         out.push_str(&format!("\n{f}\n"));
         for i in todo.iter().filter(|i| i.file == f) {
@@ -40,8 +40,20 @@ pub fn ai_brief(issues: &[ValidationIssue], env: &str) -> String {
         }
     }
     let e = if env.is_empty() { String::new() } else { format!(" -e {env}") };
-    out.push_str(&format!("\n改完执行 `requestbaby validate{e}` 确认这些建议消失，再 `requestbaby run{e}` 确认结论没变。\n"));
+    out.push_str(&format!("\n改完执行 `requestbaby validate{e}` 确认这些建议消失，再 `requestbaby verify{e}` 确认结论没变。\n"));
     out
+}
+
+/// 「复制给 AI」的完整内容：有待改的写法建议时，先是修改指令，再附写法速查（AI 在聊天里、读不到本机命令时也能照着改）；
+/// 没有待改的就只是写法速查。桌面端所有「复制给 AI」入口用的都是它
+pub fn ai_prompt(issues: &[ValidationIssue], env: &str) -> String {
+    let card = crate::guide::quickstart();
+    let brief = ai_brief(issues, env);
+    if brief.is_empty() {
+        card
+    } else {
+        format!("{brief}\n---\n以下是 requestbaby 的写法速查（与已安装版本一致）：\n\n{card}")
+    }
 }
 
 pub const CASE_SCHEMA: &str = include_str!("../../../docs/schema/case.schema.json");
@@ -112,9 +124,11 @@ pub fn validate_paths(paths: &[std::path::PathBuf], env_name: &str) -> Result<Ve
                             issues.push(ValidationIssue { fixable: false, file: pf.display().to_string(), level: "error", rule: "proxy-url", message });
                         }
                     }
+                    // 写法建议：多个流程各自重复同一个开头（如登录）→ 抽成被依赖的流程
+                    push_advice(&pf.display().to_string(), crate::teach::project_advice(&p), &mut issues);
                     // workflow step.run 存在性
                     for (wf_name, wf) in &p.workflows {
-                        if wf.steps.is_empty() {
+                        if wf.steps.is_empty() && wf.needs.is_empty() {
                             issues.push(ValidationIssue {
                                 fixable: false,
                                 file: pf.display().to_string(),
@@ -122,6 +136,21 @@ pub fn validate_paths(paths: &[std::path::PathBuf], env_name: &str) -> Result<Ve
                                 rule: "workflow-empty",
                                 message: format!("流程 {wf_name} 没有步骤，运行会直接报错"),
                             });
+                        }
+                        // 依赖：流程要存在、不能成环、固定的环境要一致
+                        if !wf.needs.is_empty() {
+                            let problem = match crate::workflow::needs_closure(&p, wf_name) {
+                                Err(e) => Some(("error", format!("workflows.{wf_name}.needs：{e:#}"))),
+                                Ok(deps) => deps.iter().find_map(|d| {
+                                    let pinned = p.workflows[d.as_str()].env.as_deref()?;
+                                    (wf.env.as_deref() != Some(pinned)).then(|| {
+                                        ("warn", format!("workflows.{wf_name} 依赖的流程 {d} 固定在环境 {pinned}，本流程没有固定在同一个环境：只能用 -e {pinned} 运行；依赖流程去掉 env，或本流程也固定到 {pinned}"))
+                                    })
+                                }),
+                            };
+                            if let Some((level, message)) = problem {
+                                issues.push(ValidationIssue { fixable: false, file: pf.display().to_string(), level, rule: "workflow-needs", message });
+                            }
                         }
                         if let Some(env) = &wf.env {
                             if !crate::config::env_path(root, env).exists() {
@@ -869,5 +898,9 @@ mod tests {
         assert!(brief.contains("requestbaby validate -e dev"), "{brief}");
         assert!(ai_brief(&issues[1..], "").is_empty());
         assert!(ai_brief(&issues[..1], "").contains("`requestbaby validate`"));
+        // 「复制给 AI」只有一份：有待改的 = 指令 + 速查；没有 = 速查
+        let full = ai_prompt(&issues, "dev");
+        assert!(full.starts_with("请修改") && full.contains("写法速查") && full.contains("## 5 个概念"), "{full}");
+        assert_eq!(ai_prompt(&issues[1..], "dev"), crate::guide::quickstart());
     }
 }

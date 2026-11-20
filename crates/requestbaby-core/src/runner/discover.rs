@@ -12,7 +12,7 @@ pub struct DiscoveredCase {
     pub chain: Vec<Collection>,
 }
 
-const IGNORED_DIRS: &[&str] = &["envs", "node_modules", ".git", "target", ".idea", ".vscode"];
+const IGNORED_DIRS: &[&str] = &["envs", "node_modules", ".git", ".requestbaby", "target", ".idea", ".vscode"];
 
 /// 项目根配置文件名
 pub const PROJECT_FILE: &str = "requestbaby.json";

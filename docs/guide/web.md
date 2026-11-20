@@ -6,7 +6,7 @@ AI 改完前端，「接口都通过」不等于「用户能用」。Web 用例�
 
 - 不需要 Playwright / Node / WebDriver：直接驱动本机浏览器（Chrome DevTools 协议），缺省无界面运行
 - 运行和判定不调用任何大模型、不消耗 token：同样的用例每次得到同样的结论
-- 每个用例一个全新的浏览器环境（Cookie、存储互不影响）
+- 每个用例一个全新的浏览器环境；同一次运行里，前面用例留下的登录态（Cookie、localStorage / sessionStorage）会带给后面的 Web 用例，登录一次即可（见 `requestbaby guide flow` 的「依赖与登录态」）；要换账号用流程步骤的 `as`
 
 ## 一个完整的用例
 

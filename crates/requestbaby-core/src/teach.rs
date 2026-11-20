@@ -24,6 +24,7 @@ pub const STYLE_RULES: &[&str] = &[
     "hardcoded-base-url",
     "redundant-number",
     "env-guard-script",
+    "shared-flow-prefix",
 ];
 
 /// 一条写法建议
@@ -78,6 +79,45 @@ impl Context {
         let dir = std::fs::canonicalize(dir).unwrap_or_else(|_| dir.to_path_buf());
         self.pinned.iter().find(|(d, _, _)| dir.starts_with(d)).map(|(_, e, k)| (e.as_str(), k.as_str()))
     }
+}
+
+/// 项目（requestbaby.json）：多个流程都以同一步开头（典型是各自从登录开始）→ 建议抽成单独的流程，其他流程用 needs 依赖它。
+/// 只给没有依赖的流程提建议（已经用 needs 的不再提）；要改动多处，由 AI 按消息里的命令执行，不能自动改写
+pub fn project_advice(project: &crate::config::Project) -> Vec<Advice> {
+    use std::collections::BTreeMap;
+    let mut groups: BTreeMap<(String, Option<String>), Vec<&str>> = BTreeMap::new();
+    for (key, wf) in &project.workflows {
+        if let (true, Some(first)) = (wf.needs.is_empty(), wf.steps.first()) {
+            groups.entry((first.run.trim_end_matches('/').to_string(), first.as_user.clone())).or_default().push(key);
+        }
+    }
+    let mut out = vec![];
+    for ((run, user), flows) in groups.into_iter().filter(|(_, f)| f.len() >= 2) {
+        let stem = run.rsplit('/').next().unwrap_or(&run).trim_end_matches(".json");
+        let stem: String = stem.trim_start_matches(|c: char| c.is_ascii_digit() || c == '-' || c == '_').chars().filter(|c| !c.is_whitespace()).collect();
+        let base = if stem.is_empty() { "shared".to_string() } else { format!("base-{stem}") };
+        let base = if project.workflows.contains_key(&base) { format!("{base}-1") } else { base };
+        let as_arg = user.as_ref().map(|u| format!(" --as {u}")).unwrap_or_default();
+        let mut cmds = vec![if user.is_some() {
+            format!("requestbaby workflow new {base} ; requestbaby workflow step add {base} {run}{as_arg}")
+        } else {
+            format!("requestbaby workflow new {base} --step {run}")
+        }];
+        for f in &flows {
+            cmds.push(format!("requestbaby workflow step rm {f} 1"));
+            cmds.push(format!("requestbaby workflow needs {f} add {base}"));
+        }
+        out.push(advice(
+            "shared-flow-prefix",
+            false,
+            format!(
+                "流程 {} 的第一步都是 {run}（常见于每个流程都先登录）：把它抽成单独的流程，其他流程用 needs 依赖它，同一次运行只跑一次、登录态（Cookie、localStorage、捕获的变量）沿用。依次执行：{}（guide flow）",
+                flows.join("、"),
+                cmds.join(" ; ")
+            ),
+        ));
+    }
+    out
 }
 
 /// 用例：返回改写后的文档（只含可自动改写的部分）与全部建议
@@ -1184,5 +1224,29 @@ mod tests {
             }
         }
         assert_eq!(compared, exprs.len() * bodies.len() * 2);
+    }
+
+    /// 多个流程都以同一步（登录）开头 → 建议抽成被依赖的流程，消息里带可直接执行的命令；已经用 needs 的不再提
+    #[test]
+    fn repeated_first_step_suggests_a_shared_flow_with_commands() {
+        use crate::config::{Project, Workflow, WorkflowStep};
+        let step = |run: &str| WorkflowStep { run: run.into(), ..Default::default() };
+        let mut p = Project::default();
+        let wf = |steps: &[&str], needs: &[&str]| Workflow { steps: steps.iter().map(|r| step(r)).collect(), needs: needs.iter().map(|n| n.to_string()).collect(), ..Default::default() };
+        p.workflows.insert("order".into(), wf(&["collections/00-auth", "collections/10-order"], &[]));
+        p.workflows.insert("report".into(), wf(&["collections/00-auth", "collections/20-report"], &[]));
+        p.workflows.insert("other".into(), wf(&["collections/30-other"], &[]));
+        let a = project_advice(&p);
+        assert_eq!(a.len(), 1);
+        assert_eq!(a[0].rule, "shared-flow-prefix");
+        assert!(!a[0].fixable && STYLE_RULES.contains(&a[0].rule));
+        let m = &a[0].message;
+        assert!(m.contains("order、report") && m.contains("requestbaby workflow new base-auth --step collections/00-auth"), "{m}");
+        assert!(m.contains("requestbaby workflow step rm order 1") && m.contains("requestbaby workflow needs report add base-auth"), "{m}");
+        // 已经依赖了登录流程的不再提示
+        p.workflows.insert("base-auth".into(), wf(&["collections/00-auth"], &[]));
+        p.workflows.insert("order".into(), wf(&["collections/10-order"], &["base-auth"]));
+        p.workflows.insert("report".into(), wf(&["collections/20-report"], &["base-auth"]));
+        assert!(project_advice(&p).is_empty());
     }
 }

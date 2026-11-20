@@ -34,8 +34,8 @@ requestbaby validate -e dev --report json
 ]
 ```
 
-- error 规则：`schema` `json-parse` `serde-parse` `script-syntax` `expect-path` `expect-matcher` `expect-status-dup` `capture-source` `cases-file` `multipart-file` `workflow-path` `workflow-env` `env-missing`
-- warn 规则（写法建议，消息里带 `guide <主题>`）：`prefer-expect` `prefer-capture` `legacy-expect-status` `long-js-test` `hardcoded-base-url` `redundant-number` `env-guard-script` `undefined-var` `workflow-empty`
+- error 规则：`schema` `json-parse` `serde-parse` `script-syntax` `expect-path` `expect-matcher` `expect-status-dup` `capture-source` `cases-file` `multipart-file` `workflow-path` `workflow-env` `workflow-needs` `env-missing`
+- warn 规则（写法建议，消息里带 `guide <主题>`）：`prefer-expect` `prefer-capture` `legacy-expect-status` `long-js-test` `hardcoded-base-url` `redundant-number` `env-guard-script` `undefined-var` `workflow-empty` `workflow-needs`（依赖的流程固定了别的环境）
 - `"fixable": true` 的由 `requestbaby fmt --fix` 自动改写（语义不变）；`requestbaby fmt --fix --check` 只列出不改
 
 ## 运行与报告
