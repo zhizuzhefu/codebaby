@@ -251,6 +251,27 @@ impl RunState {
         self.responses.get(file).map(|(t, _)| *t)
     }
 
+    /// 清空结果区（运行记录被清理光后：不再展示已不存在的那次运行）。运行中不动
+    pub fn clear_results(&mut self, cx: &mut Context<Self>) {
+        if self.is_running() {
+            return;
+        }
+        self.rows.clear();
+        self.steps.clear();
+        self.logs.clear();
+        self.workflow = None;
+        self.verify = false;
+        self.source = ResultsSource::Live;
+        self.command.clear();
+        self.planned = 0;
+        self.elapsed_ms = 0;
+        self.report = None;
+        self.current = None;
+        self.live = None;
+        self.phase = Phase::Idle;
+        cx.notify();
+    }
+
     /// 结果表展示历史中的一次运行（只读）
     pub fn show_report(&mut self, report: &RunReport, cx: &mut Context<Self>) {
         if self.is_streaming() {

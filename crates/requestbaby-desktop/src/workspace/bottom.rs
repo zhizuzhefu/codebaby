@@ -764,7 +764,7 @@ impl Workspace {
             move |window, cx| {
                 let _ = this.update(cx, |w, cx| match history::clean(&root, clean) {
                     Ok(n) => {
-                        w.after_history_cleaned(cx);
+                        w.after_history_cleaned(window, cx);
                         window.push_notification(Notification::success(format!("已清理 {n} 条运行记录")), cx);
                     }
                     Err(e) => window.push_notification(Notification::error(format!("{e:#}")), cx),
@@ -773,19 +773,25 @@ impl Workspace {
         );
     }
 
-    /// 清理后：刷新列表；结果区正展示的记录已被删除时改为展示最近一条
-    fn after_history_cleaned(&mut self, cx: &mut Context<Self>) {
+    /// 清理后：刷新列表；结果区正展示的记录已被删除时改为展示最近一条，一条不剩则清空结果区与响应面板里的历史残留
+    fn after_history_cleaned(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.reload_history(cx);
         let gone = match self.run.read(cx).source() {
             ResultsSource::History(id) => !self.project.history().iter().any(|r| r.meta.as_ref().is_some_and(|m| &m.id == id)),
             ResultsSource::Live => false,
         };
-        if gone {
-            if let Some(latest) = self.project.history().first().cloned() {
+        match self.project.history().first().cloned() {
+            Some(latest) if gone => {
                 self.run.update(cx, |r, cx| r.show_report(&latest, cx));
+                self.selected_row = None;
             }
-            self.selected_row = None;
+            None => {
+                self.run.update(cx, |r, cx| r.clear_results(cx));
+                self.selected_row = None;
+            }
+            _ => {}
         }
+        self.refresh_open_response(window, cx);
         cx.notify();
     }
 }
