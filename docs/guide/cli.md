@@ -70,7 +70,7 @@ requestbaby init                          # 项目骨架 + AGENTS.md / CLAUDE.md
 requestbaby guide --init                  # 已有项目补 AGENTS.md / CLAUDE.md
 requestbaby schema --all                  # 四类配置文件的 JSON Schema
 requestbaby about                         # 版本、官网、源码、文档与反馈地址
-requestbaby upgrade                       # 升级到最新版本（--check 只检查，有新版本时 exit 1）
+requestbaby upgrade                       # 升级到最新版本（--check 只检查，有新版本时 exit 1；在 App 里的命令行随 App 自动更新）
 requestbaby doctor                        # 环境自检：引擎 / 配置 / 环境文件 / baseUrl 可达 / 浏览器 / adb / agent-desktop 与权限
 requestbaby import openapi.json -o api/   # OpenAPI 3 / Swagger 2 / Postman v2.1 → 用例
 requestbaby grpc list                     # gRPC 服务的全部方法；grpc describe <方法> 看请求消息骨架

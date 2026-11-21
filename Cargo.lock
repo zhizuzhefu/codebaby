@@ -5805,6 +5805,7 @@ dependencies = [
  "hyper-util",
  "image",
  "jsonschema",
+ "libc",
  "md-5",
  "prost",
  "prost-reflect",

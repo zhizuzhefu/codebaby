@@ -30,7 +30,7 @@ use std::path::PathBuf;
 
 actions!(
     requestbaby,
-    [SaveCase, SendCase, RunAll, RunWithOptions, Verify, StopRun, ToggleTheme, OpenProject, NewProject, ImportSpec, CloseProject, CopyProjectPath, ExportResults, Quit, QuickOpen, FindInTree, InstallCli, ManageEnvs, OpenWebsite, OpenDocs, ReportIssue]
+    [SaveCase, SendCase, RunAll, RunWithOptions, Verify, StopRun, ToggleTheme, OpenProject, NewProject, ImportSpec, CloseProject, CopyProjectPath, ExportResults, Quit, QuickOpen, FindInTree, InstallCli, ManageEnvs, OpenWebsite, OpenDocs, ReportIssue, CheckUpdate, RestartToUpdate]
 );
 
 fn main() {
@@ -62,6 +62,14 @@ fn main() {
         cx.on_action(|_: &OpenWebsite, cx| cx.open_url(requestbaby_core::about::WEBSITE));
         cx.on_action(|_: &OpenDocs, cx| cx.open_url(requestbaby_core::about::DOCS));
         cx.on_action(|_: &ReportIssue, cx| cx.open_url(requestbaby_core::about::ISSUES));
+        // 已下载并校验好新版本时，退出就是安装时机：把替换交给独立的更新程序（它等本进程退出后原子替换，失败保留旧版本）
+        cx.on_app_quit(|_| {
+            if let Some(p) = requestbaby_core::update_app::read_pending() {
+                let _ = requestbaby_core::update_app::spawn_apply(&p, false, 180);
+            }
+            async {}
+        })
+        .detach();
         // 单窗口应用：窗口关闭即退出，不留下没有窗口的 Dock 图标
         cx.on_window_closed(|cx, _| {
             if cx.windows().is_empty() {
@@ -72,6 +80,9 @@ fn main() {
         cx.set_menus([
             Menu::new("requestbaby").items([
                 MenuItem::action("关于 requestbaby（官网）", OpenWebsite),
+                MenuItem::separator(),
+                MenuItem::action("检查更新…", CheckUpdate),
+                MenuItem::action("重启并更新…", RestartToUpdate),
                 MenuItem::separator(),
                 MenuItem::action("安装命令行工具…", InstallCli),
                 MenuItem::separator(),

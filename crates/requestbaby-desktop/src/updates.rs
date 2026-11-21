@@ -1,18 +1,22 @@
-//! 更新检查的应用级偏好：是否自动检查、上次检查时间（每天最多自动检查一次）。
+//! 自动更新的应用级偏好：是否自动更新、上次检查时间、已知安装失败的版本。
 //! 与 recent.rs 同在应用配置目录，不属于任何项目。
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
-const INTERVAL_MS: u64 = 24 * 3600 * 1000;
+/// 启动时距上次检查超过这么久才再查（运行期间也按这个间隔后台复查）
+pub const INTERVAL_MS: u64 = 6 * 3600 * 1000;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Prefs {
-    /// 启动时自动检查新版本（缺省开启；环境变量 REQUESTBABY_NO_UPDATE_CHECK=1 也可关闭）
+    /// 自动更新：后台检查、下载并校验新版本，退出时自动安装（缺省开启；环境变量 REQUESTBABY_NO_UPDATE_CHECK=1 也可关闭）
     #[serde(default = "yes")]
     pub auto: bool,
     #[serde(default)]
     pub last_check_ms: u64,
+    /// 上次安装失败的版本：自动更新不再重试它（出了更新的版本，或手动检查时才再试）
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub failed_version: Option<String>,
 }
 
 fn yes() -> bool {
@@ -21,7 +25,7 @@ fn yes() -> bool {
 
 impl Default for Prefs {
     fn default() -> Self {
-        Self { auto: true, last_check_ms: 0 }
+        Self { auto: true, last_check_ms: 0, failed_version: None }
     }
 }
 

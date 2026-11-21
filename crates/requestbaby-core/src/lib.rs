@@ -28,6 +28,7 @@ pub mod session;
 pub mod suggest;
 pub mod teach;
 pub mod update;
+pub mod update_app;
 pub mod validate;
 pub mod vars;
 pub mod varstore;

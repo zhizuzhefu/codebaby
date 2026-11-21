@@ -162,7 +162,7 @@ AI 依据报错自修复 → 循环直到通过
   远程执行：Web 可连远程浏览器（`web.endpoint`：http 调试端口经 /json/version 解析并改写主机，或直接 ws/wss，
   wss 复用 rustls + 平台证书校验；远程浏览器只断开不关闭），Android 网络序列号自动 `adb connect`、`android.server` 连远程 adb server。
 - **发布与更新**（`update`）：GitHub Release 是唯一渠道；检查 / 下载 / SHA256 校验 / 替换自身只在 core 实现一遍，
-  `requestbaby upgrade` 与桌面端「新版本」共用，走统一代理规则。DMG 与命令行包都在本机构建，DMG 签名公证后上传，不使用 CI（见 docs/RELEASING.md）
+  `requestbaby upgrade` 与桌面端自动更新共用，走统一代理规则。桌面端自动更新（`update_app`）：后台下载 DMG → 挂载拷出 .app 到被替换 App 旁边的暂存位置（同卷）→ 在暂存副本上校验（版本、bundle ID、`codesign --verify --deep --strict`、与当前 App 同一 Team ID、`spctl` 公证评估、自带命令行能运行）→ 退出时把替换交给拷到 .app 之外的更新程序（`requestbaby __apply-update`）：等所有 requestbaby 进程退出、替换前再校验、`renamex_np(RENAME_SWAP)` 原子交换、交换后复检（不对就换回）、写日志与结果文件；动手前发现没有写权限 / 被系统隔离运行 / 开发构建就退回手动下载 DMG。DMG 与命令行包都在本机构建，DMG 签名公证后上传，不使用 CI（见 docs/RELEASING.md）
 - **代理**（`engine::proxy`）：一条规则（跟随系统 = 环境变量 → macOS 系统代理设置 / 使用代理 / 直连，本机地址始终直连）覆盖全部对外连接。
   libcurl 原生代理；gRPC / WebSocket / CDP 用自带的 SOCKS5 / HTTP CONNECT 拨号器；本机浏览器经进程内 SOCKS5 中转（浏览器不支持带认证的 SOCKS5）；
   adb 经本地转发端口。设置读写在 `proxy_setting`（CLI `requestbaby proxy` 与桌面端项目设置共用）

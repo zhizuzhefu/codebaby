@@ -97,6 +97,22 @@ enum Cmd {
         #[arg(long)]
         check: bool,
     },
+    /// （内部）桌面端自动更新的替换程序：等 App 退出后原子替换并复检，由 App / `upgrade` 自动调用，不需要手动运行
+    #[command(name = "__apply-update", hide = true)]
+    ApplyUpdate {
+        #[arg(long)]
+        pid: u32,
+        #[arg(long)]
+        app: PathBuf,
+        #[arg(long)]
+        staged: PathBuf,
+        #[arg(long)]
+        version: String,
+        #[arg(long)]
+        relaunch: bool,
+        #[arg(long, default_value_t = 180)]
+        wait_secs: u64,
+    },
     /// 代理：所有对外连接（HTTP / gRPC / WebSocket / 浏览器 / adb）经同一个代理。不带参数显示当前设置并检查代理
     Proxy {
         #[command(subcommand)]
@@ -725,6 +741,12 @@ fn main() -> ExitCode {
             0
         }
         Cmd::Upgrade { check } => cmd_upgrade(check),
+        Cmd::ApplyUpdate { pid, app, staged, version, relaunch, wait_secs } => {
+            match requestbaby_core::update_app::apply(&requestbaby_core::update_app::ApplyArgs { pid, app, staged, version, relaunch, wait_secs }) {
+                Ok(()) => 0,
+                Err(_) => 1,
+            }
+        }
         Cmd::Env { action } => cmd_env(action.unwrap_or(EnvCmd::List { json: false })),
         Cmd::Case { action: CaseCmd::New(a) } => cmd_new(NewCmd::Case(a)),
         Cmd::Case { action } => cmd_item(action.into()),
@@ -988,7 +1010,7 @@ fn cmd_upgrade(check: bool) -> u8 {
         return err(format!("这个系统（{} {}）没有现成的命令行安装包：到 {} 下载，或用 cargo install 从源码安装", std::env::consts::OS, std::env::consts::ARCH, rel.page));
     };
     if update::exe_in_app_bundle(&std::env::current_exe().unwrap_or_default()) {
-        return err("当前的 requestbaby 在 requestbaby.app 里：用 App 的「检查更新」或重新安装 DMG；命令行会随 App 一起更新");
+        return upgrade_app_bundle(&rel, &proxy);
     }
     println!("下载 {}（{:.1} MB）…", asset.name, asset.size as f64 / 1_048_576.0);
     let dir = std::env::temp_dir().join(format!("requestbaby-download-{}", std::process::id()));
@@ -1001,6 +1023,25 @@ fn cmd_upgrade(check: bool) -> u8 {
         }
         Err(e) => err(format!("{e:#}")),
     }
+}
+
+/// 命令行在 requestbaby.app 里：与桌面端同一套自动更新（下载 → 校验 → 退出后原子替换）；命令行随 App 一起更新
+fn upgrade_app_bundle(rel: &requestbaby_core::update::Release, proxy: &requestbaby_core::engine::proxy::ProxyPolicy) -> u8 {
+    use requestbaby_core::update_app as ua;
+    if let Some(why) = ua::current_app().and_then(|a| ua::self_update_blocker(&a)) {
+        return err(format!("不能自动更新：{why}；或到 {} 手动下载 DMG", rel.page));
+    }
+    println!("下载并校验 {}（签名 / 团队 / 公证 / 能运行）…", rel.version);
+    let pending = match ua::stage(rel, proxy) {
+        Ok(p) => p,
+        Err(e) => return err(format!("{e:#}（当前版本没有任何改动）")),
+    };
+    // 本进程一退出（以及所有 requestbaby 窗口都关掉后）更新程序就会替换；等得久一些，给用户时间退出 App
+    if let Err(e) = ua::spawn_apply(&pending, false, 900) {
+        return err(format!("{e:#}（新版本已暂存，下次打开桌面端退出时会自动安装）"));
+    }
+    println!("\x1b[32m✓\x1b[0m {} 已下载并校验。退出所有 requestbaby 窗口后会自动替换（15 分钟内），失败会保留当前版本", pending.version);
+    0
 }
 
 fn cmd_proxy(action: Option<ProxyCmd>) -> u8 {

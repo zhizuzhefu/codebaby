@@ -24,7 +24,7 @@ use crate::run::{RunJob, RunState, RunStateEvent, StepState, StepView};
 use crate::run_dialog::{RunDialogInit, RunOptionsPanel};
 use crate::shell::ShellRequest;
 use crate::export_dialog::{CollectionItem, ExportPanel, RunChoice, Selection};
-use crate::{CopyProjectPath, ExportResults, FindInTree, ManageEnvs, QuickOpen, RunAll, RunWithOptions, SaveCase, SendCase, StopRun, ToggleTheme, Verify};
+use crate::{CheckUpdate, CopyProjectPath, ExportResults, FindInTree, ManageEnvs, RestartToUpdate, QuickOpen, RunAll, RunWithOptions, SaveCase, SendCase, StopRun, ToggleTheme, Verify};
 use futures::StreamExt as _;
 use futures::channel::mpsc;
 use gpui_kit::component::{
@@ -121,6 +121,10 @@ pub struct Workspace {
     /// 检查到的新版本（状态栏提示）
     update: Option<requestbaby_core::update::Release>,
     update_busy: bool,
+    /// 已下载并校验、暂存好待安装的新版本（退出时自动安装）
+    update_ready: Option<requestbaby_core::update_app::Pending>,
+    /// 正在后台下载 / 校验新版本
+    update_staging: bool,
     _watcher: Option<notify::RecommendedWatcher>,
     _watch_task: Option<Task<()>>,
     _validate_task: Option<Task<()>>,
@@ -202,6 +206,8 @@ impl Workspace {
             focus_handle: cx.focus_handle(),
             update: None,
             update_busy: false,
+            update_ready: None,
+            update_staging: false,
             _watcher: None,
             _watch_task: None,
             _validate_task: None,
@@ -1507,6 +1513,7 @@ impl Workspace {
     fn render_more_menu(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let view = cx.entity().downgrade();
         let proxy = self.proxy_mode();
+        let ready_update = self.update_ready.as_ref().map(|p| p.version.clone());
         // 「复制给 AI」只有一个入口：有待改的写法建议时附上修改指令，没有就是写法速查
         let pending = !validate::ai_brief(&self.validation.issues, &self.env).is_empty();
         let ai_prompt = validate::ai_prompt(&self.validation.issues, &self.env);
@@ -1545,6 +1552,7 @@ impl Workspace {
                     }
                 }));
             menu.separator()
+                .when_some(ready_update.clone(), |m, v| m.item(Workspace::restart_update_item(&view, v)))
                 .item(Workspace::check_update_item(&view))
                 .item(Workspace::auto_update_item(&view))
                 .separator()
@@ -1592,6 +1600,8 @@ impl Render for Workspace {
             .on_action(cx.listener(|this, _: &CopyProjectPath, window, cx| this.copy_project_path(window, cx)))
             .on_action(cx.listener(|this, _: &ExportResults, window, cx| this.open_export_dialog(window, cx)))
             .on_action(cx.listener(|this, _: &ManageEnvs, window, cx| this.open(Target::Envs, window, cx)))
+            .on_action(cx.listener(|this, _: &CheckUpdate, window, cx| this.check_update(true, window, cx)))
+            .on_action(cx.listener(|this, _: &RestartToUpdate, window, cx| this.restart_to_update(window, cx)))
             .on_action(cx.listener(|this, _: &Verify, window, cx| this.verify_all(window, cx)))
             .on_action(cx.listener(|this, _: &RunWithOptions, window, cx| this.open_run_dialog(None, window, cx)))
             .on_action(cx.listener(|this, _: &StopRun, _, cx| this.run.update(cx, |r, cx| r.stop(cx))))
