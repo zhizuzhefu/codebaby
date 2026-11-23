@@ -7,7 +7,6 @@ mod bottom;
 mod envs;
 mod proxy;
 mod sidebar;
-mod updates;
 
 use crate::case_editor::{CaseEditor, CaseEditorEvent};
 use crate::config_editors::{CollectionEditor, ConfigEditorEvent, ProjectEditor};
@@ -24,7 +23,8 @@ use crate::run::{RunJob, RunState, RunStateEvent, StepState, StepView};
 use crate::run_dialog::{RunDialogInit, RunOptionsPanel};
 use crate::shell::ShellRequest;
 use crate::export_dialog::{CollectionItem, ExportPanel, RunChoice, Selection};
-use crate::{CheckUpdate, CopyProjectPath, ExportResults, FindInTree, ManageEnvs, RestartToUpdate, QuickOpen, RunAll, RunWithOptions, SaveCase, SendCase, StopRun, ToggleTheme, Verify};
+use crate::updater::Updater;
+use crate::{CopyProjectPath, ExportResults, FindInTree, ManageEnvs, QuickOpen, RunAll, RunWithOptions, SaveCase, SendCase, StopRun, ToggleTheme, Verify};
 use futures::StreamExt as _;
 use futures::channel::mpsc;
 use gpui_kit::component::{
@@ -118,13 +118,8 @@ pub struct Workspace {
     /// 运行配置对话框上次的参数
     last_request: Option<RunRequest>,
     focus_handle: FocusHandle,
-    /// 检查到的新版本（状态栏提示）
-    update: Option<requestbaby_core::update::Release>,
-    update_busy: bool,
-    /// 已下载并校验、暂存好待安装的新版本（退出时自动安装）
-    update_ready: Option<requestbaby_core::update_app::Pending>,
-    /// 正在后台下载 / 校验新版本
-    update_staging: bool,
+    /// 应用级的更新状态（由窗口外壳持有）：这里只展示状态栏入口与「⋯」菜单项
+    updater: Entity<Updater>,
     _watcher: Option<notify::RecommendedWatcher>,
     _watch_task: Option<Task<()>>,
     _validate_task: Option<Task<()>>,
@@ -141,7 +136,7 @@ impl Focusable for Workspace {
 }
 
 impl Workspace {
-    pub fn new(root: PathBuf, window: &mut Window, cx: &mut Context<Self>) -> Self {
+    pub fn new(root: PathBuf, updater: Entity<Updater>, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let project = Project::load(root);
         let env = pick_env(&project, None);
         let env_select = cx.new(|cx| SelectState::new(env_items(&project), env_index(&project, &env), window, cx));
@@ -155,6 +150,8 @@ impl Workspace {
         let run = cx.new(|_| RunState::new());
 
         let subs = vec![
+            // 更新状态变了（检查到新版本、下载完成）要刷新状态栏入口
+            cx.observe(&updater, |_, _, cx| cx.notify()),
             cx.subscribe_in(&env_select, window, |this, _, ev: &SelectEvent<Vec<SharedString>>, window, cx| {
                 if let SelectEvent::Confirm(Some(env)) = ev {
                     this.set_env(env.to_string(), window, cx);
@@ -204,10 +201,7 @@ impl Workspace {
             validation: Validation::default(),
             last_request: None,
             focus_handle: cx.focus_handle(),
-            update: None,
-            update_busy: false,
-            update_ready: None,
-            update_staging: false,
+            updater,
             _watcher: None,
             _watch_task: None,
             _validate_task: None,
@@ -218,7 +212,6 @@ impl Workspace {
         this.rebuild_tree(cx);
         this.start_watching(window, cx);
         this.revalidate(cx);
-        this.auto_check_update(window, cx);
         // 启动时展示最近一次运行（无论来自 CLI 还是 Desktop）
         if let Some(latest) = this.project.history().first().cloned() {
             this.run.update(cx, |r, cx| r.show_report(&latest, cx));
@@ -1513,7 +1506,8 @@ impl Workspace {
     fn render_more_menu(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let view = cx.entity().downgrade();
         let proxy = self.proxy_mode();
-        let ready_update = self.update_ready.as_ref().map(|p| p.version.clone());
+        let updater = self.updater.downgrade();
+        let ready_update = self.updater.read(cx).ready_version();
         // 「复制给 AI」只有一个入口：有待改的写法建议时附上修改指令，没有就是写法速查
         let pending = !validate::ai_brief(&self.validation.issues, &self.env).is_empty();
         let ai_prompt = validate::ai_prompt(&self.validation.issues, &self.env);
@@ -1552,9 +1546,9 @@ impl Workspace {
                     }
                 }));
             menu.separator()
-                .when_some(ready_update.clone(), |m, v| m.item(Workspace::restart_update_item(&view, v)))
-                .item(Workspace::check_update_item(&view))
-                .item(Workspace::auto_update_item(&view))
+                .when_some(ready_update.clone(), |m, v| m.item(Updater::restart_item(&updater, v)))
+                .item(Updater::check_item(&updater))
+                .item(Updater::auto_item())
                 .separator()
                 .item(PopupMenuItem::new("切换深色 / 浅色").icon(IconName::Moon).on_click(|_, window, cx| window.dispatch_action(Box::new(ToggleTheme), cx)))
         })
@@ -1600,8 +1594,6 @@ impl Render for Workspace {
             .on_action(cx.listener(|this, _: &CopyProjectPath, window, cx| this.copy_project_path(window, cx)))
             .on_action(cx.listener(|this, _: &ExportResults, window, cx| this.open_export_dialog(window, cx)))
             .on_action(cx.listener(|this, _: &ManageEnvs, window, cx| this.open(Target::Envs, window, cx)))
-            .on_action(cx.listener(|this, _: &CheckUpdate, window, cx| this.check_update(true, window, cx)))
-            .on_action(cx.listener(|this, _: &RestartToUpdate, window, cx| this.restart_to_update(window, cx)))
             .on_action(cx.listener(|this, _: &Verify, window, cx| this.verify_all(window, cx)))
             .on_action(cx.listener(|this, _: &RunWithOptions, window, cx| this.open_run_dialog(None, window, cx)))
             .on_action(cx.listener(|this, _: &StopRun, _, cx| this.run.update(cx, |r, cx| r.stop(cx))))

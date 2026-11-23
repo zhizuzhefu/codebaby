@@ -17,6 +17,7 @@ mod run_dialog;
 mod shell;
 mod step_viewer;
 mod style;
+mod updater;
 mod updates;
 mod vars_editor;
 mod vars_panel;
@@ -30,7 +31,7 @@ use std::path::PathBuf;
 
 actions!(
     requestbaby,
-    [SaveCase, SendCase, RunAll, RunWithOptions, Verify, StopRun, ToggleTheme, OpenProject, NewProject, ImportSpec, CloseProject, CopyProjectPath, ExportResults, Quit, QuickOpen, FindInTree, InstallCli, ManageEnvs, OpenWebsite, OpenDocs, ReportIssue, CheckUpdate, RestartToUpdate]
+    [SaveCase, SendCase, RunAll, RunWithOptions, Verify, StopRun, ToggleTheme, OpenProject, NewProject, ImportSpec, CloseProject, CopyProjectPath, ExportResults, Quit, QuickOpen, FindInTree, InstallCli, ManageEnvs, OpenWebsite, OpenDocs, ReportIssue, CheckUpdate]
 );
 
 fn main() {
@@ -82,7 +83,6 @@ fn main() {
                 MenuItem::action("关于 requestbaby（官网）", OpenWebsite),
                 MenuItem::separator(),
                 MenuItem::action("检查更新…", CheckUpdate),
-                MenuItem::action("重启并更新…", RestartToUpdate),
                 MenuItem::separator(),
                 MenuItem::action("安装命令行工具…", InstallCli),
                 MenuItem::separator(),

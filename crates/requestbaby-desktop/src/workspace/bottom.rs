@@ -706,7 +706,7 @@ impl Workspace {
                     .text_xs()
                     .text_color(muted)
                     .when(proxy_on, |this| this.child(h_flex().gap_1().child(Icon::new(IconName::Network).xsmall()).child("代理已开启")))
-                    .when_some(self.render_update_badge(cx), |this, b| this.child(b))
+                    .when_some(self.updater.read(cx).render_badge(self.updater.downgrade()), |this, b| this.child(b))
                     .when(has_session, |this| this.child(self.render_session(cx))),
             )
     }

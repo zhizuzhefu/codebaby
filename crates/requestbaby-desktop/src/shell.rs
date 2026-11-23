@@ -1,8 +1,9 @@
 //! 窗口外壳：持有当前项目的工作区；打开 / 新建 / 导入 / 关闭项目（core::scaffold / core::importer）。
 use crate::dialogs::confirm_discard;
+use crate::updater::Updater;
 use crate::workspace::Workspace;
 use crate::recent;
-use crate::{CloseProject, ImportSpec, InstallCli, NewProject, OpenProject, ToggleTheme};
+use crate::{CheckUpdate, CloseProject, ImportSpec, InstallCli, NewProject, OpenProject, ToggleTheme};
 use gpui_kit::component::{
     ActiveTheme as _, Icon, IconName, Sizable as _, Theme, ThemeMode, TitleBar, WindowExt as _, h_flex,
     button::{Button, ButtonVariants as _},
@@ -27,6 +28,8 @@ pub enum ShellRequest {
 
 pub struct Shell {
     workspace: Option<Entity<Workspace>>,
+    /// 应用级更新状态：欢迎页和工作区共用，启动时就开始后台检查
+    updater: Entity<Updater>,
     focus_handle: FocusHandle,
     _subscription: Option<Subscription>,
 }
@@ -40,18 +43,22 @@ impl Focusable for Shell {
 impl Shell {
     /// `root` 为 None 时展示欢迎页（启动目录不是 requestbaby 项目）
     pub fn new(root: Option<PathBuf>, window: &mut Window, cx: &mut Context<Self>) -> Self {
-        let mut this = Self { workspace: None, focus_handle: cx.focus_handle(), _subscription: None };
+        let updater = cx.new(|_| Updater::default());
+        let mut this = Self { workspace: None, updater, focus_handle: cx.focus_handle(), _subscription: None };
         match root {
             Some(root) => this.open_project(root, window, cx),
             None => window.set_window_title("requestbaby"),
         }
+        this.updater.update(cx, |u, cx| u.auto_check(window, cx));
         this
     }
 
     fn open_project(&mut self, root: PathBuf, window: &mut Window, cx: &mut Context<Self>) {
         window.set_window_title(&format!("requestbaby — {}", root.display()));
         recent::remember(&root);
-        let ws = cx.new(|cx| Workspace::new(root, window, cx));
+        self.updater.update(cx, |u, _| u.root = Some(root.clone()));
+        let updater = self.updater.clone();
+        let ws = cx.new(|cx| Workspace::new(root, updater, window, cx));
         self._subscription = Some(cx.subscribe_in(&ws, window, |this, _, req: &ShellRequest, window, cx| match req {
             ShellRequest::OpenProject => this.request(Self::prompt_open, window, cx),
             ShellRequest::NewProject => this.request(Self::prompt_new, window, cx),
@@ -85,6 +92,7 @@ impl Shell {
         }
         self.workspace = None;
         self._subscription = None;
+        self.updater.update(cx, |u, _| u.root = None);
         window.set_window_title("requestbaby");
         self.focus_handle.focus(window, cx);
         cx.notify();
@@ -290,6 +298,7 @@ impl Render for Shell {
             .on_action(cx.listener(|this, _: &ImportSpec, window, cx| this.request(Self::prompt_import, window, cx)))
             .on_action(cx.listener(|this, _: &CloseProject, window, cx| this.request(Self::close_project, window, cx)))
             .on_action(cx.listener(|this, _: &InstallCli, window, cx| this.install_cli(window, cx)))
+            .on_action(cx.listener(|this, _: &CheckUpdate, window, cx| this.updater.update(cx, |u, cx| u.check(true, window, cx))))
             .on_action(cx.listener(|_, _: &ToggleTheme, window, cx| {
                 let mode = if cx.theme().mode.is_dark() { ThemeMode::Light } else { ThemeMode::Dark };
                 Theme::change(mode, Some(window), cx);
