@@ -5868,7 +5868,7 @@ checksum = "19b30a45b0cd0bcca8037f3d0dc3421eaf95327a17cad11964fb8179b4fc4832"
 
 [[package]]
 name = "requestbaby"
-version = "0.3.3"
+version = "0.3.4"
 dependencies = [
  "anyhow",
  "clap",
@@ -5881,7 +5881,7 @@ dependencies = [
 
 [[package]]
 name = "requestbaby-core"
-version = "0.3.3"
+version = "0.3.4"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
@@ -5927,7 +5927,7 @@ dependencies = [
 
 [[package]]
 name = "requestbaby-desktop"
-version = "0.3.3"
+version = "0.3.4"
 dependencies = [
  "anyhow",
  "futures",

@@ -5,7 +5,7 @@ members = ["crates/requestbaby-core", "crates/requestbaby-cli", "crates/requestb
 default-members = ["crates/requestbaby-core", "crates/requestbaby-cli"]
 
 [workspace.package]
-version = "0.3.3"
+version = "0.3.4"
 edition = "2021"
 license = "MIT"
 repository = "https://github.com/zhizuzhefu/requestbaby"
