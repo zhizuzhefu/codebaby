@@ -4,8 +4,7 @@
 #   scripts/release.sh                          完整发布：版本号 z 自动加一（0.3.0 → 0.3.1）
 #   scripts/release.sh --bump minor|major       升 x.y（0.3.z → 0.4.0 / 1.0.0）：需要人工确认，见下
 #   scripts/release.sh --confirm-version X.Y.Z  非交互环境下给出确认（必须等于将发布的版本号）
-#   scripts/release.sh --dry-run                只做发布前检查，不构建、不发布、不改版本号（会列出将发布的版本与将清理的旧版本）
-#   scripts/release.sh --keep-old               发布后保留旧版本（缺省清理）
+#   scripts/release.sh --dry-run                只做发布前检查，不构建、不发布、不改版本号（会列出将发布的版本）
 #
 # 版本号策略：从不复用版本号。已发布过的版本之上，z（补丁号）由脚本自动加一，提交并推送后再发布；
 # x.y 变化（手动改了 Cargo.toml 或用 --bump）必须人工确认：交互终端里输入新版本号，或 --confirm-version。
@@ -14,7 +13,7 @@
 #       → 本机构建 universal DMG（Developer ID 签名 + 公证）与 macOS 命令行包（Apple 芯片 / Intel）
 #       → 建 GitHub Release 草稿，传齐全部附件 → 推送 vX.Y.Z 标签
 #       → 附件核对无误后发布（用户的「检查更新」此时才看到新版本）
-#       → 清理旧版本：比这次版本旧的 Release 连同它们的标签一并删除，Release 页只留最新版
+#       （旧版本的 Release 与标签一律保留，不删除）
 #
 # 全程在本机完成，不使用 CI。Apple 凭据只在本机钥匙串里（见 scripts/build-mac-release.sh），不进仓库。
 # 需要：gh（已登录且有仓库写权限）、cargo、create-dmg、公证 profile。只发布 macOS 版（桌面端 + 命令行）。
@@ -24,16 +23,14 @@ REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$REPO_ROOT"
 
 DRY_RUN=0
-KEEP_OLD=0
 BUMP=""
 CONFIRM=""
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --dry-run) DRY_RUN=1 ;;
-    --keep-old) KEEP_OLD=1 ;;
     --bump) BUMP="${2:-}"; shift; [[ "$BUMP" == "minor" || "$BUMP" == "major" ]] || { echo "✘ --bump 只能是 minor 或 major" >&2; exit 1; } ;;
     --confirm-version) CONFIRM="${2:-}"; shift ;;
-    *) echo "✘ 不认识的参数：$1（可用 --dry-run / --keep-old / --bump minor|major / --confirm-version X.Y.Z）" >&2; exit 1 ;;
+    *) echo "✘ 不认识的参数：$1（可用 --dry-run / --bump minor|major / --confirm-version X.Y.Z）" >&2; exit 1 ;;
   esac
   shift
 done
@@ -61,14 +58,6 @@ vmax() { printf '%s\n' "$@" | sort -V | tail -1; }
 latest_released() {
   { gh release list --limit 200 --json tagName --jq '.[].tagName'; git tag -l 'v*'; } 2>/dev/null \
     | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | sed 's/^v//' | sort -V | tail -1
-}
-
-# 比这次版本旧的 Release 的标签（只认 vX.Y.Z；草稿也算；不含这次的标签）
-old_tags() {
-  gh release list --limit 200 --json tagName --jq '.[].tagName' | while read -r t; do
-    [[ "$t" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ && "$t" != "$TAG" ]] || continue
-    [[ "$(printf '%s\n%s\n' "${t#v}" "$VERSION" | sort -V | head -1)" == "${t#v}" ]] && echo "$t"
-  done
 }
 
 echo "==> 发布前检查"
@@ -113,8 +102,6 @@ fi
 echo "    版本 $VERSION · 提交 $(git rev-parse --short HEAD)"
 if [[ "$DRY_RUN" == "1" ]]; then
   [[ "$VERSION" != "$CURRENT" ]] && echo "    发布时会先把 Cargo.toml 的版本号改成 ${VERSION}，提交并推送"
-  OLD="$(old_tags | paste -sd' ' -)"
-  if [[ "$KEEP_OLD" == "1" ]]; then echo "    发布后保留旧版本（--keep-old）"; else echo "    发布后将清理旧版本：${OLD:-（没有）}"; fi
   echo "✓ 检查通过（--dry-run：未构建、未发布）"
   exit 0
 fi
@@ -167,12 +154,3 @@ fi
 gh release edit "$TAG" --draft=false --latest
 echo "✓ 已发布 ${TAG}：$(gh release view "$TAG" --json url --jq .url)"
 
-# 新版本已经发布成功，才清理旧版本：Release 连同它的标签一起删，历史上只留最新版
-if [[ "$KEEP_OLD" == "1" ]]; then
-  echo "    保留旧版本（--keep-old）"
-else
-  echo "==> 清理旧版本"
-  for t in $(old_tags); do
-    gh release delete "$t" --cleanup-tag --yes && echo "    已删除 ${t}（Release 与标签）"
-  done
-fi
