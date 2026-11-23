@@ -49,7 +49,9 @@ impl Shell {
             Some(root) => this.open_project(root, window, cx),
             None => window.set_window_title("requestbaby"),
         }
-        this.updater.update(cx, |u, cx| u.auto_check(window, cx));
+        // 更新检查会弹通知，需要窗口的根容器；这里还在建窗口的闭包里，根容器要等它返回后才有，所以推迟到窗口建好之后
+        let updater = this.updater.clone();
+        window.defer(cx, move |window, cx| updater.update(cx, |u, cx| u.auto_check(window, cx)));
         this
     }
 
