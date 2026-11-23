@@ -158,3 +158,51 @@ pub fn confirm_danger(
             })
     });
 }
+
+/// 「关于」：版本号、定位、链接；复制版本号方便反馈问题时贴上
+pub fn show_about(window: &mut Window, cx: &mut App) {
+    let version = requestbaby_core::update::CURRENT;
+    let build = format!("{version} ({} {})", std::env::consts::OS, std::env::consts::ARCH);
+    window.open_dialog(cx, move |dialog, _, cx| {
+        let muted = cx.theme().muted_foreground;
+        let build = build.clone();
+        let link = |id: &'static str, label: &'static str, url: &'static str| Button::new(id).ghost().small().icon(IconName::ExternalLink).label(label).on_click(move |_, _, cx| cx.open_url(url));
+        dialog
+            .title("关于 requestbaby")
+            .w(px(460.))
+            .child(
+                v_flex()
+                    .gap_2()
+                    .items_center()
+                    .child(Icon::new(IconName::Bot).size_8().text_color(cx.theme().primary))
+                    .child(div().text_xl().font_weight(gpui_kit::FontWeight::SEMIBOLD).child("requestbaby"))
+                    .child(div().text_sm().child(format!("版本 {version}")))
+                    .child(div().text_xs().text_color(muted).child(format!("{} · {}", if cfg!(target_os = "macos") { "macOS" } else { std::env::consts::OS }, std::env::consts::ARCH)))
+                    .child(div().pt_2().text_sm().child("AI 交付的独立验收层"))
+                    .child(div().text_xs().text_color(muted).child("辅助人对 AI 交付的成果验收 · MIT 许可"))
+                    .child(
+                        h_flex()
+                            .pt_2()
+                            .gap_1()
+                            .child(link("about-site", "官网与下载", requestbaby_core::about::WEBSITE))
+                            .child(link("about-docs", "文档", requestbaby_core::about::DOCS))
+                            .child(link("about-src", "源码", requestbaby_core::about::SOURCE))
+                            .child(link("about-issues", "反馈", requestbaby_core::about::ISSUES)),
+                    ),
+            )
+            .footer(
+                h_flex()
+                    .gap_2()
+                    .justify_end()
+                    .child(Button::new("about-copy").outline().label("复制版本号").on_click(move |_, window, cx| {
+                        cx.write_to_clipboard(ClipboardItem::new_string(format!("requestbaby {build}")));
+                        window.push_notification(Notification::success("已复制版本号"), cx);
+                    }))
+                    .child(Button::new("about-update").outline().label("检查更新").on_click(|_, window, cx| {
+                        window.close_dialog(cx);
+                        window.dispatch_action(Box::new(crate::CheckUpdate), cx);
+                    }))
+                    .child(Button::new("about-close").primary().label("好").on_click(|_, window, cx| window.close_dialog(cx))),
+            )
+    });
+}

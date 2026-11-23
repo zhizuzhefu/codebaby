@@ -3,7 +3,7 @@ use crate::dialogs::confirm_discard;
 use crate::updater::Updater;
 use crate::workspace::Workspace;
 use crate::recent;
-use crate::{CheckUpdate, CloseProject, ImportSpec, InstallCli, NewProject, OpenProject, ToggleTheme};
+use crate::{About, CheckUpdate, CloseProject, ImportSpec, InstallCli, NewProject, OpenProject, ToggleTheme};
 use gpui_kit::component::{
     ActiveTheme as _, Icon, IconName, Sizable as _, Theme, ThemeMode, TitleBar, WindowExt as _, h_flex,
     button::{Button, ButtonVariants as _},
@@ -306,6 +306,7 @@ impl Render for Shell {
             .on_action(cx.listener(|this, _: &NewProject, window, cx| this.request(Self::prompt_new, window, cx)))
             .on_action(cx.listener(|this, _: &ImportSpec, window, cx| this.request(Self::prompt_import, window, cx)))
             .on_action(cx.listener(|this, _: &CloseProject, window, cx| this.request(Self::close_project, window, cx)))
+            .on_action(cx.listener(|_, _: &About, window, cx| crate::dialogs::show_about(window, cx)))
             .on_action(cx.listener(|this, _: &InstallCli, window, cx| this.install_cli(window, cx)))
             .on_action(cx.listener(|this, _: &CheckUpdate, window, cx| this.updater.update(cx, |u, cx| u.check(true, window, cx))))
             .on_action(cx.listener(|_, _: &ToggleTheme, window, cx| {

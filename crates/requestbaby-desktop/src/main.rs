@@ -25,13 +25,14 @@ mod kv_table;
 mod workflow_editor;
 mod workspace;
 
+use gpui_kit::component::input::{Copy, Cut, Paste, Redo, SelectAll, Undo};
 use gpui_kit::component::TitleBar;
 use gpui_kit::*;
 use std::path::PathBuf;
 
 actions!(
     requestbaby,
-    [SaveCase, SendCase, RunAll, RunWithOptions, Verify, StopRun, ToggleTheme, OpenProject, NewProject, ImportSpec, CloseProject, CopyProjectPath, ExportResults, Quit, QuickOpen, FindInTree, InstallCli, ManageEnvs, OpenWebsite, OpenDocs, ReportIssue, CheckUpdate]
+    [SaveCase, SendCase, RunAll, RunWithOptions, Verify, StopRun, ToggleTheme, OpenProject, NewProject, ImportSpec, CloseProject, CopyProjectPath, ExportResults, Quit, QuickOpen, FindInTree, InstallCli, ManageEnvs, OpenWebsite, OpenDocs, OpenSource, ReportIssue, CheckUpdate, About, HideApp, HideOthers, ShowAll, Minimize, Zoom, ToggleFullscreen]
 );
 
 fn main() {
@@ -57,12 +58,24 @@ fn main() {
             KeyBinding::new("cmd-e", ExportResults, None),
             KeyBinding::new("cmd-.", StopRun, None),
             KeyBinding::new("cmd-q", Quit, None),
+            KeyBinding::new("cmd-h", HideApp, None),
+            KeyBinding::new("cmd-alt-h", HideOthers, None),
+            KeyBinding::new("cmd-m", Minimize, None),
+            KeyBinding::new("ctrl-cmd-f", ToggleFullscreen, None),
         ]);
         cx.on_action(|_: &Quit, cx| cx.quit());
         // 关于 / 帮助：不依赖当前打开的项目，欢迎页与工作区都可用
         cx.on_action(|_: &OpenWebsite, cx| cx.open_url(requestbaby_core::about::WEBSITE));
         cx.on_action(|_: &OpenDocs, cx| cx.open_url(requestbaby_core::about::DOCS));
+        cx.on_action(|_: &OpenSource, cx| cx.open_url(requestbaby_core::about::SOURCE));
         cx.on_action(|_: &ReportIssue, cx| cx.open_url(requestbaby_core::about::ISSUES));
+        // 应用与窗口的系统级操作（与 macOS 标准菜单一致）
+        cx.on_action(|_: &HideApp, cx| cx.hide());
+        cx.on_action(|_: &HideOthers, cx| cx.hide_other_apps());
+        cx.on_action(|_: &ShowAll, cx| cx.unhide_other_apps());
+        cx.on_action(|_: &Minimize, cx| window_op(cx, |w| w.minimize_window()));
+        cx.on_action(|_: &Zoom, cx| window_op(cx, |w| w.zoom_window()));
+        cx.on_action(|_: &ToggleFullscreen, cx| window_op(cx, |w| w.toggle_fullscreen()));
         // 已下载并校验好新版本时，退出就是安装时机：把替换交给独立的更新程序（它等本进程退出后原子替换，失败保留旧版本）
         cx.on_app_quit(|_| {
             if let Some(p) = requestbaby_core::update_app::read_pending() {
@@ -80,11 +93,16 @@ fn main() {
         .detach();
         cx.set_menus([
             Menu::new("requestbaby").items([
-                MenuItem::action("关于 requestbaby（官网）", OpenWebsite),
-                MenuItem::separator(),
+                MenuItem::action("关于 requestbaby", About),
                 MenuItem::action("检查更新…", CheckUpdate),
                 MenuItem::separator(),
                 MenuItem::action("安装命令行工具…", InstallCli),
+                MenuItem::separator(),
+                MenuItem::os_submenu("服务", SystemMenuType::Services),
+                MenuItem::separator(),
+                MenuItem::action("隐藏 requestbaby", HideApp),
+                MenuItem::action("隐藏其他", HideOthers),
+                MenuItem::action("全部显示", ShowAll),
                 MenuItem::separator(),
                 MenuItem::action("退出 requestbaby", Quit),
             ]),
@@ -100,6 +118,17 @@ fn main() {
                 MenuItem::action("复制项目路径", CopyProjectPath),
                 MenuItem::action("关闭项目", CloseProject),
             ]),
+            Menu::new("编辑").items([
+                MenuItem::os_action("撤销", Undo, OsAction::Undo),
+                MenuItem::os_action("重做", Redo, OsAction::Redo),
+                MenuItem::separator(),
+                MenuItem::os_action("剪切", Cut, OsAction::Cut),
+                MenuItem::os_action("拷贝", Copy, OsAction::Copy),
+                MenuItem::os_action("粘贴", Paste, OsAction::Paste),
+                MenuItem::os_action("全选", SelectAll, OsAction::SelectAll),
+                MenuItem::separator(),
+                MenuItem::action("在集合中筛选", FindInTree),
+            ]),
             Menu::new("运行").items([
                 MenuItem::action("完整验证", Verify),
                 MenuItem::action("运行全部", RunAll),
@@ -110,14 +139,22 @@ fn main() {
             ]),
             Menu::new("视图").items([
                 MenuItem::action("快速打开…", QuickOpen),
-                MenuItem::action("在集合中筛选", FindInTree),
                 MenuItem::action("环境管理…", ManageEnvs),
                 MenuItem::separator(),
                 MenuItem::action("切换深色 / 浅色主题", ToggleTheme),
+                MenuItem::action("进入 / 退出全屏", ToggleFullscreen),
+            ]),
+            Menu::new("窗口").items([
+                MenuItem::action("最小化", Minimize),
+                MenuItem::action("缩放", Zoom),
             ]),
             Menu::new("帮助").items([
+                MenuItem::action(format!("关于 requestbaby · 版本 {}", requestbaby_core::update::CURRENT), About),
+                MenuItem::action("检查更新…", CheckUpdate),
+                MenuItem::separator(),
                 MenuItem::action("官网与下载", OpenWebsite),
                 MenuItem::action("文档", OpenDocs),
+                MenuItem::action("源码仓库", OpenSource),
                 MenuItem::separator(),
                 MenuItem::action("反馈问题…", ReportIssue),
             ]),
@@ -138,4 +175,11 @@ fn main() {
         })
         .expect("failed to open window");
     });
+}
+
+/// 对当前活动窗口做一个窗口操作（最小化 / 缩放 / 全屏）：菜单是应用级的，没有窗口上下文
+fn window_op(cx: &mut App, f: impl FnOnce(&mut Window) + 'static) {
+    if let Some(handle) = cx.active_window() {
+        let _ = handle.update(cx, |_, window, _| f(window));
+    }
 }
