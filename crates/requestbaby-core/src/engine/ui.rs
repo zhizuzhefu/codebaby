@@ -48,6 +48,10 @@ pub struct Element {
     pub tag: String,
     /// 密码框：填写的值不进步骤描述
     pub secret: bool,
+    /// 来自屏幕文字识别（OCR）：没有界面结构里的节点（handle 无效），只有屏幕上的位置，驱动只能按坐标操作它
+    pub visual: bool,
+    /// 屏幕文字识别的置信度（0~1）；不是 OCR 找到的为 None
+    pub confidence: Option<f32>,
 }
 
 /// 当前页面 / 界面
@@ -92,10 +96,18 @@ pub trait UiDriver {
     fn back(&mut self) -> Result<()>;
     fn goto(&mut self, url: &str) -> Result<()>;
     fn launch(&mut self, clear_data: bool) -> Result<()>;
+    /// 接管应用当前的界面（不启动、不关闭）；只有 Android 用例支持
+    fn attach(&mut self) -> Result<()> {
+        anyhow::bail!("{} 用例不支持 attach", self.kind().label())
+    }
     fn stop(&mut self) -> Result<()>;
     /// 动作之后等界面稳定（页面跳转加载完成 / 动画结束），最多等 timeout
     fn settle(&mut self, timeout: Duration);
     fn screenshot(&mut self) -> Result<Shot>;
+    /// 屏幕文字识别（OCR）用的截图：驱动需要先同步窗口位置之类时覆盖，缺省就是普通截图
+    fn screenshot_for_ocr(&mut self) -> Result<Shot> {
+        self.screenshot()
+    }
     /// 元素属性（Web：DOM 属性；Android / Mac 桌面：节点属性）
     fn attr(&mut self, el: &Element, name: &str) -> Result<Option<String>>;
     /// 失败现场：页面结构 / 控制台 / 网络 / logcat 等，写进 dir，返回附件清单

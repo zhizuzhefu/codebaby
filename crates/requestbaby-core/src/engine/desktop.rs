@@ -95,11 +95,13 @@ impl std::error::Error for AdError {}
 #[derive(Debug, Clone)]
 pub struct AgentDesktop {
     pub path: PathBuf,
+    /// 允许真实鼠标（`desktop.headed`）：按屏幕文字（OCR）点击需要
+    pub headed: bool,
 }
 
 impl AgentDesktop {
     pub fn from_config(cfg: &crate::config::ui::DesktopConfig) -> Result<Self> {
-        Ok(Self { path: find_agent_desktop(cfg.agent_desktop.as_deref())? })
+        Ok(Self { path: find_agent_desktop(cfg.agent_desktop.as_deref())?, headed: cfg.headed.unwrap_or(false) })
     }
 
     /// 运行并返回 `data`；信封 ok = false 时返回 [`AdError`]
@@ -394,11 +396,15 @@ pub struct App {
     snap: Snapshot,
     scale: f64,
     notes: Vec<String>,
+    /// 最近一次截图是否已裁成窗口本身（坐标相对窗口左上角）；没裁成时屏幕文字的位置对不上窗口，不能据此点击
+    shot_aligned: bool,
+    /// 截图时窗口在屏幕上的位置（点击前核对窗口没有被挪动）
+    shot_origin: (f64, f64),
 }
 
 impl App {
     pub fn new(ad: AgentDesktop, app: String, window_filter: Option<String>, launch_timeout: Duration) -> Self {
-        Self { ad, name: app.clone(), app, window_filter, window_id: None, launch_timeout, snap: Snapshot::default(), scale: 2.0, notes: vec![] }
+        Self { ad, name: app.clone(), app, window_filter, window_id: None, launch_timeout, snap: Snapshot::default(), scale: 2.0, notes: vec![], shot_aligned: false, shot_origin: (0.0, 0.0) }
     }
 
     /// 接管一个已在运行的应用（不启动、不退出它）：snapshot 之类只读场景用
@@ -533,6 +539,7 @@ impl App {
             value: if n.secret() { None } else { value },
             secret: n.secret(),
             tag: format!("{}{}", n.role, if n.name.is_empty() { String::new() } else { format!(" \"{}\"", n.name.chars().take(30).collect::<String>()) }),
+            ..Default::default()
         }
     }
 
@@ -572,6 +579,62 @@ impl App {
             .find(|n| n.has_state("focused") && n.act_ref.is_some() && (n.can("TypeText") || n.can("SetValue")))
             .cloned()
             .ok_or_else(|| anyhow!("当前焦点不在输入框里：先 click 输入框，或改用 fill"))
+    }
+
+    /// 用 list-windows 取目标窗口当前的 ID 与屏幕位置（点）
+    fn sync_window(&mut self) -> Result<()> {
+        self.lock_window()?;
+        let data = self.call(&["list-windows", "--app", &self.name])?;
+        let wins = data.as_array().cloned().unwrap_or_default();
+        let visible = |w: &&Value| w.get("visible").and_then(Value::as_bool) != Some(false) && w.get("minimized").and_then(Value::as_bool) != Some(true);
+        let pick = match &self.window_id {
+            Some(id) => wins.iter().find(|w| w.get("id").and_then(Value::as_str) == Some(id.as_str())),
+            None => wins.iter().filter(visible).find(|w| w.get("is_focused").and_then(Value::as_bool) == Some(true)).or_else(|| wins.iter().find(visible)),
+        };
+        let w = pick.ok_or_else(|| anyhow!("{} 没有可见的窗口", self.name))?;
+        self.snap.window_id = w.get("id").and_then(Value::as_str).unwrap_or_default().to_string();
+        if let Some(b) = w.get("bounds") {
+            self.snap.window = rect_of(b);
+        }
+        Ok(())
+    }
+
+    /// 真实鼠标操作屏幕文字：把窗口带到最前，再按屏幕坐标点击 / 移动。需要 `desktop.headed`
+    fn physical(&mut self, el: &Element, command: &str) -> Result<()> {
+        if !self.ad.headed {
+            bail!("按屏幕文字（ocr）点击需要真实鼠标：在 requestbaby.json 里写 \"desktop\": {{ \"headed\": true }}（运行时会移动鼠标、把应用窗口带到最前，期间请不要动鼠标）。只读操作（expect / waitFor / capture）不需要");
+        }
+        if !self.shot_aligned {
+            bail!("窗口截图没能对齐窗口（窗口被屏幕边缘截断或被遮挡），无法换算点击位置：把窗口完整放在屏幕内再试");
+        }
+        let before = self.shot_origin;
+        self.sync_window()?;
+        let origin = (self.snap.window.x, self.snap.window.y);
+        if (origin.0 - before.0).abs() > 2.0 || (origin.1 - before.1).abs() > 2.0 {
+            bail!("窗口在识别之后被移动了，位置已经对不上：请重试");
+        }
+        let id = self.snap.window_id.clone();
+        self.call(&["focus-window", "--app", &self.name.clone(), "--window-id", &id])?;
+        let (cx, cy) = el.rect.center();
+        let xy = format!("--xy={:.1},{:.1}", origin.0 + cx, origin.1 + cy);
+        self.call(&[command, &xy, "--headed"]).map(|_| ())
+    }
+
+    /// 经剪贴板往当前焦点粘贴文字（点进了没有无障碍引用的输入框时用），粘贴后恢复原来的剪贴板
+    fn paste(&mut self, text: &str) -> Result<()> {
+        let old = self.call(&["clipboard-get"]).ok().and_then(|v| v.get("text").and_then(Value::as_str).map(String::from));
+        self.call(&["clipboard-set", text])?;
+        let r = self.press("Meta+v");
+        std::thread::sleep(Duration::from_millis(150));
+        match old {
+            Some(t) => {
+                let _ = self.call(&["clipboard-set", &t]);
+            }
+            None => {
+                let _ = self.call(&["clipboard-clear"]);
+            }
+        }
+        r
     }
 
     fn screenshot_png(&self) -> Result<(Vec<u8>, f64)> {
@@ -652,6 +715,9 @@ impl UiDriver for App {
     }
 
     fn actionable(&mut self, el: &Element) -> Result<Actionable> {
+        if el.visual {
+            return Ok(Actionable::Ok(el.clone()));
+        }
         let Some(n) = self.snap.nodes.get(el.handle) else { bail!("元素已失效，请重新查找") };
         if n.act_ref.is_none() {
             bail!("{} 没有可操作的无障碍引用（只有真实鼠标才能点它，暂不支持）", el.tag);
@@ -663,6 +729,9 @@ impl UiDriver for App {
     }
 
     fn click(&mut self, el: &Element) -> Result<()> {
+        if el.visual {
+            return self.physical(el, "mouse-click");
+        }
         self.with_ref(el, &|ad, r| ad.call(&["click", r], CALL))
     }
 
@@ -670,11 +739,20 @@ impl UiDriver for App {
         bail!("Mac 桌面用例不支持 longPress（Android 专用）")
     }
 
-    fn hover(&mut self, _el: &Element) -> Result<()> {
-        bail!("Mac 桌面用例暂不支持 hover：悬停需要真实鼠标，requestbaby 默认只走无障碍语义调用，不会动你的鼠标")
+    fn hover(&mut self, el: &Element) -> Result<()> {
+        if el.visual {
+            return self.physical(el, "mouse-move");
+        }
+        bail!("Mac 桌面用例暂不支持 hover：悬停需要真实鼠标，requestbaby 默认只走无障碍语义调用，不会动你的鼠标。按屏幕文字（ocr）定位时可以悬停（需开启 desktop.headed）")
     }
 
     fn fill(&mut self, el: &Element, value: &str) -> Result<()> {
+        if el.visual {
+            // 屏幕上的字没有无障碍引用：真实鼠标点进去，全选后用剪贴板粘贴
+            self.physical(el, "mouse-click")?;
+            self.press("Meta+a")?;
+            return self.paste(value);
+        }
         let node = self.snap.nodes.get(el.handle).cloned().ok_or_else(|| anyhow!("元素已失效，请重新查找"))?;
         if !el.editable {
             bail!("{} 不是可编辑的输入框，无法填写", el.tag);
@@ -691,6 +769,9 @@ impl UiDriver for App {
     }
 
     fn select(&mut self, el: &Element, value: &str) -> Result<String> {
+        if el.visual {
+            bail!("按屏幕文字（ocr）定位的元素不能 select：点开下拉框后，对选项文字再写一步 click");
+        }
         self.with_ref(el, &|ad, r| ad.call(&["select", r, value], CALL))?;
         Ok(value.to_string())
     }
@@ -699,9 +780,15 @@ impl UiDriver for App {
         if text.is_empty() {
             return Ok(());
         }
-        let n = self.focused_input()?;
-        let r = n.act_ref.unwrap_or_default();
-        self.ad.call(&["type", &r, text], CALL).map(|_| ())
+        match self.focused_input() {
+            Ok(n) => {
+                let r = n.act_ref.unwrap_or_default();
+                self.ad.call(&["type", &r, text], CALL).map(|_| ())
+            }
+            // 点的是屏幕文字（没有无障碍引用）：允许真实鼠标时改用剪贴板粘贴
+            Err(_) if self.ad.headed => self.paste(text),
+            Err(e) => Err(e),
+        }
     }
 
     fn press(&mut self, key: &str) -> Result<()> {
@@ -787,8 +874,17 @@ impl UiDriver for App {
         let (bytes, scale) = self.screenshot_png()?;
         self.scale = scale;
         // 窗口位置取自最近一次界面快照；没读过时直接给整图
-        let bytes = crop_to_window(&bytes, &self.snap.window, scale).unwrap_or(bytes);
+        let cropped = crop_to_window(&bytes, &self.snap.window, scale);
+        self.shot_aligned = cropped.is_some();
+        self.shot_origin = (self.snap.window.x, self.snap.window.y);
+        let bytes = cropped.unwrap_or(bytes);
         Ok(Shot { bytes, scale })
+    }
+
+    /// 屏幕文字识别用的截图：先用 list-windows（很轻）取窗口当前位置，不必读整棵无障碍树
+    fn screenshot_for_ocr(&mut self) -> Result<Shot> {
+        self.sync_window()?;
+        self.screenshot()
     }
 
     fn attr(&mut self, el: &Element, name: &str) -> Result<Option<String>> {
@@ -901,7 +997,7 @@ mod tests {
 
     #[test]
     fn elements_carry_state_and_visibility() {
-        let mut app = App::new(AgentDesktop { path: "agent-desktop".into() }, "Notes".into(), None, Duration::from_secs(5));
+        let mut app = App::new(AgentDesktop { path: "agent-desktop".into(), headed: false }, "Notes".into(), None, Duration::from_secs(5));
         app.snap = parse_snapshot(&data()).unwrap();
         let body = app.element_of(1);
         assert!(body.editable && body.visible && body.enabled);

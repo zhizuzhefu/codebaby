@@ -162,6 +162,42 @@ fn check_ui(root: &Path, cases: &[discover::DiscoveredCase], proxy: &crate::engi
     if desktop > 0 {
         checks.extend(check_desktop(&project.desktop, desktop));
     }
+    checks.extend(check_ocr(cases, &project));
+}
+
+/// 用到屏幕文字识别（`ocr` 定位）的用例：识别引擎要可用、要的语言要支持；Mac 桌面按文字点击还要允许真实鼠标
+fn check_ocr(cases: &[discover::DiscoveredCase], project: &Project) -> Vec<Check> {
+    use crate::config::{TestCase, UiAction, UiStep};
+    let loaded: Vec<TestCase> = cases.iter().filter_map(|c| load_strict::<TestCase>(&c.path).ok()).collect();
+    let steps_of = |c: &TestCase| -> Vec<UiStep> {
+        c.web.as_ref().map(|s| s.steps.clone()).or_else(|| c.android.as_ref().map(|s| s.steps.clone())).or_else(|| c.desktop.as_ref().map(|s| s.steps.clone())).unwrap_or_default()
+    };
+    let step_ocr = |s: &UiStep| s.locator().is_some_and(|l| l.is_ocr()) || s.capture.values().any(|c| matches!(c, crate::config::CaptureSource::Element(l) if l.is_ocr()));
+    let using: Vec<&TestCase> = loaded.iter().filter(|c| steps_of(c).iter().any(step_ocr)).collect();
+    if using.is_empty() {
+        return vec![];
+    }
+    let n = using.len();
+    let mut out = vec![];
+    match crate::engine::ocr::engine().and_then(|e| e.languages().map(|l| (e.name(), l))) {
+        Ok((name, supported)) => {
+            let want: Vec<String> = if project.ocr.languages.is_empty() { crate::engine::ocr::DEFAULT_LANGUAGES.iter().map(|s| s.to_string()).collect() } else { project.ocr.languages.clone() };
+            let missing: Vec<&String> = want.iter().filter(|w| !supported.contains(w)).collect();
+            if missing.is_empty() {
+                out.push(Check { level: CheckLevel::Ok, message: format!("屏幕文字识别（OCR）：{name}，识别 {}（{n} 个用例使用）", want.join(" / ")) });
+            } else {
+                let miss = missing.iter().map(|s| s.as_str()).collect::<Vec<_>>().join(" / ");
+                out.push(Check { level: CheckLevel::Error, message: format!("{n} 个用例用到屏幕文字识别，但 {name} 不支持识别语言 {miss}（支持：{}）：改 requestbaby.json 的 ocr.languages；中文需要 macOS 13 及以上", supported.join(" / ")) });
+            }
+        }
+        Err(e) => out.push(Check { level: CheckLevel::Error, message: format!("{n} 个用例用到屏幕文字识别（ocr），无法运行：{e:#}") }),
+    }
+    let acts = [UiAction::Click, UiAction::LongPress, UiAction::Hover, UiAction::Fill, UiAction::Select];
+    let desktop_click = using.iter().filter(|c| c.desktop.is_some()).any(|c| c.desktop.as_ref().is_some_and(|d| d.steps.iter().any(|s| s.locator().is_some_and(|l| l.is_ocr()) && s.action().is_some_and(|a| acts.contains(&a)))));
+    if desktop_click && project.desktop.headed != Some(true) {
+        out.push(Check { level: CheckLevel::Warn, message: "Mac 桌面用例按屏幕文字点击 / 填写，需要真实鼠标：requestbaby.json 写 \"desktop\": { \"headed\": true }（运行时会移动鼠标、把窗口带到最前，期间不要动鼠标）".into() });
+    }
+    out
 }
 
 /// Mac 桌面：agent-desktop 要装好，辅助功能权限（截图还要屏幕录制权限）要给运行 requestbaby 的程序

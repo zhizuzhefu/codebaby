@@ -113,7 +113,8 @@ TestCase ──load──► 合并变量作用域 ──pre 脚本──► Res
 | `vars` | 四层作用域栈、`{{}}` 替换 | 新变量来源（如 keychain） |
 | `engine::Transport` | `execute(ResolvedRequest) -> Response` | 替换为 libcurl FFI / 内置 HTTP（二期协议扩展） |
 | `engine::ui::UiDriver` | 界面驱动：find / actionable / click / fill / … / screenshot / failure_scene | Web = `engine::web`（CDP，`engine::cdp` 同步客户端 + 浏览器进程）；Android = `engine::android`（adb + uiautomator）；Mac 桌面 = `engine::desktop`（agent-desktop 无障碍树）；新平台实现同一 trait，并在 `UiKind` 加一项 |
-| `runner::ui` | 界面步骤循环（自动等待、断言、捕获、截图标注、失败现场），各驱动共用 | 新动作 / 新定位 |
+| `engine::ocr` / `ocr_match` | 屏幕文字识别：`Engine` trait（macOS = Vision，进程内调用）+ 按画面哈希的识别缓存；匹配（归一化 / 容错 / 区域 / 同一横排）与换算成通用 `Element`（`visual`）。驱动无关，作用在 `UiDriver::screenshot` 上，三端共用 | 新平台实现 `Engine` |
+| `runner::ui` | 界面步骤循环（自动等待、断言、捕获、截图标注、失败现场），各驱动共用；`ocr` 定位在这里分流到 `ocr_match::find` | 新动作 / 新定位 |
 | `script::ScriptHost` | `run_pre / run_post / eval_tests / compile_check` | 替换 JS 引擎；表达式方言 |
 | `runner` | 目录发现、排序、过滤、fail-fast、顺序执行、并发（二期） | 调度策略 |
 | `report::Reporter` | 终端美化 / JSON /（二期 junit、html） | 新报告格式 |

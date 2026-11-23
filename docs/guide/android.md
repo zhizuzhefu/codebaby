@@ -40,6 +40,29 @@
 | `activity` | 启动的 Activity（缺省用应用的启动入口） |
 | `apk` | 先安装这个 APK（相对项目根）；一次运行内只装一次 |
 | `clearData` | 启动前清除应用数据，相当于全新安装 |
+| `attach` | 接管设备当前的界面：不启动、不关闭应用（见下面「小程序、自绘界面」） |
+
+## 小程序、自绘界面：接管当前页面 + 屏幕文字识别
+
+界面结构里读不到文字的应用（微信小程序、自绘控件、游戏），`text` / `id` 定位不到东西：
+
+- `"attach": true`：**接管设备上现在停着的页面**，不启动、不关闭应用（缺省每个用例都会重新启动应用）。适合要先手动走到目标页的场景；`app` 要已在前台（微信小程序的 `app` 是 `com.tencent.mm`），不能和 `activity` / `apk` / `clearData` 同时写
+- 定位改用 `ocr`：对截图做文字识别，按屏幕上看到的字找（`{"ocr": "已约满"}`，可加 `region` / `row` / `count`…），详见 `requestbaby guide ocr`
+- `requestbaby android snapshot --ocr` 列出屏幕上识别到的每一行文字和可直接粘贴的定位
+
+```json case
+{
+  "name": "小程序预约页",
+  "android": {
+    "app": "com.tencent.mm",
+    "attach": true,
+    "steps": [
+      { "expect": { "ocr": "选择医生" } },
+      { "expect": { "ocr": "已约满", "count": { "gte": 1 } } }
+    ]
+  }
+}
+```
 
 ## 步骤（与 Web 不同的）
 
@@ -62,6 +85,7 @@
 |------|--------|
 | `{"id": "phone"}` | resource-id：写全 `com.example.shop:id/phone` 或只写 `phone` |
 | `{"text": "登录"}` | 文字 |
+| `{"ocr": "已约满"}` | 屏幕上看到的文字（对截图识别，界面结构里没有文字时用，`guide ocr`） |
 | `{"desc": "返回"}` | 无障碍描述（content-desc，图标按钮常用） |
 | `{"label": "手机号"}` | 输入框的提示文字 |
 | `{"role": "button", "name": "登录"}` | 控件类型 + 文字：button / textbox / checkbox / switch / image … |

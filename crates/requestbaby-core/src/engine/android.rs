@@ -486,6 +486,7 @@ impl Device {
             value: (n.class.contains("EditText") && !n.password).then(|| n.text.clone()),
             secret: n.password,
             tag: format!("{}{}", n.class.rsplit('.').next().unwrap_or(&n.class), if n.id.is_empty() { String::new() } else { format!(" #{}", n.id.rsplit('/').next().unwrap_or(&n.id)) }),
+            ..Default::default()
         }
     }
 
@@ -653,6 +654,17 @@ impl UiDriver for Device {
             }
             std::thread::sleep(Duration::from_millis(200));
         }
+    }
+
+    fn attach(&mut self) -> Result<()> {
+        let (pkg, _) = self.focus()?;
+        if pkg == self.app {
+            return Ok(());
+        }
+        if pkg.is_empty() {
+            bail!("设备上没有前台应用（锁屏了？）：先解锁并打开 {}，再运行（attach 不会启动应用）", self.app);
+        }
+        bail!("设备前台是 {pkg}，不是 {}：先在设备上打开要检查的页面，再运行（attach 不会启动应用）", self.app)
     }
 
     fn stop(&mut self) -> Result<()> {

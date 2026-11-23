@@ -469,7 +469,42 @@
           "enum": ["visible", "hidden", "enabled", "disabled", "checked", "unchecked"],
           "description": "等待 / 断言：元素状态，缺省 visible"
         },
-        "count": { "type": "integer", "minimum": 0, "description": "等待 / 断言：可见的匹配元素恰好这么多个" },
+        "ocr": {
+          "type": "string",
+          "description": "按屏幕上识别到的文字定位（对截图做文字识别，Web / Android / Mac 桌面通用）：适合界面结构里没有文字的页面（微信小程序、自绘控件…）。忽略空白、全角半角、大小写，包含即可（exact 时整行相等）；写 \"*\" = 区域内的全部文字"
+        },
+        "region": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["x", "y", "w", "h"],
+          "description": "ocr 只识别 / 查找屏幕的这一块：x / y / w / h 取 0~1，是占整张截图的比例（左上角为原点），与分辨率无关",
+          "properties": {
+            "x": { "type": "number", "minimum": 0, "maximum": 1, "description": "左边界，占截图宽度的比例" },
+            "y": { "type": "number", "minimum": 0, "maximum": 1, "description": "上边界，占截图高度的比例" },
+            "w": { "type": "number", "exclusiveMinimum": 0, "maximum": 1, "description": "宽度，占截图宽度的比例" },
+            "h": { "type": "number", "exclusiveMinimum": 0, "maximum": 1, "description": "高度，占截图高度的比例" }
+          }
+        },
+        "row": { "type": "string", "description": "ocr 只取和这行文字在同一横排的结果（卡片、表格里「某某那一行的『已约满』」）；这行文字要在 region 之内" },
+        "fuzzy": { "type": "integer", "minimum": 0, "maximum": 5, "description": "ocr 容错：允许识别结果与期望的文字相差几个字（缺省 0，必须一致）" },
+        "minConfidence": { "type": "number", "minimum": 0, "maximum": 1, "description": "ocr 忽略置信度低于这个值的文字（缺省 0.3）" },
+        "count": {
+          "description": "等待 / 断言：可见的匹配元素的个数。数字 = 恰好这么多个；也可以写比较（gt / gte / lt / lte）",
+          "oneOf": [
+            { "type": "integer", "minimum": 0 },
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "minProperties": 1,
+              "properties": {
+                "gt": { "type": "integer", "minimum": 0, "description": "多于" },
+                "gte": { "type": "integer", "minimum": 0, "description": "至少" },
+                "lt": { "type": "integer", "minimum": 0, "description": "少于" },
+                "lte": { "type": "integer", "minimum": 0, "description": "至多" }
+              }
+            }
+          ]
+        },
         "value": { "type": "string", "description": "等待 / 断言：输入框的值（exact 时完全相等，否则包含）" },
         "hasText": { "type": "string", "description": "元素的文字包含（操作时用来在多个匹配里筛选，断言时是要求）" },
         "attr": { "type": "string", "description": "捕获：取元素的属性（如 href），缺省取文字（输入框取值）" },
@@ -573,6 +608,10 @@
         "activity": { "type": "string", "description": "启动的 Activity（缺省用应用的启动入口）" },
         "apk": { "type": "string", "description": "先安装这个 APK（相对项目根或绝对路径）；一次运行内只装一次" },
         "clearData": { "type": "boolean", "description": "启动前清除应用数据（全新安装后的状态）" },
+        "attach": {
+          "type": "boolean",
+          "description": "接管设备当前的界面：不启动、不关闭应用，从它现在停着的页面开始（微信小程序等要先手动走到目标页的场景）；app 要已在前台，不能和 activity / apk / clearData 同时写"
+        },
         "timeoutMs": { "type": "integer", "minimum": 1, "description": "每一步等待的默认超时毫秒（缺省 10000）" },
         "steps": {
           "type": "array",

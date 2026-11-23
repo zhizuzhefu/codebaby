@@ -534,6 +534,12 @@ fn check_ui(case: &TestCase, push: &mut dyn FnMut(&'static str, String)) {
             } else if !has_var(app) && (!app.contains('.') || app.contains(char::is_whitespace) || app.contains('/')) {
                 push("android-app", format!("android.app 写应用包名（如 com.example.shop），实际 {app}"));
             }
+            if a.attach == Some(true) {
+                let conflict: Vec<&str> = [("activity", a.activity.is_some()), ("apk", a.apk.is_some()), ("clearData", a.clear_data.is_some())].into_iter().filter(|(_, on)| *on).map(|(k, _)| k).collect();
+                if !conflict.is_empty() {
+                    push("android-attach", format!("android.attach 接管设备当前界面（不启动、不安装、不清数据），不能同时写 {}", conflict.join(" / ")));
+                }
+            }
             (UiKind::Android, &a.steps)
         }
         (_, _, Some(d)) => {
@@ -554,6 +560,48 @@ fn check_ui(case: &TestCase, push: &mut dyn FnMut(&'static str, String)) {
         UiKind::Android => "id / text / desc / label / role",
         UiKind::Desktop => "role+name / label / text / id / desc",
     };
+    // 屏幕文字识别（ocr）相关的写法检查：普通步骤的定位与 capture 里的定位共用
+    let lint_ocr = |l: &Locator, at: &str, push: &mut dyn FnMut(&'static str, String)| {
+        let primary: Vec<&str> = [("role", l.role.is_some()), ("label", l.label.is_some()), ("text", l.text.is_some()), ("placeholder", l.placeholder.is_some()), ("testId", l.test_id.is_some()), ("css", l.css.is_some()), ("id", l.id.is_some()), ("desc", l.desc.is_some())]
+            .into_iter()
+            .filter(|(_, on)| *on)
+            .map(|(k, _)| k)
+            .collect();
+        if let Some(ocr) = &l.ocr {
+            if !primary.is_empty() || l.name.is_some() {
+                push("ui-locator", format!("{at}：ocr 是按屏幕上识别到的文字找，不能和 {} 同时写（按界面结构找的定位）——二选一", primary.iter().copied().chain(l.name.is_some().then_some("name")).collect::<Vec<_>>().join("、")));
+            }
+            if ocr.trim().is_empty() {
+                push("ui-locator", format!("{at}：ocr 不能为空：写屏幕上看到的文字，或 \"*\" 取区域内的全部文字"));
+            }
+            if l.attr.is_some() {
+                push("ui-locator", format!("{at}：attr 是界面结构节点的属性，ocr 找到的文字没有"));
+            }
+            if l.value.is_some() {
+                push("ui-locator", format!("{at}：value 是输入框的值，ocr 找到的文字没有；要核对文字内容用 hasText"));
+            }
+            if let Some(s) = l.state.filter(|s| !matches!(s, crate::config::UiState::Visible | crate::config::UiState::Hidden)) {
+                push("ui-locator", format!("{at}：ocr 只能判断文字出现或消失（state: visible / hidden），不能判断「{}」", s.label()));
+            }
+            if l.fuzzy.is_some_and(|f| f > 5) {
+                push("ui-locator", format!("{at}：fuzzy 最大 5：容错太多会匹配到不相关的文字"));
+            }
+            if l.min_confidence.is_some_and(|c| !(0.0..=1.0).contains(&c)) {
+                push("ui-locator", format!("{at}：minConfidence 取 0~1"));
+            }
+            if let Some(Err(why)) = l.region.as_ref().map(|r| r.check()) {
+                push("ui-locator", format!("{at}：region {why}"));
+            }
+        } else {
+            let stray: Vec<&str> = [("region", l.region.is_some()), ("row", l.row.is_some()), ("fuzzy", l.fuzzy.is_some()), ("minConfidence", l.min_confidence.is_some())].into_iter().filter(|(_, on)| *on).map(|(k, _)| k).collect();
+            if !stray.is_empty() {
+                push("ui-locator", format!("{at}：{} 只能和 ocr 一起写", stray.join(" / ")));
+            }
+        }
+        if l.count.is_some_and(|c| c.is_empty()) {
+            push("ui-locator", format!("{at}：count 的比较里至少写 gt / gte / lt / lte 其中一个（或直接写个数）"));
+        }
+    };
     let lint_locator = |l: &Locator, at: &str, condition: bool, push: &mut dyn FnMut(&'static str, String)| {
         let primary: Vec<&str> = [("role", l.role.is_some()), ("label", l.label.is_some()), ("text", l.text.is_some()), ("placeholder", l.placeholder.is_some()), ("testId", l.test_id.is_some()), ("css", l.css.is_some()), ("id", l.id.is_some()), ("desc", l.desc.is_some())]
             .into_iter()
@@ -565,6 +613,7 @@ fn check_ui(case: &TestCase, push: &mut dyn FnMut(&'static str, String)) {
         if primary.len() > 1 && !combo_ok {
             push("ui-locator", format!("{at}：定位只写一种（{}），需要更精确时用 nth / exact / hasText", primary.join("、")));
         }
+        lint_ocr(l, at, push);
         if l.name.is_some() && l.role.is_none() {
             push("ui-locator", format!("{at}：name 要和 role 一起写（{{\"role\": \"button\", \"name\": \"登录\"}}）；只按文字找写 text"));
         }
@@ -669,6 +718,7 @@ fn check_ui(case: &TestCase, push: &mut dyn FnMut(&'static str, String)) {
                     if !l.has_target() {
                         push("capture-source", format!("{at} capture.{name}：写要取值的元素定位"));
                     }
+                    lint_ocr(l, &format!("{at} capture.{name}"), push);
                     if let Some(re) = &l.regex {
                         if let Err(e) = regex::Regex::new(re) {
                             push("capture-source", format!("{at} capture.{name}：regex 写法有误：{e}"));
@@ -809,6 +859,44 @@ pub fn validate_file(path: &Path, env_name: &str) -> Result<Vec<ValidationIssue>
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// 界面用例里 ocr 与 attach 的写法检查
+    #[test]
+    fn ocr_and_attach_rules() {
+        let dir = tempfile::tempdir().unwrap();
+        crate::scaffold::init_project(dir.path()).unwrap();
+        let check = |body: &str| -> Vec<String> {
+            let case = dir.path().join("collections/demo/09-ui.json");
+            std::fs::write(&case, body).unwrap();
+            validate_file(&case, "dev").unwrap().into_iter().map(|i| format!("{}: {}", i.rule, i.message)).collect()
+        };
+        let case = |step: &str| format!(r#"{{"android": {{"app": "com.tencent.mm", "attach": true, "steps": [{step}]}}}}"#);
+        // 正确的写法没有问题
+        assert!(check(&case(r#"{"expect": {"ocr": "已约满", "region": {"x": 0, "y": 0.1, "w": 1, "h": 0.1}, "count": {"gte": 1}}}, {"tap": {"ocr": "预约", "row": "张三", "fuzzy": 1}}, {"expect": {"ocr": "*", "hasText": "院区"}, "capture": {"fee": {"ocr": "挂号费", "regex": "\\d+"}}}"#)).is_empty());
+        // ocr 不能和结构定位混写
+        let r = check(&case(r#"{"tap": {"ocr": "预约", "text": "预约"}}"#));
+        assert!(r.iter().any(|m| m.contains("ocr 是按屏幕上识别到的文字找")), "{r:?}");
+        // 只写 region / row / fuzzy / minConfidence 而没有 ocr
+        let r = check(&case(r#"{"expect": {"text": "预约", "region": {"x": 0, "y": 0, "w": 1, "h": 1}, "fuzzy": 1}}"#));
+        assert!(r.iter().any(|m| m.contains("region / fuzzy 只能和 ocr 一起写")), "{r:?}");
+        // 区域越界、state 不适用（schema 管不到的，靠这里检查）
+        let r = check(&case(r#"{"expect": {"ocr": "a", "region": {"x": 0.5, "y": 0, "w": 0.8, "h": 1}, "state": "checked"}}"#));
+        for want in ["region 区域超出了屏幕", "ocr 只能判断文字出现或消失"] {
+            assert!(r.iter().any(|m| m.contains(want)), "{want}: {r:?}");
+        }
+        // 容错太大、置信度超范围：schema 先拦住
+        let r = check(&case(r#"{"expect": {"ocr": "a", "fuzzy": 9, "minConfidence": 2}}"#));
+        assert!(r.iter().all(|m| m.starts_with("schema")) && r.len() == 2, "{r:?}");
+        // capture 里同样检查
+        let r = check(&case(r#"{"wait": 1, "capture": {"x": {"ocr": "a", "text": "b"}}}"#));
+        assert!(r.iter().any(|m| m.contains("capture.x") && m.contains("ocr 是按屏幕上识别到的文字找")), "{r:?}");
+        // 空的 count 比较：schema 先拦住
+        let r = check(&case(r#"{"expect": {"ocr": "a", "count": {}}}"#));
+        assert!(r.iter().any(|m| m.starts_with("schema")), "{r:?}");
+        // attach 不能和 activity / apk / clearData 同时写
+        let r = check(r#"{"android": {"app": "com.tencent.mm", "attach": true, "clearData": true, "activity": ".A", "steps": []}}"#);
+        assert!(r.iter().any(|m| m.contains("android-attach") && m.contains("activity / clearData")), "{r:?}");
+    }
 
     /// 项目不在进程工作目录下时，单文件校验仍能拿到该文件的问题（Desktop 从任意目录启动）
     #[test]

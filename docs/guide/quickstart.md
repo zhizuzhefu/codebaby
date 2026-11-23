@@ -103,4 +103,4 @@ requestbaby verify -e dev            # 最终结论：校验 → 全部用例 �
 
 ## 主题（`requestbaby guide <主题>`）
 
-`expect` 断言 · `capture` 捕获与串联 · `vars` 变量进阶 · `flow` 流程 · `auth` 鉴权登录 · `e2e` 多步 · `data` 数据驱动 · `setup` 造数清数 · `env` 环境 · `grpc` gRPC · `ws` WebSocket · `web` 网页 · `android` 安卓 · `desktop` Mac 桌面 · `proxy` 代理 · `scripts` 脚本 · `cli` 命令 · `ref` 全部字段 · `all` 全部
+`expect` 断言 · `capture` 捕获与串联 · `vars` 变量进阶 · `flow` 流程 · `auth` 鉴权登录 · `e2e` 多步 · `data` 数据驱动 · `setup` 造数清数 · `env` 环境 · `grpc` gRPC · `ws` WebSocket · `web` 网页 · `android` 安卓 · `desktop` Mac 桌面 · `ocr` 文字识别 · `proxy` 代理 · `scripts` 脚本 · `cli` 命令 · `ref` 全部字段 · `all` 全部

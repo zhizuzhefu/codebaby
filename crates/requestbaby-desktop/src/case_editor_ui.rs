@@ -37,7 +37,7 @@ fn target_placeholder(a: UiAction, kind: UiKind) -> &'static str {
     let android = kind == UiKind::Android;
     if kind == UiKind::Desktop {
         match a {
-            UiAction::Click => return "要点的元素：{\"role\": \"button\", \"name\": \"保存\"}；直接写文字 = 按文字找；或点右侧「元素」选",
+            UiAction::Click => return "要点的元素：{\"role\": \"button\", \"name\": \"保存\"}；直接写文字 = 按文字找；读不到文字的界面：{\"ocr\": \"保存\"}",
             UiAction::Fill => return "输入框：{\"role\": \"textfield\"} / {\"label\": \"名称\"}",
             UiAction::Select => return "下拉框：{\"role\": \"combobox\", \"name\": \"字体\"}",
             UiAction::WaitFor | UiAction::Expect => return "条件：{\"role\": \"button\", \"name\": \"保存\"} / {\"title\": \"设置\"}（窗口标题） / {\"text\": \"已保存\", \"state\": \"hidden\"}",
@@ -46,12 +46,12 @@ fn target_placeholder(a: UiAction, kind: UiKind) -> &'static str {
         }
     }
     match a {
-        UiAction::Click | UiAction::LongPress | UiAction::Hover if android => "要点的元素：{\"id\": \"login\"} / {\"text\": \"登录\"}；直接写文字 = 按文字找；或点右侧「元素」选",
-        UiAction::Click | UiAction::LongPress | UiAction::Hover => "要点的元素：{\"role\": \"button\", \"name\": \"登录\"}；直接写文字 = 按文字找；或点右侧「元素」选",
+        UiAction::Click | UiAction::LongPress | UiAction::Hover if android => "要点的元素：{\"id\": \"login\"} / {\"text\": \"登录\"}；直接写文字 = 按文字找；读不到文字的界面（小程序）：{\"ocr\": \"登录\"}",
+        UiAction::Click | UiAction::LongPress | UiAction::Hover => "要点的元素：{\"role\": \"button\", \"name\": \"登录\"}；直接写文字 = 按文字找；读不到文字的界面：{\"ocr\": \"登录\"}",
         UiAction::Fill if android => "输入框：{\"id\": \"phone\"} / {\"label\": \"手机号\"}",
         UiAction::Fill => "输入框：{\"label\": \"手机号\"} / {\"placeholder\": \"请输入手机号\"}",
         UiAction::Select => "下拉框：{\"label\": \"城市\"}",
-        UiAction::WaitFor | UiAction::Expect if android => "条件：{\"text\": \"我的订单\"} / {\"activity\": \"MainActivity\"} / {\"id\": \"submit\", \"state\": \"disabled\"}",
+        UiAction::WaitFor | UiAction::Expect if android => "条件：{\"text\": \"我的订单\"} / {\"activity\": \"MainActivity\"} / {\"ocr\": \"已约满\", \"state\": \"hidden\"}（屏幕文字）",
         UiAction::WaitFor | UiAction::Expect => "条件：{\"url\": \"/orders\"} / {\"role\": \"heading\", \"name\": \"我的订单\"} / {\"text\": \"加载中\", \"state\": \"hidden\"}",
         UiAction::Goto => "地址：/settings 或完整地址；支持 {{变量}}",
         UiAction::Type => "要输入的文字（输入到当前焦点）",
@@ -186,8 +186,9 @@ impl CaseEditor {
         }
     }
 
-    /// 后台读取元素：Web 打开地址栏的页面（变量按当前环境替换），Android 读设备当前界面，Mac 桌面读应用窗口；与 `requestbaby web / android / desktop snapshot` 同一实现
-    pub(super) fn load_ui_snapshot(&mut self, cx: &mut Context<Self>) {
+    /// 后台读取元素：Web 打开地址栏的页面（变量按当前环境替换），Android 读设备当前界面，Mac 桌面读应用窗口；与 `requestbaby web / android / desktop snapshot` 同一实现。
+    /// `ocr` = 同时识别屏幕上的文字（等价 `--ocr`），界面结构里没有文字的页面（微信小程序、自绘控件）靠它拿到可选用的文字定位
+    pub(super) fn load_ui_snapshot(&mut self, ocr: bool, cx: &mut Context<Self>) {
         let root = self.path.as_deref().and_then(requestbaby_core::runner::discover::find_project_root);
         let env = if self.env.is_empty() { "dev".to_string() } else { self.env.clone() };
         let url = self.ui_target.read(cx).value().to_string();
@@ -196,9 +197,9 @@ impl CaseEditor {
         self.ui_snapshot_loading = true;
         let task = cx.background_spawn(async move {
             let snap = match kind {
-                UiKind::Android => requestbaby_core::protocols::android_snapshot(root.as_deref()),
-                UiKind::Desktop => requestbaby_core::protocols::desktop_snapshot(root.as_deref(), url.trim(), Some(window_title.as_str()).filter(|w| !w.is_empty())),
-                UiKind::Web => requestbaby_core::protocols::web_snapshot(root.as_deref(), &env, &url, false),
+                UiKind::Android => requestbaby_core::protocols::android_snapshot(root.as_deref(), ocr),
+                UiKind::Desktop => requestbaby_core::protocols::desktop_snapshot(root.as_deref(), url.trim(), Some(window_title.as_str()).filter(|w| !w.is_empty()), ocr),
+                UiKind::Web => requestbaby_core::protocols::web_snapshot(root.as_deref(), &env, &url, false, ocr),
             };
             snap.map(|s| s.elements).map_err(|e| format!("{e:#}"))
         });
@@ -237,7 +238,25 @@ impl CaseEditor {
             .label(label)
             .tooltip(tip)
             .disabled(self.ui_snapshot_loading)
-            .on_click(cx.listener(|this, _, _, cx| this.load_ui_snapshot(cx)))
+            .on_click(cx.listener(|this, _, _, cx| this.load_ui_snapshot(false, cx)))
+            .into_any_element()
+    }
+
+    /// 读取元素旁边：连同屏幕上的文字一起识别（OCR）
+    pub(super) fn render_ocr_button(&self, cx: &mut Context<Self>) -> AnyElement {
+        let cmd = match ui_kind(self.protocol) {
+            UiKind::Android => "requestbaby android snapshot --ocr",
+            UiKind::Desktop => "requestbaby desktop snapshot <应用> --ocr",
+            UiKind::Web => "requestbaby web snapshot <地址> --ocr",
+        };
+        Button::new("ui-snapshot-ocr")
+            .small()
+            .outline()
+            .icon(IconName::Eye)
+            .label("识别文字")
+            .tooltip(format!("读取元素，并识别屏幕上的文字（OCR），给每一行文字一个可直接用的 ocr 定位——界面结构里没有文字的页面（微信小程序、自绘控件）用它（等价命令：{cmd}）"))
+            .disabled(self.ui_snapshot_loading)
+            .on_click(cx.listener(|this, _, _, cx| this.load_ui_snapshot(true, cx)))
             .into_any_element()
     }
 
@@ -288,6 +307,17 @@ impl CaseEditor {
                         .checked(self.ui_clear_data)
                         .on_change(cx.listener(|this, v: &bool, _, cx| {
                             this.ui_clear_data = *v;
+                            this.refresh_dirty(cx);
+                            cx.notify();
+                        })),
+                )
+                .child(
+                    Switch::new("ui-attach")
+                        .small()
+                        .label("接管当前界面（不启动、不关闭应用，从设备现在停着的页面开始；不能和上面三项同时用）")
+                        .checked(self.ui_attach)
+                        .on_change(cx.listener(|this, v: &bool, _, cx| {
+                            this.ui_attach = *v;
                             this.refresh_dirty(cx);
                             cx.notify();
                         })),

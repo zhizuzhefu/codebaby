@@ -62,6 +62,7 @@
 |------|--------|
 | `{"role": "button", "name": "保存"}` | 角色 + 名称：button / textfield / checkbox / radiobutton / combobox / menubutton / treeitem / cell / statictext … |
 | `{"text": "已保存"}` | 名称、值或描述里包含的文字 |
+| `{"ocr": "已保存"}` | 屏幕上看到的文字（对窗口截图做文字识别，无障碍树里没有的内容用它；点击需要 `desktop.headed`，`guide ocr`） |
 | `{"label": "名称"}` | 输入框的名称 / 描述 / 占位文字 |
 | `{"id": "NewDocumentButton"}` | AXIdentifier（开发者给的稳定标识，有就优先用） |
 | `{"desc": "关闭"}` | 无障碍描述 |

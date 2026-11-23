@@ -3,6 +3,10 @@ pub mod cdp;
 pub mod curl;
 pub mod desktop;
 pub mod grpc;
+pub mod ocr;
+pub mod ocr_match;
+#[cfg(target_os = "macos")]
+mod ocr_vision;
 pub mod proxy;
 pub mod tls;
 pub mod ui;

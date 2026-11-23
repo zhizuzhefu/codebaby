@@ -148,6 +148,8 @@ pub struct UiForm {
     pub apk: String,
     /// Android：启动前清除数据
     pub clear_data: bool,
+    /// Android：接管设备当前的界面（不启动、不关闭应用）
+    pub attach: bool,
     pub steps: Vec<UiStepForm>,
 }
 
@@ -414,6 +416,7 @@ impl CaseForm {
             activity: text(d.pointer("/android/activity")),
             apk: text(d.pointer("/android/apk")),
             clear_data: d.pointer("/android/clearData").and_then(Value::as_bool).unwrap_or(false),
+            attach: d.pointer("/android/attach").and_then(Value::as_bool).unwrap_or(false),
             steps: d.pointer(&format!("{ui_key}/steps")).and_then(Value::as_array).map(|a| a.iter().map(|s| UiStepForm::from_value(s, kind)).collect()).unwrap_or_default(),
         };
         let (data_mode, cases_inline, cases_file) = match d.get("cases") {
@@ -692,6 +695,9 @@ impl CaseForm {
             }
             if s.clear_data != w.clear_data {
                 set(req, "clearData", s.clear_data.then_some(Value::Bool(true)));
+            }
+            if s.attach != w.attach {
+                set(req, "attach", s.attach.then_some(Value::Bool(true)));
             }
         }
         // 从别的协议切过来：步骤按新协议重写（Android 的点击写 tap）

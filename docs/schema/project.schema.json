@@ -141,9 +141,25 @@
       "description": "Mac 桌面应用用例的设置（需要安装 agent-desktop）",
       "properties": {
         "agentDesktop": { "type": "string", "description": "agent-desktop 路径（缺省 PATH 与常见安装位置；环境变量 REQUESTBABY_AGENT_DESKTOP 优先）" },
+        "headed": {
+          "type": "boolean",
+          "description": "允许真实鼠标：按屏幕文字（ocr）定位的点击需要它——会移动鼠标、把应用窗口带到最前，运行期间不要动鼠标。缺省关闭；只读操作（识别、断言、取值）不受影响"
+        },
         "screenshots": {
           "enum": ["steps", "failure"],
           "description": "截图：steps（每一步，缺省）/ failure（只截失败、结束画面与 screenshot 步骤）"
+        }
+      }
+    },
+    "ocr": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "屏幕文字识别（OCR）：步骤里用 ocr 定位时的识别设置",
+      "properties": {
+        "languages": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "识别语言（缺省 [\"zh-Hans\", \"en-US\"]）：如 zh-Hant / ja-JP / ko-KR；requestbaby doctor 列出本机支持的语言"
         }
       }
     },

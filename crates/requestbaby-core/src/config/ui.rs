@@ -5,6 +5,7 @@
 //!   Android 用 `id`（resource-id）/ `text` / `desc`（无障碍描述）；Mac 桌面用 role + name（无障碍角色与名称）/ `id`（AXIdentifier）。CSS / testId 只作兜底
 //! - 每一步自动等待元素出现、可见、可操作，不写 sleep
 //! - 每一步自动截图留证：点击类截图标出点了哪里，断言截图标出验证到的元素；失败另存现场
+//! - 界面结构里没有文字的页面（微信小程序、自绘控件…）用 `ocr` 按屏幕上看到的文字定位：对截图做文字识别，三端通用
 //!
 //! 结果映射到通用的 expect：`status` = Web 打开页面的 HTTP 状态（Android 无），
 //! `body` = 结束时的页面 / 界面（Web：`{"url", "title"}`，Android：`{"package", "activity"}`，Mac 桌面：`{"app", "window"}`）。
@@ -42,6 +43,10 @@ pub struct AndroidSpec {
     /// 启动前清除应用数据（全新安装后的状态）
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub clear_data: Option<bool>,
+    /// 接管设备上当前的界面：不启动、不关闭应用，从它现在停着的页面开始（微信小程序等要先手动走到目标页的场景）；
+    /// 要求 `app` 已经在前台，不能和 activity / apk / clearData 同时写
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub attach: Option<bool>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub steps: Vec<UiStep>,
     /// 每一步等待的默认超时毫秒（缺省 10000）
@@ -126,7 +131,7 @@ impl Default for Viewport {
 /// 找元素 + （等待 / 断言时）对它或页面的要求 + （捕获时）取哪个值。
 ///
 /// 定位：`role`+`name` / `label` / `text` / `placeholder` / `testId` / `css`（Web）；
-/// `id` / `text` / `desc`（Android）。可加 `exact`（完全相等，缺省包含即可）与 `nth`（第几个，从 0 开始）。
+/// `id` / `text` / `desc`（Android）；`ocr`（按屏幕上识别到的文字，三端通用）。可加 `exact`（完全相等，缺省包含即可）与 `nth`（第几个，从 0 开始）。
 #[derive(Debug, Clone, Default, PartialEq, Deserialize, Serialize)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
 pub struct Locator {
@@ -165,6 +170,23 @@ pub struct Locator {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub nth: Option<usize>,
 
+    // ---- 屏幕文字识别（OCR）：对截图识别文字，按看到的字定位，不依赖界面结构 ----
+    /// 屏幕上看到的文字（忽略空白、全角半角、大小写，包含即可；`exact` 时整行相等）。写 `"*"` = 区域内的全部文字
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ocr: Option<String>,
+    /// 只识别 / 查找屏幕的这一块：x / y / w / h 取 0~1，是占整张截图的比例，与分辨率无关
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub region: Option<Region>,
+    /// 只取和这行文字在同一横排的结果（卡片、表格里「某某那一行的『已约满』」）；这行文字要在 region 之内
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub row: Option<String>,
+    /// 容错：允许识别结果与期望的文字相差几个字（缺省 0，必须一致）
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fuzzy: Option<u32>,
+    /// 识别置信度低于这个值（0~1）的文字忽略（缺省 0.3）
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub min_confidence: Option<f64>,
+
     // ---- 等待 / 断言的条件（只在 waitFor / expect 里用）----
     /// 当前地址包含（Web）
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -178,9 +200,9 @@ pub struct Locator {
     /// 元素状态，缺省 visible
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub state: Option<UiState>,
-    /// 可见的匹配元素恰好这么多个
+    /// 可见的匹配元素的个数：数字 = 恰好这么多个；也可以写比较 `{"gt": 0}` / `{"gte": 1, "lt": 5}`
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub count: Option<usize>,
+    pub count: Option<Count>,
     /// 输入框的值（exact 时完全相等，否则包含）
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub value: Option<String>,
@@ -195,6 +217,104 @@ pub struct Locator {
     /// 用正则从取到的文字里截取（有分组取第 1 组）
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub regex: Option<String>,
+}
+
+/// 屏幕上的一块区域：x / y / w / h 都是 0~1 的比例（相对整张截图，左上角为原点），与分辨率无关
+#[derive(Debug, Clone, Copy, PartialEq, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct Region {
+    pub x: f64,
+    pub y: f64,
+    pub w: f64,
+    pub h: f64,
+}
+
+impl Region {
+    /// 写法是否合法：都在 0~1 之内、宽高大于 0；不合法返回原因
+    pub fn check(&self) -> Result<(), String> {
+        let vals = [self.x, self.y, self.w, self.h];
+        if vals.iter().any(|v| !v.is_finite() || !(0.0..=1.0).contains(v)) {
+            return Err("x / y / w / h 要在 0~1 之间（占整张截图的比例）".into());
+        }
+        if self.w <= 0.0 || self.h <= 0.0 {
+            return Err("w / h 要大于 0".into());
+        }
+        if self.x + self.w > 1.0 + 1e-9 || self.y + self.h > 1.0 + 1e-9 {
+            return Err("区域超出了屏幕（x + w、y + h 不能大于 1）".into());
+        }
+        Ok(())
+    }
+
+    /// 换算成截图上的像素矩形 (x, y, 宽, 高)（取整并限制在图内）；区域为空返回 None
+    pub fn to_pixels(&self, width: u32, height: u32) -> Option<(u32, u32, u32, u32)> {
+        let (fw, fh) = (width as f64, height as f64);
+        let x0 = (self.x.clamp(0.0, 1.0) * fw).floor();
+        let y0 = (self.y.clamp(0.0, 1.0) * fh).floor();
+        let x1 = ((self.x + self.w).clamp(0.0, 1.0) * fw).ceil();
+        let y1 = ((self.y + self.h).clamp(0.0, 1.0) * fh).ceil();
+        if x1 - x0 < 1.0 || y1 - y0 < 1.0 {
+            return None;
+        }
+        Some((x0 as u32, y0 as u32, (x1 - x0) as u32, (y1 - y0) as u32))
+    }
+}
+
+/// 个数要求：数字 = 恰好；或比较（与接口断言同一套运算符名：gt / gte / lt / lte）
+#[derive(Debug, Clone, Copy, PartialEq, Deserialize, Serialize)]
+#[serde(untagged)]
+pub enum Count {
+    Exact(usize),
+    Cmp(CountCmp),
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct CountCmp {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub gt: Option<usize>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub gte: Option<usize>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lt: Option<usize>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lte: Option<usize>,
+}
+
+impl Count {
+    pub fn matches(&self, n: usize) -> bool {
+        match self {
+            Count::Exact(k) => n == *k,
+            Count::Cmp(c) => c.gt.is_none_or(|k| n > k) && c.gte.is_none_or(|k| n >= k) && c.lt.is_none_or(|k| n < k) && c.lte.is_none_or(|k| n <= k),
+        }
+    }
+
+    /// 一条比较都没写（`{}`）
+    pub fn is_empty(&self) -> bool {
+        matches!(self, Count::Cmp(c) if c.gt.is_none() && c.gte.is_none() && c.lt.is_none() && c.lte.is_none())
+    }
+
+    /// 人话：「5 个」「多于 0 个」「至少 1 个且少于 5 个」
+    pub fn describe(&self) -> String {
+        match self {
+            Count::Exact(n) => format!("{n} 个"),
+            Count::Cmp(c) => {
+                let mut parts = vec![];
+                if let Some(k) = c.gt {
+                    parts.push(format!("多于 {k} 个"));
+                }
+                if let Some(k) = c.gte {
+                    parts.push(format!("至少 {k} 个"));
+                }
+                if let Some(k) = c.lt {
+                    parts.push(format!("少于 {k} 个"));
+                }
+                if let Some(k) = c.lte {
+                    parts.push(format!("至多 {k} 个"));
+                }
+                parts.join("且")
+            }
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
@@ -505,6 +625,8 @@ impl Locator {
             &self.activity,
             &self.value,
             &self.has_text,
+            &self.ocr,
+            &self.row,
         ]
         .into_iter()
         .flatten()
@@ -514,7 +636,12 @@ impl Locator {
 
     /// 写了定位元素的字段（否则是纯页面条件：url / title / activity）
     pub fn has_target(&self) -> bool {
-        [&self.role, &self.label, &self.text, &self.placeholder, &self.test_id, &self.css, &self.id, &self.desc].iter().any(|f| f.is_some())
+        [&self.role, &self.label, &self.text, &self.placeholder, &self.test_id, &self.css, &self.id, &self.desc, &self.ocr].iter().any(|f| f.is_some())
+    }
+
+    /// 按屏幕文字识别（OCR）定位，而不是读界面结构
+    pub fn is_ocr(&self) -> bool {
+        self.ocr.is_some()
     }
 
     /// 人话描述：按钮「登录」/ 输入框「手机号」/ 文字「订单」…
@@ -528,6 +655,12 @@ impl Locator {
             }
         } else if let Some(l) = &self.label {
             format!("输入框{}", q(l))
+        } else if let Some(t) = &self.ocr {
+            let what = if t == "*" { "屏幕上的全部文字".to_string() } else { format!("屏幕文字{}", q(t)) };
+            match &self.row {
+                Some(r) => format!("和{}同一行的{what}", q(r)),
+                None => what,
+            }
         } else if let Some(t) = &self.text {
             format!("文字{}", q(t))
         } else if let Some(p) = &self.placeholder {
@@ -564,7 +697,7 @@ impl Locator {
         if self.has_target() {
             let target = self.describe();
             let mut what = match (self.count, self.state) {
-                (Some(n), _) => format!("{target}有 {n} 个"),
+                (Some(n), _) => format!("{target}有{}", if matches!(n, Count::Exact(_)) { format!(" {}", n.describe()) } else { n.describe() }),
                 (None, Some(s)) => format!("{target}{}", s.label()),
                 (None, None) if self.value.is_none() && self.has_text.is_none() => format!("{target}可见"),
                 _ => target,
@@ -644,6 +777,19 @@ pub struct DesktopConfig {
     pub agent_desktop: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub screenshots: Option<ScreenshotPolicy>,
+    /// 允许用真实鼠标：按屏幕文字（`ocr`）定位的点击需要它——会把鼠标移到目标上并点击、把应用窗口带到最前，
+    /// 运行期间不要动鼠标。缺省关闭：只读（识别、断言、取值）不受影响，点击 OCR 找到的文字时报错并提示这个开关
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub headed: Option<bool>,
+}
+
+/// 项目级屏幕文字识别（OCR）配置（requestbaby.json 的 `ocr`）
+#[derive(Debug, Clone, Default, PartialEq, Deserialize, Serialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct OcrConfig {
+    /// 识别语言（缺省 `["zh-Hans", "en-US"]`）：如 `zh-Hant` / `ja-JP` / `ko-KR`；`requestbaby doctor` 列出本机支持的语言
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub languages: Vec<String>,
 }
 
 /// 项目级 Android 配置（requestbaby.json 的 `android`）
@@ -695,5 +841,49 @@ mod tests {
         let s: UiStep = serde_json::from_str(r#"{"wait": 300, "capture": {"u": "url", "no": {"text": "订单号", "regex": "ORD-\\d+"}}}"#).unwrap();
         assert!(matches!(&s.capture["u"], CaptureSource::Builtin(b) if b == "url"));
         assert!(matches!(&s.capture["no"], CaptureSource::Element(l) if l.regex.is_some()));
+    }
+
+    #[test]
+    fn ocr_locator_describes_and_parses() {
+        let l: Locator = serde_json::from_str(r#"{"ocr": "已约满", "region": {"x": 0, "y": 0.1, "w": 1, "h": 0.09}, "row": "张三", "fuzzy": 1, "minConfidence": 0.5, "nth": 1}"#).unwrap();
+        assert!(l.is_ocr() && l.has_target());
+        assert_eq!(l.describe(), "和「张三」同一行的屏幕文字「已约满」（第 2 个）");
+        assert_eq!(Locator { ocr: Some("*".into()), ..Default::default() }.describe(), "屏幕上的全部文字");
+        // 变量引用扫描要覆盖 ocr / row
+        let t = Locator { ocr: Some("{{a}}".into()), row: Some("{{b}}".into()), ..Default::default() }.texts();
+        assert!(t.contains(&"{{a}}".to_string()) && t.contains(&"{{b}}".to_string()));
+        // 区域里写了不认识的字段、或比例不在 0~1：解析 / 检查都挡住
+        assert!(serde_json::from_str::<Locator>(r#"{"ocr": "a", "region": {"x": 0, "y": 0, "w": 1, "h": 1, "z": 2}}"#).is_err());
+        assert!(Region { x: 0.5, y: 0.0, w: 0.6, h: 1.0 }.check().is_err());
+        assert!(Region { x: 0.0, y: 0.0, w: 0.0, h: 1.0 }.check().is_err());
+        assert!(Region { x: -0.1, y: 0.0, w: 0.5, h: 0.5 }.check().is_err());
+        assert!(Region { x: 0.0, y: 0.1, w: 1.0, h: 0.9 }.check().is_ok());
+    }
+
+    #[test]
+    fn region_converts_to_pixels() {
+        let r = Region { x: 0.0, y: 0.1, w: 1.0, h: 0.09 };
+        assert_eq!(r.to_pixels(1080, 2400), Some((0, 240, 1080, 216)));
+        // 超出图外的部分被截掉
+        assert_eq!(Region { x: 0.9, y: 0.9, w: 0.5, h: 0.5 }.to_pixels(1000, 1000), Some((900, 900, 100, 100)));
+        assert_eq!(Region { x: 1.0, y: 0.0, w: 0.5, h: 0.5 }.to_pixels(100, 100), None);
+    }
+
+    #[test]
+    fn count_accepts_number_or_comparison() {
+        let n: Count = serde_json::from_str("5").unwrap();
+        assert!(n.matches(5) && !n.matches(4));
+        assert_eq!(n.describe(), "5 个");
+        let c: Count = serde_json::from_str(r#"{"gte": 1, "lt": 5}"#).unwrap();
+        assert!(!c.matches(0) && c.matches(1) && c.matches(4) && !c.matches(5));
+        assert_eq!(c.describe(), "至少 1 个且少于 5 个");
+        let gt: Count = serde_json::from_str(r#"{"gt": 0}"#).unwrap();
+        assert!(!gt.matches(0) && gt.matches(1));
+        assert!(serde_json::from_str::<Count>(r#"{"gtt": 0}"#).is_err());
+        assert!(serde_json::from_str::<Count>("{}").unwrap().is_empty());
+        let l: Locator = serde_json::from_str(r#"{"text": "订单", "count": {"gt": 0}}"#).unwrap();
+        assert_eq!(l.describe_condition(), "文字「订单」有多于 0 个");
+        let l: Locator = serde_json::from_str(r#"{"text": "订单", "count": 3}"#).unwrap();
+        assert_eq!(l.describe_condition(), "文字「订单」有 3 个");
     }
 }

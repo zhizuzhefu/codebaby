@@ -29,6 +29,7 @@ pub const TOPICS: &[(&str, &[&str], &str, &str)] = &[
     ("web", &["界面", "浏览器", "页面"], "Web 界面验收", include_str!("../../../docs/guide/web.md")),
     ("android", &["安卓", "app", "手机"], "Android 界面验收", include_str!("../../../docs/guide/android.md")),
     ("desktop", &["mac", "桌面", "macos", "agent-desktop"], "Mac 桌面应用验收", include_str!("../../../docs/guide/desktop.md")),
+    ("ocr", &["文字识别", "屏幕文字", "识别"], "屏幕文字识别（OCR）", include_str!("../../../docs/guide/ocr.md")),
     ("proxy", &["代理", "socks", "socks5"], "代理", include_str!("../../../docs/guide/proxy.md")),
     ("scripts", &["脚本", "js"], "进阶 JS 脚本", include_str!("../../../docs/guide/scripts.md")),
     ("cli", &["命令", "协议"], "命令与调度协议", include_str!("../../../docs/guide/cli.md")),

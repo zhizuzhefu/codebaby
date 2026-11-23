@@ -128,6 +128,7 @@ pub struct CaseEditor {
     ui_activity: Entity<InputState>,
     ui_apk: Entity<InputState>,
     ui_clear_data: bool,
+    ui_attach: bool,
     ui_steps: Vec<ui::UiRow>,
     /// Android / Mac 桌面子页：0 步骤 / 1 应用
     ui_tab: usize,
@@ -300,6 +301,7 @@ impl CaseEditor {
             ui_activity,
             ui_apk,
             ui_clear_data: false,
+            ui_attach: false,
             ui_steps: vec![],
             ui_tab: 0,
             ui_snapshot: None,
@@ -511,6 +513,7 @@ impl CaseEditor {
         self.ws_query.update(cx, |t, cx| t.load(Some(&f.ws.query), window, cx));
         self.set_steps(&f.ws.steps, window, cx);
         self.ui_clear_data = f.ui.clear_data;
+        self.ui_attach = f.ui.attach;
         self.ui_restart = f.ui.restart;
         self.set_ui_steps(&f.ui.steps, window, cx);
         self.ui_tab = 0;
@@ -565,6 +568,7 @@ impl CaseEditor {
                 activity: input(&self.ui_activity),
                 apk: input(&self.ui_apk),
                 clear_data: self.ui_clear_data,
+                attach: self.ui_attach,
                 steps: self.current_ui_steps(cx),
             },
             method: self.method.read(cx).selected_value().map(|m| m.to_string()).unwrap_or_else(|| "GET".into()),
@@ -820,6 +824,7 @@ impl CaseEditor {
             Protocol::Web | Protocol::Android | Protocol::Desktop => bar
                 .child(div().flex_1().min_w_0().child(Input::new(&self.ui_target).small()))
                 .child(self.render_snapshot_button(cx))
+                .child(self.render_ocr_button(cx))
                 .into_any_element(),
         }
     }

@@ -88,6 +88,46 @@ pub struct UiSnapshot {
     pub screenshot: Option<std::path::PathBuf>,
 }
 
+/// 快照的截图。`ocr` 时顺带识别屏幕文字：追加「文字(OCR)」元素和可直接粘贴的 `ocr` 定位，截图上框出识别到的每一行
+/// （界面结构里没有文字的页面——微信小程序、自绘控件——靠它写步骤）
+fn snapshot_shot(root: Option<&Path>, project: &crate::config::Project, d: &mut dyn crate::engine::ui::UiDriver, ocr: bool, elements: &mut Vec<SnapElement>) -> Result<Option<std::path::PathBuf>> {
+    use crate::engine::{ocr as eocr, ocr_match, ui as eui};
+    let file = |ext: &str| {
+        let dir = snapshot_dir(root);
+        let _ = std::fs::create_dir_all(&dir);
+        dir.join(format!("snapshot-{}.{ext}", crate::history::now_ms()))
+    };
+    if !ocr {
+        return Ok(d.screenshot().ok().and_then(|s| {
+            let f = file("png");
+            crate::fsx::write(&f, &s.bytes).ok().map(|_| f)
+        }));
+    }
+    eocr::set_languages(project.ocr.languages.clone());
+    let shot = d.screenshot_for_ocr()?;
+    let frame = eocr::recognize(&shot.bytes, None, &eocr::languages())?;
+    let scale = if shot.scale > 0.0 { shot.scale } else { 1.0 };
+    let min = ocr_match::DEFAULT_MIN_CONFIDENCE;
+    let mut marks = vec![];
+    for (i, l) in frame.lines.iter().enumerate().filter(|(_, l)| l.confidence >= min) {
+        let q = ocr_match::Search { text: &l.text, exact: false, fuzzy: 0, min_confidence: min, row: None };
+        let hits = ocr_match::search(&frame, &q);
+        let mut loc = serde_json::json!({ "ocr": l.text });
+        // 同样的文字在屏幕上出现多次：按阅读顺序加 nth，写进步骤能定位到这一处
+        if hits.len() > 1 {
+            if let Some(k) = hits.iter().position(|h| h.line == i) {
+                loc["nth"] = serde_json::json!(k);
+            }
+        }
+        elements.push(SnapElement { kind: "文字(OCR)".into(), name: l.text.clone(), locator: loc, states: vec![format!("置信度 {:.2}", l.confidence)] });
+        marks.push(eui::Mark { rect: eui::Rect { x: l.rect.x / scale, y: l.rect.y / scale, w: l.rect.w / scale, h: l.rect.h / scale }, kind: eui::MarkKind::Verified, point: None });
+    }
+    let jpg = eui::annotate(&shot, &marks)?;
+    let f = file("jpg");
+    crate::fsx::write(&f, &jpg)?;
+    Ok(Some(f))
+}
+
 fn snapshot_dir(root: Option<&Path>) -> std::path::PathBuf {
     match root {
         Some(r) => crate::history::scratch_dir(r),
@@ -96,7 +136,7 @@ fn snapshot_dir(root: Option<&Path>) -> std::path::PathBuf {
 }
 
 /// 打开页面，列出可操作的元素与推荐定位（角色 + 名称；同名多个时加 nth；输入框用标签）
-pub fn web_snapshot(root: Option<&Path>, env: &str, url: &str, headed: bool) -> Result<UiSnapshot> {
+pub fn web_snapshot(root: Option<&Path>, env: &str, url: &str, headed: bool, ocr: bool) -> Result<UiSnapshot> {
     use crate::engine::ui::UiDriver;
     let project = root.map(project).unwrap_or_default();
     let url = match root {
@@ -120,7 +160,7 @@ pub fn web_snapshot(root: Option<&Path>, env: &str, url: &str, headed: bool) -> 
         m
     });
     let form = ["textbox", "searchbox", "combobox", "spinbutton"];
-    let elements = raw
+    let mut elements: Vec<SnapElement> = raw
         .into_iter()
         .map(|(role, name, states)| {
             let key = (role.clone(), name.clone());
@@ -140,11 +180,7 @@ pub fn web_snapshot(root: Option<&Path>, env: &str, url: &str, headed: bool) -> 
             SnapElement { kind: crate::config::ui::role_label(&role_key).to_string(), name, locator: loc, states }
         })
         .collect();
-    let shot = page.screenshot().ok().and_then(|s| {
-        let dir = snapshot_dir(root);
-        let file = dir.join(format!("snapshot-{}.png", crate::history::now_ms()));
-        crate::fsx::write(&file, &s.bytes).ok().map(|_| file)
-    });
+    let shot = snapshot_shot(root, &project, &mut page, ocr, &mut elements)?;
     Ok(UiSnapshot { location: info.location, title: info.title, elements, screenshot: shot })
 }
 
@@ -172,7 +208,7 @@ pub fn android_devices(root: Option<&Path>) -> Result<AndroidDevices> {
 }
 
 /// 读取设备当前界面，列出元素与推荐定位（id 唯一用 id，否则文字 / 描述）
-pub fn android_snapshot(root: Option<&Path>) -> Result<UiSnapshot> {
+pub fn android_snapshot(root: Option<&Path>, ocr: bool) -> Result<UiSnapshot> {
     use crate::engine::android;
     use crate::engine::ui::UiDriver;
     let project = root.map(project).unwrap_or_default();
@@ -222,10 +258,7 @@ pub fn android_snapshot(root: Option<&Path>) -> Result<UiSnapshot> {
         let name = if !n.text.is_empty() { n.text.clone() } else if !n.desc.is_empty() { n.desc.clone() } else { n.hint.clone() };
         elements.push(SnapElement { kind: kind.into(), name, locator: loc, states });
     }
-    let shot = dev.screenshot().ok().and_then(|s| {
-        let file = snapshot_dir(root).join(format!("snapshot-{}.png", crate::history::now_ms()));
-        crate::fsx::write(&file, &s.bytes).ok().map(|_| file)
-    });
+    let shot = snapshot_shot(root, &project, &mut dev, ocr, &mut elements)?;
     Ok(UiSnapshot { location: info.location, title: info.title, elements, screenshot: shot })
 }
 
@@ -248,7 +281,7 @@ pub fn desktop_apps(root: Option<&Path>) -> Result<Vec<(String, String)>> {
 }
 
 /// 读取正在运行的 Mac 应用当前窗口，列出元素与推荐定位（角色 + 名称；同名多个时加 nth；其次 AXIdentifier）
-pub fn desktop_snapshot(root: Option<&Path>, app: &str, window: Option<&str>) -> Result<UiSnapshot> {
+pub fn desktop_snapshot(root: Option<&Path>, app: &str, window: Option<&str>, ocr: bool) -> Result<UiSnapshot> {
     use crate::engine::desktop;
     use crate::engine::ui::UiDriver;
     let project = root.map(project).unwrap_or_default();
@@ -294,9 +327,6 @@ pub fn desktop_snapshot(root: Option<&Path>, app: &str, window: Option<&str>) ->
         }
         elements.push(SnapElement { kind: crate::config::ui::role_label(&n.role).to_string(), name: shown, locator: loc, states });
     }
-    let shot = a.screenshot().ok().and_then(|s| {
-        let file = snapshot_dir(root).join(format!("snapshot-{}.png", crate::history::now_ms()));
-        crate::fsx::write(&file, &s.bytes).ok().map(|_| file)
-    });
+    let shot = snapshot_shot(root, &project, &mut a, ocr, &mut elements)?;
     Ok(UiSnapshot { location: info.location, title: info.title, elements, screenshot: shot })
 }

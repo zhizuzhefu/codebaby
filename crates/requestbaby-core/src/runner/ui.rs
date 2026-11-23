@@ -39,6 +39,8 @@ pub struct ArtifactsDir {
 enum Open {
     Goto(String),
     Launch(bool),
+    /// 接管设备当前的界面（Android attach）：不启动、不关闭
+    Attach,
 }
 
 /// 一步的执行结果
@@ -92,6 +94,8 @@ fn render_locator(l: &Locator, v: &Vars) -> Locator {
         activity: r(&l.activity),
         value: r(&l.value),
         has_text: r(&l.has_text),
+        ocr: r(&l.ocr),
+        row: r(&l.row),
         attr: r(&l.attr),
         regex: l.regex.clone(),
         ..l.clone()
@@ -143,14 +147,30 @@ fn file_slug(s: &str) -> String {
     out.trim_matches('_').to_string()
 }
 
+/// 按定位找元素：`ocr` 对截图做文字识别（三端通用），其余读驱动自己的界面结构
+fn find_all(d: &mut dyn UiDriver, loc: &Locator) -> anyhow::Result<Vec<Element>> {
+    if loc.is_ocr() {
+        crate::engine::ocr_match::find(d, loc)
+    } else {
+        d.find(loc)
+    }
+}
+
+/// 这一步有没有用到屏幕文字识别（定位或捕获里写了 `ocr`）
+fn uses_ocr(step: &UiStep) -> bool {
+    step.locator().is_some_and(|l| l.is_ocr()) || step.capture.values().any(|c| matches!(c, CaptureSource::Element(l) if l.is_ocr()))
+}
+
 /// 等到唯一的目标元素（need_action：还要可用、位置稳定、没被遮挡）
 fn wait_element(d: &mut dyn UiDriver, loc: &Locator, deadline: Instant, need_action: bool, cancelled: &dyn Fn() -> bool) -> Result<Element, WaitErr> {
     let desc = loc.describe();
     let poll = d.kind().poll();
     let mut why = String::new();
     let mut last: Option<Element>;
+    // 屏幕文字没有「位置是否稳定」的信息：要连续两次识别在同一位置才操作
+    let mut prev_visual: Option<eui::Rect> = None;
     loop {
-        let els = d.find(loc).map_err(|e| WaitErr::Fatal(format!("{e:#}"), vec![]))?;
+        let els = find_all(d, loc).map_err(|e| WaitErr::Fatal(format!("{e:#}"), vec![]))?;
         let total = els.len();
         let mut vis: Vec<Element> = els.into_iter().filter(|e| e.visible).collect();
         if let Some(t) = &loc.has_text {
@@ -178,11 +198,22 @@ fn wait_element(d: &mut dyn UiDriver, loc: &Locator, deadline: Instant, need_act
                 }
             },
         };
+        if target.is_none() {
+            prev_visual = None;
+        }
         if let Some(el) = target {
             if !need_action {
                 return Ok(el);
             }
-            if !el.enabled {
+            if el.visual {
+                let steady = prev_visual.is_some_and(|p| (p.x - el.rect.x).abs() <= 3.0 && (p.y - el.rect.y).abs() <= 3.0);
+                if steady {
+                    return Ok(el);
+                }
+                prev_visual = Some(el.rect);
+                why = format!("{desc}的位置还在变化（动画中）");
+                last = Some(el);
+            } else if !el.enabled {
                 why = format!("{desc}是禁用状态");
                 last = Some(el);
             } else {
@@ -229,7 +260,7 @@ fn check_once(d: &mut dyn UiDriver, loc: &Locator) -> anyhow::Result<(bool, Stri
         let desc = loc.describe();
         let mut find = loc.clone();
         find.has_text = None;
-        let els = d.find(&find)?;
+        let els = find_all(d, &find)?;
         let total = els.len();
         let vis: Vec<Element> = els.into_iter().filter(|e| e.visible).collect();
         let matching: Vec<Element> = match &loc.has_text {
@@ -237,7 +268,7 @@ fn check_once(d: &mut dyn UiDriver, loc: &Locator) -> anyhow::Result<(bool, Stri
             None => vis.clone(),
         };
         if let Some(n) = loc.count {
-            if matching.len() != n {
+            if !n.matches(matching.len()) {
                 problems.push(format!("实际有 {} 个", matching.len()));
             }
             rects.extend(matching.iter().take(20).map(|e| e.rect));
@@ -487,7 +518,7 @@ impl Runner {
         let (dir, display) = self.evidence_dir(dc, &result.name, opts);
         let policy = cfg.screenshots.unwrap_or_default();
         let step_timeout = spec.timeout_ms.unwrap_or(DEFAULT_STEP_TIMEOUT_MS);
-        let (outcomes, evidence) = self.ui_steps(&mut dev, dc, row, &spec.steps, Open::Launch(spec.clear_data.unwrap_or(false)), step_timeout, &dir, display, policy, opts);
+        let (outcomes, evidence) = self.ui_steps(&mut dev, dc, row, &spec.steps, if spec.attach == Some(true) { Open::Attach } else { Open::Launch(spec.clear_data.unwrap_or(false)) }, step_timeout, &dir, display, policy, opts);
         let info = dev.page().unwrap_or_default();
         let resp = RespData {
             status: 0,
@@ -576,6 +607,8 @@ impl Runner {
     ) -> (Vec<TestOutcome>, UiEvidence) {
         let kind = d.kind();
         let started = Instant::now();
+        crate::engine::ocr::set_languages(self.ctx.project.ocr.languages.clone());
+        let mut ocr_failed = false;
         let mut ev = UiEvidence { dir: display, ..Default::default() };
         let mut outcomes: Vec<TestOutcome> = vec![];
         let _ = std::fs::create_dir_all(dir);
@@ -584,9 +617,14 @@ impl Runner {
         let cancel = opts.cancel.clone();
         let cancelled = move || cancel.as_ref().is_some_and(|c| c.is_cancelled());
 
-        // 截图并标注，保存为 dir/name；失败不影响用例结论（记一条说明）
-        let snap = |d: &mut dyn UiDriver, name: &str, marks: &[Mark]| -> Result<String, String> {
-            let shot = d.screenshot().map_err(|e| format!("截图失败：{e:#}"))?;
+        // 截图并标注，保存为 dir/name；失败不影响用例结论（记一条说明）。
+        // reuse：本步只是看（断言 / 等待）、刚用屏幕文字识别截过图，就直接用那一张（不改变画面，省一次截图）
+        let snap = |d: &mut dyn UiDriver, name: &str, marks: &[Mark], reuse: bool| -> Result<String, String> {
+            let reused = if reuse { crate::engine::ocr_match::take_fresh_shot(Duration::from_millis(1500)) } else { None };
+            let shot = match reused {
+                Some(s) => s,
+                None => d.screenshot().map_err(|e| format!("截图失败：{e:#}"))?,
+            };
             let jpg = eui::annotate(&shot, marks).map_err(|e| format!("{e:#}"))?;
             crate::fsx::write(dir.join(name), &jpg).map_err(|e| format!("保存截图失败：{e:#}"))?;
             Ok(name.to_string())
@@ -595,6 +633,7 @@ impl Runner {
         // ---- 步骤 0：打开页面 / 启动应用 ----
         let (open_title, open_res) = match &open {
             Open::Goto(u) => (format!("打开 {u}"), d.goto(u)),
+            Open::Attach => ("接管当前界面（不启动应用）".to_string(), d.attach()),
             Open::Launch(clear) => {
                 let title = match (kind, *clear) {
                     (UiKind::Desktop, true) => "重新启动应用",
@@ -612,7 +651,7 @@ impl Runner {
         ev.environment = d.environment();
         let t_open = started.elapsed().as_millis() as u64;
         let open_failed = open_res.is_err();
-        let shot = if all_shots || open_failed { snap(d, "00-open.jpg", &[]).ok() } else { None };
+        let shot = if all_shots || open_failed { snap(d, "00-open.jpg", &[], false).ok() } else { None };
         let mut rec = StepRecord {
             index: 0,
             action: "open".into(),
@@ -651,6 +690,12 @@ impl Runner {
                 v
             };
             let step = render_step(raw, &v);
+            let step_ocr = uses_ocr(&step);
+            // 只看不动（断言 / 等待）：证据截图可以直接用屏幕文字识别刚用的那一张
+            let observe_only = step_ocr && matches!(step.action(), Some(UiAction::WaitFor | UiAction::Expect));
+            if step_ocr {
+                let _ = crate::engine::ocr_match::take_note();
+            }
             let title = describe_ui_step(&step, kind);
             let at = started.elapsed().as_millis() as u64;
             let timeout = Duration::from_millis(step.timeout_ms.unwrap_or(default_timeout).max(1));
@@ -688,7 +733,7 @@ impl Runner {
                         };
                         let point = el.rect.center();
                         // 操作前拍：标出点了哪里
-                        let shot = if all_shots { snap(d, &shot_name(key), &[Mark { rect: el.rect, kind: MarkKind::Action, point: Some(point) }]).ok() } else { None };
+                        let shot = if all_shots { snap(d, &shot_name(key), &[Mark { rect: el.rect, kind: MarkKind::Action, point: Some(point) }], false).ok() } else { None };
                         let r = match action {
                             UiAction::Click => d.click(&el),
                             UiAction::LongPress => d.long_press(&el),
@@ -772,6 +817,27 @@ impl Runner {
                 }
             })();
 
+            // ---- 屏幕文字识别的摘要：通过时记命中与置信度，失败时列出屏幕上识别到的文字 ----
+            let res = if step_ocr {
+                let note = crate::engine::ocr_match::take_note();
+                match (res, note) {
+                    (Ok(mut done), Some(nt)) => {
+                        done.detail = Some(match done.detail {
+                            Some(d) => format!("{d}；{nt}"),
+                            None => nt,
+                        });
+                        Ok(done)
+                    }
+                    (Err(mut f), Some(nt)) => {
+                        f.why = format!("{}（{nt}）", f.why);
+                        Err(f)
+                    }
+                    (res, None) => res,
+                }
+            } else {
+                res
+            };
+
             // ---- 捕获 ----
             let res = match res {
                 Ok(mut done) if !done.skipped && !step.capture.is_empty() => match self.ui_capture(d, &step, deadline, &cancelled) {
@@ -806,7 +872,7 @@ impl Runner {
                                 Some(label) => format!("{n:02}-{}.jpg", { let s = file_slug(label); if s.is_empty() { "screenshot".to_string() } else { s } }),
                                 None => shot_name(key),
                             };
-                            match snap(d, &name, &marks) {
+                            match snap(d, &name, &marks, observe_only) {
                                 Ok(s) => Some(s),
                                 Err(e) => {
                                     notes.push(e);
@@ -822,9 +888,10 @@ impl Runner {
                     (if done.skipped { UiStepStatus::Skipped } else { UiStepStatus::Passed }, shot, done.detail)
                 }
                 Err(f) => {
-                    let shot = snap(d, &shot_name(&format!("{key}-failed")), &f.marks).ok();
+                    let shot = snap(d, &shot_name(&format!("{key}-failed")), &f.marks, observe_only).ok();
                     outcomes.push(TestOutcome { expr: format!("#{n} {title}"), pass: false, detail: Some(f.why.clone()) });
                     failed = true;
+                    ocr_failed = step_ocr;
                     (UiStepStatus::Failed, shot, Some(f.why))
                 }
             };
@@ -851,12 +918,21 @@ impl Runner {
         let n = steps.len() + 1;
         let at = started.elapsed().as_millis() as u64;
         if !failed {
-            let shot = snap(d, &format!("{n:02}-final.jpg"), &[]).ok();
+            let shot = snap(d, &format!("{n:02}-final.jpg"), &[], false).ok();
             let rec = StepRecord { index: n, action: "final".into(), title: "结束画面".into(), status: UiStepStatus::Passed, at_ms: at, duration_ms: 0, screenshot: shot, detail: None };
             self.emit_ui_step(&rel, &ev.dir, &rec);
             ev.steps.push(rec);
         } else {
             ev.artifacts = d.failure_scene(dir);
+            // 屏幕文字识别的失败现场：识别到的全部文字、位置与置信度（对照着改定位）
+            if ocr_failed {
+                if let Some(frame) = crate::engine::ocr::take_last() {
+                    let text = serde_json::to_string_pretty(&frame.to_json()).unwrap_or_default();
+                    if crate::fsx::write(dir.join("ocr.json"), text.as_bytes()).is_ok() {
+                        ev.artifacts.push(eui::Artifact { label: "屏幕文字识别（OCR）".into(), file: "ocr.json".into() });
+                    }
+                }
+            }
         }
         (outcomes, ev)
     }

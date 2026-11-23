@@ -363,6 +363,9 @@ enum WebCmd {
         /// 显示浏览器窗口
         #[arg(long)]
         headed: bool,
+        /// 同时识别屏幕上的文字（OCR），列出可直接粘贴的 ocr 定位；界面结构里没有文字的页面（微信小程序、自绘控件）用它
+        #[arg(long)]
+        ocr: bool,
         /// 输出 JSON
         #[arg(long)]
         json: bool,
@@ -398,6 +401,9 @@ enum DesktopCmd {
         /// 应用有多个窗口时：窗口标题里的一段文字
         #[arg(long)]
         window: Option<String>,
+        /// 同时识别屏幕上的文字（OCR），列出可直接粘贴的 ocr 定位；界面结构里没有文字的页面（微信小程序、自绘控件）用它
+        #[arg(long)]
+        ocr: bool,
         /// 输出 JSON
         #[arg(long)]
         json: bool,
@@ -410,6 +416,9 @@ enum AndroidCmd {
     Devices,
     /// 读取设备当前界面，列出元素与推荐定位，并截一张图
     Snapshot {
+        /// 同时识别屏幕上的文字（OCR），列出可直接粘贴的 ocr 定位；界面结构里没有文字的页面（微信小程序、自绘控件）用它
+        #[arg(long)]
+        ocr: bool,
         /// 输出 JSON
         #[arg(long)]
         json: bool,
@@ -965,11 +974,11 @@ fn print_snapshot(snap: &protocols::UiSnapshot, json: bool, next: &str) -> u8 {
 
 fn cmd_web(action: WebCmd) -> u8 {
     match action {
-        WebCmd::Snapshot { url, env, headed, json } => {
+        WebCmd::Snapshot { url, env, headed, ocr, json } => {
             let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
             let root = session::project_root(&cwd);
             let env = session::resolve_env(std::slice::from_ref(&cwd), env.as_deref());
-            match protocols::web_snapshot(root.as_deref(), &env, &url, headed) {
+            match protocols::web_snapshot(root.as_deref(), &env, &url, headed, ocr) {
                 Ok(s) => print_snapshot(&s, json, "定位粘贴进步骤：{\"click\": <定位>} / {\"fill\": <定位>, \"value\": \"…\"} / {\"expect\": <定位>}（requestbaby guide web）"),
                 Err(e) => err(format!("{e:#}")),
             }
@@ -1147,7 +1156,7 @@ fn cmd_android(action: AndroidCmd) -> u8 {
             }
             Err(e) => err(format!("{e:#}")),
         },
-        AndroidCmd::Snapshot { json } => match protocols::android_snapshot(root.as_deref()) {
+        AndroidCmd::Snapshot { ocr, json } => match protocols::android_snapshot(root.as_deref(), ocr) {
             Ok(s) => print_snapshot(&s, json, "定位粘贴进步骤：{\"tap\": <定位>} / {\"fill\": <定位>, \"value\": \"…\"} / {\"expect\": <定位>}（requestbaby guide android）"),
             Err(e) => err(format!("{e:#}")),
         },
@@ -1167,7 +1176,7 @@ fn cmd_desktop(action: DesktopCmd) -> u8 {
             }
             Err(e) => err(format!("{e:#}")),
         },
-        DesktopCmd::Snapshot { app, window, json } => match protocols::desktop_snapshot(root.as_deref(), &app, window.as_deref()) {
+        DesktopCmd::Snapshot { app, window, ocr, json } => match protocols::desktop_snapshot(root.as_deref(), &app, window.as_deref(), ocr) {
             Ok(s) => print_snapshot(&s, json, "定位粘贴进步骤：{\"click\": <定位>} / {\"fill\": <定位>, \"value\": \"…\"} / {\"expect\": <定位>}（requestbaby guide desktop）"),
             Err(e) => err(format!("{e:#}")),
         },

@@ -646,6 +646,7 @@ impl UiDriver for WebPage<'_> {
                 value: v["value"].as_str().map(String::from),
                 tag: v["tag"].as_str().unwrap_or_default().to_string(),
                 secret: v["secret"].as_bool().unwrap_or(false),
+                ..Default::default()
             });
         }
         Ok(out)
@@ -658,6 +659,10 @@ impl UiDriver for WebPage<'_> {
     }
 
     fn actionable(&mut self, el: &Element) -> Result<Actionable> {
+        // 屏幕文字（OCR）没有对应的页面节点：只有坐标，位置稳定由步骤循环连续两次识别保证
+        if el.visual {
+            return Ok(Actionable::Ok(el.clone()));
+        }
         let v = self.on_found(&with_el(ACTIONABLE_JS), vec![json!(el.handle)], true)?;
         if v["gone"].as_bool() == Some(true) {
             return Ok(Actionable::NotYet("元素已从页面移除".into()));
@@ -697,6 +702,22 @@ impl UiDriver for WebPage<'_> {
     }
 
     fn fill(&mut self, el: &Element, value: &str) -> Result<()> {
+        if el.visual {
+            // 屏幕上的字没有页面节点：点进去，全选，再输入（空值 = 删掉）
+            self.click(el)?;
+            for t in ["rawKeyDown", "keyUp"] {
+                self.call("Input.dispatchKeyEvent", json!({ "type": t, "key": "a", "code": "KeyA", "windowsVirtualKeyCode": 65, "commands": ["selectAll"] }))?;
+            }
+            if value.is_empty() {
+                let (m, k, c, code, _) = key_event("Backspace")?;
+                for t in ["rawKeyDown", "keyUp"] {
+                    self.call("Input.dispatchKeyEvent", json!({ "type": t, "modifiers": m, "key": k, "code": c, "windowsVirtualKeyCode": code }))?;
+                }
+            } else {
+                self.call("Input.insertText", json!({ "text": value }))?;
+            }
+            return Ok(());
+        }
         if !el.editable {
             bail!("{} 不是输入框，无法填写", el.tag);
         }
@@ -722,6 +743,9 @@ impl UiDriver for WebPage<'_> {
     }
 
     fn select(&mut self, el: &Element, value: &str) -> Result<String> {
+        if el.visual {
+            bail!("按屏幕文字（ocr）定位的元素不能 select：点开下拉框后，对选项文字再写一步 click");
+        }
         self.begin_action();
         let r = self.on_found(&with_el(SELECT_JS), vec![json!(el.handle), json!(value)], false)?;
         if let Some(e) = r["err"].as_str() {
@@ -837,6 +861,9 @@ impl UiDriver for WebPage<'_> {
     }
 
     fn attr(&mut self, el: &Element, name: &str) -> Result<Option<String>> {
+        if el.visual {
+            return Ok(None);
+        }
         let v = self.on_found(&with_el(ATTR_JS), vec![json!(el.handle), json!(name)], false)?;
         Ok(v.as_str().map(String::from))
     }
