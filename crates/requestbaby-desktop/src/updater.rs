@@ -75,6 +75,8 @@ impl Updater {
         }
         self.ready = update_app::read_pending();
         cx.background_spawn(async { update_app::cleanup_stale() }).detach();
+        // 状态变了要通知界面（欢迎页 / 状态栏的入口）刷新
+        cx.notify();
     }
 
     /// manual = 手动检查：已是最新 / 失败也要告诉用户

@@ -32,6 +32,8 @@ pub struct Shell {
     updater: Entity<Updater>,
     focus_handle: FocusHandle,
     _subscription: Option<Subscription>,
+    /// 更新状态变了（检查到新版本、下载完成）要刷新欢迎页右下角的入口
+    _updater_sub: Subscription,
 }
 
 impl Focusable for Shell {
@@ -44,7 +46,8 @@ impl Shell {
     /// `root` 为 None 时展示欢迎页（启动目录不是 requestbaby 项目）
     pub fn new(root: Option<PathBuf>, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let updater = cx.new(|_| Updater::default());
-        let mut this = Self { workspace: None, updater, focus_handle: cx.focus_handle(), _subscription: None };
+        let _updater_sub = cx.observe(&updater, |_, _, cx| cx.notify());
+        let mut this = Self { workspace: None, updater, focus_handle: cx.focus_handle(), _subscription: None, _updater_sub };
         match root {
             Some(root) => this.open_project(root, window, cx),
             None => window.set_window_title("requestbaby"),
@@ -253,6 +256,10 @@ impl Shell {
                             .child(Button::new("welcome-issues").ghost().small().icon(IconName::ExternalLink).label("反馈问题").on_click(|_, _, cx| cx.open_url(requestbaby_core::about::ISSUES))),
                     ),
             )
+            // 右下角：有新版本时的更新入口（和打开项目后的状态栏是同一个）
+            .when_some(self.updater.read(cx).render_badge(self.updater.downgrade()), |this, badge| {
+                this.child(h_flex().w_full().px_3().py_2().justify_end().child(badge))
+            })
     }
 }
 
