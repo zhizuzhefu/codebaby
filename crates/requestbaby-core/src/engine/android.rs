@@ -128,7 +128,7 @@ fn class_has_role(class: &str, checkable: bool, role: &str) -> bool {
     }
 }
 
-/// adb 可执行文件：项目配置 → PATH → ANDROID_HOME / ANDROID_SDK_ROOT
+/// adb 可执行文件：项目配置 → PATH → ANDROID_HOME / ANDROID_SDK_ROOT → 常见安装位置
 pub fn find_adb(configured: Option<&str>) -> Result<PathBuf> {
     if let Some(p) = configured.filter(|s| !s.is_empty()) {
         let pb = PathBuf::from(p);
@@ -145,7 +145,31 @@ pub fn find_adb(configured: Option<&str>) -> Result<PathBuf> {
             }
         }
     }
+    // 从 Finder / 启动台打开的桌面端拿不到登录 shell 的 PATH（Homebrew 装的 adb 在 /opt/homebrew/bin），再看常见位置
+    let home = std::env::var_os("HOME").or_else(|| std::env::var_os("USERPROFILE")).map(PathBuf::from);
+    let local_app_data = std::env::var_os("LOCALAPPDATA").map(PathBuf::from);
+    if let Some(p) = first_existing(&well_known_adb(home.as_deref(), local_app_data.as_deref())) {
+        return Ok(p);
+    }
     bail!("没有找到 adb：安装 Android SDK Platform-Tools，或在 requestbaby.json 的 android.adb 写路径")
+}
+
+/// 常见的 adb 安装位置（按优先级）：Homebrew、Android Studio 默认 SDK 目录
+fn well_known_adb(home: Option<&Path>, local_app_data: Option<&Path>) -> Vec<PathBuf> {
+    let exe = if cfg!(windows) { "adb.exe" } else { "adb" };
+    let mut v: Vec<PathBuf> = vec![PathBuf::from("/opt/homebrew/bin").join(exe), PathBuf::from("/usr/local/bin").join(exe)];
+    if let Some(h) = home {
+        v.push(h.join("Library/Android/sdk/platform-tools").join(exe));
+        v.push(h.join("Android/Sdk/platform-tools").join(exe));
+    }
+    if let Some(l) = local_app_data {
+        v.push(l.join("Android/Sdk/platform-tools").join(exe));
+    }
+    v
+}
+
+fn first_existing(candidates: &[PathBuf]) -> Option<PathBuf> {
+    candidates.iter().find(|p| p.is_file()).cloned()
 }
 
 /// adb：可执行文件 + 可选的远程 adb server（`android.server`，相当于每条命令加 `-H 主机 -P 端口`）
@@ -742,6 +766,19 @@ impl UiDriver for Device {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn adb_is_found_in_well_known_locations_when_path_has_none() {
+        let home = tempfile::tempdir().unwrap();
+        let sdk = home.path().join("Library/Android/sdk/platform-tools");
+        std::fs::create_dir_all(&sdk).unwrap();
+        let exe = if cfg!(windows) { "adb.exe" } else { "adb" };
+        let cands = super::well_known_adb(Some(home.path()), None);
+        assert!(cands.contains(&sdk.join(exe)) && cands.iter().any(|p| p.starts_with("/opt/homebrew/bin")), "{cands:?}");
+        assert_eq!(super::first_existing(&cands).filter(|p| p.starts_with(home.path())), None, "没有 adb 文件时不能当作找到");
+        std::fs::write(sdk.join(exe), "").unwrap();
+        assert_eq!(super::first_existing(&[sdk.join(exe)]), Some(sdk.join(exe)));
+    }
+
     use super::*;
 
     #[test]

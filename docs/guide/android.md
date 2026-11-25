@@ -105,7 +105,7 @@
 ## 设备
 
 - 只连了一台设备时自动使用；多台时用环境变量 `ANDROID_SERIAL` 或 `requestbaby.json` 的 `android.serial` 指定
-- adb 缺省从 PATH / `ANDROID_HOME` 找，或写 `android.adb`
+- adb 缺省从 PATH / `ANDROID_HOME` 找，再找常见安装位置（Homebrew 的 `/opt/homebrew/bin`、`/usr/local/bin`、Android Studio 默认 SDK 目录）——从 Finder 打开的桌面端拿不到终端里的 PATH，所以 Homebrew 装的 adb 也能找到；装在别处就写 `android.adb`（绝对路径）
 - Android 用例按顺序执行（一台设备同一时间只跑一个）
 - `requestbaby android devices` 列出设备；`requestbaby doctor` 检查 adb 与设备
 
