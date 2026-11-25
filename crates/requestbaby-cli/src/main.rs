@@ -1298,6 +1298,13 @@ fn live_steps_hook() -> runner::EventHook {
                 };
                 eprintln!("  {mark} \x1b[2m#{}\x1b[0m {}  \x1b[2m{}ms\x1b[0m{detail}", step.index, step.title, step.duration_ms);
             }
+            runner::RunEvent::LoopProgress { file, text, .. } => {
+                if *last != *file {
+                    eprintln!("\x1b[2m▶ {file}\x1b[0m");
+                    *last = file.clone();
+                }
+                eprintln!("  \x1b[36m↻\x1b[0m {text}");
+            }
             _ => {}
         }
     })

@@ -240,7 +240,7 @@ impl ResponsePanel {
             responded: true,
             evidence: Some(evidence),
             passed: true,
-            origin: "进行中".into(),
+            origin: live.progress.as_ref().map_or_else(|| "进行中".to_string(), |p| format!("进行中 · {p}")),
             live: true,
             ..Default::default()
         };

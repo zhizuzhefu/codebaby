@@ -357,16 +357,40 @@ struct Frame {
 }
 
 /// `repeat` 的进度
-struct LoopState {
+pub(crate) struct LoopState {
     spec: Repeat,
     /// 当前是第几轮（从 1 开始）
-    iter: u32,
-    started: Instant,
+    pub(crate) iter: u32,
+    pub(crate) started: Instant,
     /// 本轮开始时 证据步骤 / 断言结果 的条数：下一轮开始前丢掉本轮留下的（只保留最后一轮），避免长时间监控时证据无限增长
     ev_mark: usize,
     out_mark: usize,
     /// 本轮里遇到了 `break`：不再判断 until / 次数，直接结束循环
     broke: bool,
+}
+
+/// 毫秒 → 「1 小时 02 分」「9 分 12 秒」「35 秒」
+pub fn human_duration(ms: u64) -> String {
+    let s = ms / 1000;
+    match s {
+        0..=59 => format!("{s} 秒"),
+        60..=3599 => format!("{} 分 {:02} 秒", s / 60, s % 60),
+        _ => format!("{} 小时 {:02} 分", s / 3600, s % 3600 / 60),
+    }
+}
+
+/// 最外层循环的进度文字：「第 12 轮，已运行 9 分 12 秒（共 8 小时）」
+pub(crate) fn loop_progress_text(lp: &LoopState) -> String {
+    let elapsed = lp.started.elapsed().as_millis() as u64;
+    let mut t = match lp.spec.times {
+        Some(n) => format!("第 {}/{} 轮", lp.iter, n),
+        None => format!("第 {} 轮", lp.iter),
+    };
+    t.push_str(&format!("，已运行 {}", human_duration(elapsed)));
+    if let Some(ms) = lp.spec.for_ms {
+        t.push_str(&format!("（最长 {}）", human_duration(ms)));
+    }
+    t
 }
 
 /// 丢掉一轮循环留下的步骤记录、截图与断言结果。`exec`（通知回调）的记录保留：它们是「发生过什么」的证据
@@ -835,6 +859,9 @@ impl Runner {
                     lp.ev_mark = ev.steps.len();
                     lp.out_mark = outcomes.len();
                     self.runtime_vars.insert(name, VarVal::Str(lp.iter.to_string()));
+                    if !stack.iter().any(|f| f.lp.is_some()) {
+                        self.emit_loop_progress(&rel, &ev.dir, &lp);
+                    }
                     frame.steps = lp.spec.steps.clone();
                     frame.pos = 0;
                     frame.lp = Some(lp);
@@ -1087,6 +1114,9 @@ impl Runner {
                         lp.ev_mark = ev.steps.len();
                         lp.out_mark = outcomes.len();
                         self.runtime_vars.insert(lp.spec.var_name().to_string(), VarVal::Str("1".into()));
+                        if !stack.iter().any(|f| f.lp.is_some()) {
+                            self.emit_loop_progress(&rel, &ev.dir, lp);
+                        }
                     }
                     stack.push(f);
                 }
@@ -1381,6 +1411,16 @@ mod tests {
         let (code, _) = run_command("(sleep 5 >/dev/null 2>&1 &) ; echo done", &[], &cwd, Duration::from_secs(10), &never).unwrap();
         assert_eq!(code, Some(0));
         assert!(started.elapsed() < Duration::from_secs(4));
+    }
+
+    #[test]
+    fn loop_progress_and_duration_read_naturally() {
+        assert_eq!(human_duration(35_000), "35 秒");
+        assert_eq!(human_duration(552_000), "9 分 12 秒");
+        assert_eq!(human_duration(3_720_000), "1 小时 02 分");
+        let lp = |times: Option<u32>, for_ms: Option<u64>| LoopState { spec: Repeat { times, for_ms, ..Default::default() }, iter: 12, started: Instant::now(), ev_mark: 0, out_mark: 0, broke: false };
+        assert_eq!(loop_progress_text(&lp(Some(20), None)), "第 12/20 轮，已运行 0 秒");
+        assert_eq!(loop_progress_text(&lp(None, Some(28_800_000))), "第 12 轮，已运行 0 秒（最长 8 小时 00 分）");
     }
 
     #[test]

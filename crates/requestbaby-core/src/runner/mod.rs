@@ -1546,6 +1546,11 @@ impl Runner {
         self.emit(RunEvent::UiStep { file: file.to_string(), dir: dir.to_string(), step });
     }
 
+    /// 最外层循环开始新一轮：只发一条进度（循环里的步骤不逐条推送）
+    pub(crate) fn emit_loop_progress(&self, file: &str, dir: &str, lp: &ui::LoopState) {
+        self.emit(RunEvent::LoopProgress { file: file.to_string(), dir: dir.to_string(), round: lp.iter, elapsed_ms: lp.started.elapsed().as_millis() as u64, text: ui::loop_progress_text(lp) });
+    }
+
     /// 单段文本脱敏
     pub fn redact_str(&self, s: &str) -> String {
         let mut out = s.to_string();

@@ -1,7 +1,8 @@
 //! 运行期事件协议：CLI（`run --json-stream` 逐行 NDJSON）与 Desktop（进程内 channel）共用。
 //!
-//! 事件序列：`runStarted` → [`stepStarted`] (`caseStarted` → `log`* → [`uiStep`]* → `caseFinished`)* [`stepFinished`] … → `notice`* → `runFinished`
+//! 事件序列：`runStarted` → [`stepStarted`] (`caseStarted` → `log`* → [`uiStep` | `loopProgress`]* → `caseFinished`)* [`stepFinished`] … → `notice`* → `runFinished`
 //! （`uiStep` 仅 Web / Android 界面用例出现：每做完一步就发一条，不必等用例结束；截图已写入证据目录）
+//! （`loopProgress`：界面用例里最外层 `repeat` 每开始一轮一条，循环里的步骤本身不逐条推送）
 //! （`stepStarted` / `stepFinished` 仅流程 / verify 运行出现）
 use crate::engine::ui::StepRecord;
 use crate::report::{CaseReport, RunReport};
@@ -26,6 +27,9 @@ pub enum RunEvent {
     /// 界面用例刚完成的一步（`dir` 是证据目录，`step.screenshot` 在其中；用例结束后同样的记录在 `caseFinished` 的 `response.evidence` 里）
     #[serde(rename_all = "camelCase")]
     UiStep { file: String, dir: String, step: StepRecord },
+    /// 最外层 `repeat` 每开始一轮发一条：长时间监控时循环里的步骤不逐条推送，实时面板 / 终端靠它看出还在跑、跑到哪了
+    #[serde(rename_all = "camelCase")]
+    LoopProgress { file: String, dir: String, round: u32, elapsed_ms: u64, text: String },
     #[serde(rename_all = "camelCase")]
     CaseFinished { result: CaseReport },
     /// 非用例级提示（teardown 失败等）

@@ -91,6 +91,8 @@ pub struct LiveCase {
     /// 证据目录（`StepRecord::screenshot` 在其中）
     pub dir: String,
     pub steps: Vec<requestbaby_core::engine::ui::StepRecord>,
+    /// 最外层循环的进度（「第 12 轮，已运行 9 分 12 秒」）：循环里的步骤不逐条推送，长时间监控靠它看出还在跑
+    pub progress: Option<String>,
 }
 
 pub enum RunStateEvent {
@@ -438,10 +440,19 @@ impl RunState {
                 }
                 RunEvent::UiStep { file, dir, step } => {
                     if self.live.as_ref().is_none_or(|l| l.file != file) {
-                        self.live = Some(LiveCase { file: file.clone(), dir, steps: vec![] });
+                        self.live = Some(LiveCase { file: file.clone(), dir, steps: vec![], progress: None });
                     }
                     if let Some(l) = self.live.as_mut() {
                         l.steps.push(step);
+                    }
+                    cx.emit(RunStateEvent::LiveStep { file, send });
+                }
+                RunEvent::LoopProgress { file, dir, text, .. } => {
+                    if self.live.as_ref().is_none_or(|l| l.file != file) {
+                        self.live = Some(LiveCase { file: file.clone(), dir, steps: vec![], progress: None });
+                    }
+                    if let Some(l) = self.live.as_mut() {
+                        l.progress = Some(text);
                     }
                     cx.emit(RunStateEvent::LiveStep { file, send });
                 }

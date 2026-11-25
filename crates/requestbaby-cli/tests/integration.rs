@@ -1879,6 +1879,16 @@ fn web_repeat_if_wait_range_and_exec_callbacks() {
     let c = by("命令失败可跳过");
     assert_eq!(c["passed"], true, "{c:#}");
     assert!(c["response"]["evidence"]["steps"].as_array().unwrap().iter().any(|s| s["status"] == "skipped"), "{c:#}");
+
+    // 实时进度：循环里的步骤不逐条推送，改为最外层循环每开始一轮发一条 loopProgress（界面 / 终端靠它看出还在跑）
+    let out = run_cli(&["run", "collections/web/01-循环.json", "--json-stream"], d);
+    let events: Vec<serde_json::Value> = String::from_utf8_lossy(&out.stdout).lines().filter_map(|l| serde_json::from_str(l).ok()).collect();
+    let progress: Vec<&serde_json::Value> = events.iter().filter(|e| e["event"] == "loopProgress").collect();
+    assert_eq!(progress.iter().map(|e| e["round"].as_u64().unwrap()).collect::<Vec<_>>(), vec![1, 2, 3], "{events:#?}");
+    assert!(progress[2]["text"].as_str().unwrap().contains("第 3/10 轮") && progress[2]["file"] == "collections/web/01-循环.json", "{:#}", progress[2]);
+    // 循环里的点击没有逐条推送（只有 exec / 失败 / 循环外的步骤）
+    let clicks = events.iter().filter(|e| e["event"] == "uiStep" && e["step"]["action"] == "click").count();
+    assert_eq!(clicks, 0, "{events:#?}");
 }
 
 /// 写法有误的循环 / 命令：validate 报错，不会跑起来无限循环
