@@ -30,6 +30,7 @@ pub const TOPICS: &[(&str, &[&str], &str, &str)] = &[
     ("android", &["安卓", "app", "手机"], "Android 界面验收", include_str!("../../../docs/guide/android.md")),
     ("desktop", &["mac", "桌面", "macos", "agent-desktop"], "Mac 桌面应用验收", include_str!("../../../docs/guide/desktop.md")),
     ("ocr", &["文字识别", "屏幕文字", "识别"], "屏幕文字识别（OCR）", include_str!("../../../docs/guide/ocr.md")),
+    ("control", &["循环", "监控", "回调", "条件", "随机等待", "repeat", "exec"], "循环、条件、随机等待与回调", include_str!("../../../docs/guide/control.md")),
     ("proxy", &["代理", "socks", "socks5"], "代理", include_str!("../../../docs/guide/proxy.md")),
     ("scripts", &["脚本", "js"], "进阶 JS 脚本", include_str!("../../../docs/guide/scripts.md")),
     ("cli", &["命令", "协议"], "命令与调度协议", include_str!("../../../docs/guide/cli.md")),
@@ -105,7 +106,7 @@ pub fn reference() -> String {
 /// schema → (字段路径, 类型, 说明)：展开 properties / $ref / 命名对象（additionalProperties）/ 数组元素
 pub fn schema_rows(root: &Value) -> Vec<(String, String, String)> {
     let mut rows = vec![];
-    walk(root, root, "", &mut rows);
+    walk(root, root, "", &mut rows, &mut vec![]);
     rows
 }
 
@@ -116,23 +117,37 @@ fn resolve<'a>(root: &'a Value, v: &'a Value) -> &'a Value {
     }
 }
 
-fn walk(root: &Value, node: &Value, prefix: &str, rows: &mut Vec<(String, String, String)>) {
+/// seen：正在展开的 $ref。步骤可以嵌套自己（repeat / if 里还是步骤），遇到已在展开的引用只列这一行、不再往里走
+fn walk(root: &Value, node: &Value, prefix: &str, rows: &mut Vec<(String, String, String)>, seen: &mut Vec<String>) {
     let node = resolve(root, node);
     let Some(props) = node.get("properties").and_then(Value::as_object) else { return };
+    let ref_of = |v: &Value| v.get("$ref").and_then(Value::as_str).map(str::to_string);
     for (key, raw) in props {
         let def = resolve(root, raw);
         let name = format!("{prefix}{key}");
         let desc = raw.get("description").or_else(|| def.get("description")).and_then(Value::as_str).unwrap_or_default().to_string();
         rows.push((name.clone(), type_of(root, def), desc));
+        let mut descend = |r: Option<String>, target: &Value, path: String, rows: &mut Vec<(String, String, String)>| {
+            if let Some(r) = &r {
+                if seen.contains(r) {
+                    return;
+                }
+                seen.push(r.clone());
+            }
+            walk(root, target, &path, rows, seen);
+            if r.is_some() {
+                seen.pop();
+            }
+        };
         if def.get("properties").is_some() {
-            walk(root, def, &format!("{name}."), rows);
+            descend(ref_of(raw), def, format!("{name}."), rows);
         }
         // 命名对象：workflows.<名称>.steps
-        if let Some(ap) = def.get("additionalProperties").map(|a| resolve(root, a)).filter(|a| a.get("properties").is_some()) {
-            walk(root, ap, &format!("{name}.<名称>."), rows);
+        if let Some(ap_raw) = def.get("additionalProperties").filter(|a| resolve(root, a).get("properties").is_some()) {
+            descend(ref_of(ap_raw), resolve(root, ap_raw), format!("{name}.<名称>."), rows);
         }
-        if let Some(items) = def.get("items").map(|i| resolve(root, i)).filter(|i| i.get("properties").is_some()) {
-            walk(root, items, &format!("{name}[]."), rows);
+        if let Some(items_raw) = def.get("items").filter(|i| resolve(root, i).get("properties").is_some()) {
+            descend(ref_of(items_raw), resolve(root, items_raw), format!("{name}[]."), rows);
         }
     }
 }

@@ -52,6 +52,8 @@
 | `{"launch": true}` | 重新启动应用（先正常退出再启动） |
 | `{"stop": true}` | 正常退出应用 |
 
+循环、条件、随机等待、运行本机命令：`repeat` / `if` / `wait: {"min", "max"}` / `exec`，与 Web 相同（`requestbaby guide control`）。
+
 不支持：`hover` / `longPress` / `back` / `goto`。悬停、双击、拖拽需要真实鼠标，requestbaby 不会为了通过用例去动你的鼠标。
 
 ## 定位

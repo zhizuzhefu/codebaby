@@ -59,8 +59,11 @@ fn target_placeholder(a: UiAction, kind: UiKind) -> &'static str {
         UiAction::Press => "按键：Enter / Tab / Escape / ArrowDown / Control+a",
         UiAction::Swipe => "手指移动的方向：up / down / left / right",
         UiAction::Screenshot => "这张截图的名字，如 下单成功",
-        UiAction::Wait => "静候毫秒数（尽量用「等待」）",
-        UiAction::Back | UiAction::Launch | UiAction::Stop => "",
+        UiAction::Wait => "静候毫秒数，或随机区间 {\"min\": 3000, \"max\": 8000}（尽量用「等待」）",
+        UiAction::Repeat => "重复：{\"times\": 10, \"forMs\": 60000, \"until\": 条件, \"steps\": [步骤…]}（times / forMs 至少写一个；guide control）",
+        UiAction::If => "条件分支：{\"when\": 条件, \"then\": [步骤…], \"else\": [步骤…]}（guide control）",
+        UiAction::Exec => "本机命令，如 ./notify.sh；要传值：{\"command\": \"./notify.sh\", \"env\": {\"MSG\": \"{{变量}}\"}}",
+        UiAction::Back | UiAction::Launch | UiAction::Stop | UiAction::Break => "",
     }
 }
 
@@ -399,14 +402,14 @@ impl CaseEditor {
                 .when(current == UiAction::Launch && kind != UiKind::Desktop, |this| {
                     this.child(Button::new(("ui-clear", ix)).xsmall().ghost().label("清除数据").selected(r.clear_data).tooltip("启动前清除应用数据").on_click(cx.listener(move |this, _, window, cx| this.toggle_ui_flag(ix, true, window, cx))))
                 })
-                .when(ui_targets_locator(current), |this| {
+                .when(ui_targets_locator(current) || current == UiAction::Exec, |this| {
                     this.child(
                         Button::new(("ui-optional", ix))
                             .xsmall()
                             .ghost()
                             .label("可选")
                             .selected(r.optional)
-                            .tooltip("找不到目标时跳过这一步而不失败（如可能出现的弹窗）")
+                            .tooltip(if current == UiAction::Exec { "命令失败（退出码非 0 / 超时）时跳过这一步而不失败，如通知偶尔发不出去" } else { "找不到目标时跳过这一步而不失败（如可能出现的弹窗）" })
                             .on_click(cx.listener(move |this, _, window, cx| this.toggle_ui_flag(ix, false, window, cx))),
                     )
                 })

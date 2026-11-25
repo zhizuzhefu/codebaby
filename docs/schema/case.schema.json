@@ -538,7 +538,61 @@
         },
         "expect": { "$ref": "#/definitions/locator", "description": "断言：条件在超时内满足即通过，计入断言结果" },
         "screenshot": { "type": "string", "description": "额外截一张图并命名（每一步本来就会自动截图）" },
-        "wait": { "type": "integer", "minimum": 0, "description": "静候毫秒数（尽量用 waitFor）" },
+        "wait": {
+          "description": "静候：毫秒数，或随机区间 {\"min\": 3000, \"max\": 8000}（每次执行在区间内随机取一个值；尽量用 waitFor）",
+          "oneOf": [
+            { "type": "integer", "minimum": 0 },
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["min", "max"],
+              "properties": {
+                "min": { "type": "integer", "minimum": 0, "description": "最短毫秒数" },
+                "max": { "type": "integer", "minimum": 0, "description": "最长毫秒数" }
+              }
+            }
+          ]
+        },
+        "repeat": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["steps"],
+          "description": "重复执行一组步骤（轮询监控、反复刷新）：times / forMs 至少写一个，先到的结束；until 满足也提前结束；循环里的步骤只在失败时留截图，结束时留一张汇总截图",
+          "properties": {
+            "times": { "type": "integer", "minimum": 1, "description": "最多重复几次" },
+            "forMs": { "type": "integer", "minimum": 1, "description": "最长重复多久（毫秒）：一轮结束时已超过就不再开始下一轮" },
+            "until": { "$ref": "#/definitions/locator", "description": "每轮结束后判断一次的条件（写法同 expect，不等待）：满足就提前结束" },
+            "var": { "type": "string", "description": "轮次变量名（第几轮，从 1 开始），步骤里写 {{i}} 引用；缺省 i" },
+            "steps": { "type": "array", "items": { "$ref": "#/definitions/uiStep" }, "description": "每一轮执行的步骤（可以再嵌套 repeat / if / wait / exec，最多 4 层）" }
+          }
+        },
+        "if": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["when"],
+          "description": "条件分支：when 条件满足执行 then，否则执行 else（只判断一次；step 的 timeoutMs 大于 0 时最多等这么久）",
+          "properties": {
+            "when": { "$ref": "#/definitions/locator", "description": "条件（写法同 expect / waitFor）" },
+            "then": { "type": "array", "items": { "$ref": "#/definitions/uiStep" }, "description": "条件满足时执行的步骤" },
+            "else": { "type": "array", "items": { "$ref": "#/definitions/uiStep" }, "description": "条件不满足时执行的步骤" }
+          }
+        },
+        "break": { "const": true, "description": "跳出最近的一层 repeat（通常写在 if 的 then 里：发现目标、通知完就结束监控）" },
+        "exec": {
+          "description": "运行一条本机 shell 命令（通知回调、联动其他系统）：命令字符串，或 {\"command\": \"…\", \"env\": {…}}。命令不做变量替换，要传值用 env；命令里可用 REQUESTBABY_FILE / REQUESTBABY_ROOT / REQUESTBABY_EVIDENCE（证据目录）；退出码非 0 算失败（optional: true 则跳过），timeoutMs 缺省 30000",
+          "oneOf": [
+            { "type": "string" },
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["command"],
+              "properties": {
+                "command": { "type": "string", "description": "要运行的 shell 命令（sh -c）" },
+                "env": { "type": "object", "additionalProperties": { "type": "string" }, "description": "传给命令的环境变量：名称 → 值，值支持 {{变量}}" }
+              }
+            }
+          ]
+        },
         "value": { "type": "string", "description": "fill / select 的值；支持 {{var}}" },
         "clearData": { "type": "boolean", "description": "launch 前清除应用数据" },
         "capture": {

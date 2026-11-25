@@ -349,6 +349,138 @@ pub enum CaptureSource {
     Element(Box<Locator>),
 }
 
+/// 静候时长：固定毫秒数，或 `{"min", "max"}` 随机区间（含两端）
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(untagged)]
+pub enum Wait {
+    Ms(u64),
+    Range(WaitRange),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct WaitRange {
+    pub min: u64,
+    pub max: u64,
+}
+
+impl Wait {
+    /// 本次要等多久（毫秒）：固定值原样返回，区间内随机取
+    pub fn pick(&self) -> u64 {
+        match self {
+            Wait::Ms(ms) => *ms,
+            Wait::Range(r) => {
+                let (lo, hi) = (r.min.min(r.max), r.min.max(r.max));
+                lo + random_u64() % (hi - lo + 1)
+            }
+        }
+    }
+
+    /// 人话：`500 ms` / `3000~8000 ms（随机）`
+    pub fn describe(&self) -> String {
+        match self {
+            Wait::Ms(ms) => format!("{ms} ms"),
+            Wait::Range(r) => format!("{}~{} ms（随机）", r.min.min(r.max), r.min.max(r.max)),
+        }
+    }
+
+    /// 写法问题：区间 min 不能大于 max
+    pub fn check(&self) -> Result<(), String> {
+        match self {
+            Wait::Range(r) if r.min > r.max => Err(format!("wait 的 min（{}）不能大于 max（{}）", r.min, r.max)),
+            _ => Ok(()),
+        }
+    }
+}
+
+/// 不需要密码学强度的随机数（等待抖动）：时间 + 计数器 + 进程号，经 splitmix64 混合
+fn random_u64() -> u64 {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static COUNTER: AtomicU64 = AtomicU64::new(0);
+    let t = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_nanos() as u64).unwrap_or(0);
+    let mut z = t ^ COUNTER.fetch_add(0x9E37_79B9_7F4A_7C15, Ordering::Relaxed) ^ (std::process::id() as u64).rotate_left(32);
+    z = z.wrapping_add(0x9E37_79B9_7F4A_7C15);
+    z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+    z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+    z ^ (z >> 31)
+}
+
+/// 重复一组步骤。`times` 与 `forMs` 至少写一个（先到的结束）；`until` 在每轮结束后判断一次，满足就提前结束
+#[derive(Debug, Clone, Default, PartialEq, Deserialize, Serialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct Repeat {
+    /// 最多重复几次
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub times: Option<u32>,
+    /// 最长重复多久（毫秒）：一轮结束时已超过就不再开始下一轮
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub for_ms: Option<u64>,
+    /// 每轮结束后判断的条件（写法同 expect，只判断一次、不等待）：满足就提前结束
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub until: Option<Locator>,
+    /// 轮次变量名（第几轮，从 1 开始），步骤里写 `{{i}}` 引用；缺省 `i`
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub var: Option<String>,
+    /// 每一轮执行的步骤
+    #[serde(default)]
+    pub steps: Vec<UiStep>,
+}
+
+impl Repeat {
+    pub const MAX_DEPTH: usize = 4;
+
+    pub fn var_name(&self) -> &str {
+        self.var.as_deref().filter(|v| !v.trim().is_empty()).unwrap_or("i")
+    }
+}
+
+/// 条件分支
+#[derive(Debug, Clone, Default, PartialEq, Deserialize, Serialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct IfBlock {
+    /// 条件（写法同 expect / waitFor）
+    pub when: Locator,
+    /// 满足时执行
+    #[serde(default)]
+    pub then: Vec<UiStep>,
+    /// 不满足时执行
+    #[serde(default, rename = "else")]
+    pub else_: Vec<UiStep>,
+}
+
+/// 本机命令：字符串 = 命令；对象可以再带 `env`（传给命令的环境变量，值支持 `{{变量}}`）
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
+#[serde(untagged)]
+pub enum Exec {
+    Cmd(String),
+    Spec(ExecSpec),
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct ExecSpec {
+    pub command: String,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub env: BTreeMap<String, String>,
+}
+
+impl Exec {
+    /// 要运行的命令。**不做变量替换**：捕获到的文字（OCR、页面内容）不能被当成命令执行，要传值请用 `env`
+    pub fn command(&self) -> &str {
+        match self {
+            Exec::Cmd(c) => c,
+            Exec::Spec(s) => &s.command,
+        }
+    }
+
+    pub fn env(&self) -> Option<&BTreeMap<String, String>> {
+        match self {
+            Exec::Cmd(_) => None,
+            Exec::Spec(s) => Some(&s.env),
+        }
+    }
+}
+
 /// 一个步骤：下面的动作恰好写一个；`value` / `clearData` 是动作的参数
 #[derive(Debug, Clone, Default, PartialEq, Deserialize, Serialize)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
@@ -401,9 +533,21 @@ pub struct UiStep {
     /// 额外截一张图并命名（每一步本来就会自动截图）
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub screenshot: Option<String>,
-    /// 静候毫秒数（尽量用 waitFor）
+    /// 静候：毫秒数，或随机区间 `{"min": 3000, "max": 8000}`（每次执行在区间内随机取一个值；尽量用 waitFor）
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub wait: Option<u64>,
+    pub wait: Option<Wait>,
+    /// 重复执行一组步骤（轮询监控、反复刷新）：`times` 次数 / `forMs` 总时长，至少写一个；可加 `until` 条件提前结束
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub repeat: Option<Repeat>,
+    /// 条件分支：`when` 条件满足执行 `then`，否则执行 `else`（只判断一次，不等待）
+    #[serde(default, rename = "if", skip_serializing_if = "Option::is_none")]
+    pub if_: Option<IfBlock>,
+    /// 跳出最近的一层 `repeat`（通常写在 `if` 的 `then` 里：发现目标、通知完就结束监控）
+    #[serde(default, rename = "break", skip_serializing_if = "Option::is_none")]
+    pub break_: Option<bool>,
+    /// 运行一条本机 shell 命令（通知回调、联动其他系统）：写命令字符串，或 `{"command": "…", "env": {"MSG": "{{x}}"}}`
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub exec: Option<Exec>,
 
     /// fill / select 的值；支持 {{var}}
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -440,11 +584,15 @@ pub enum UiAction {
     Expect,
     Screenshot,
     Wait,
+    Repeat,
+    If,
+    Exec,
+    Break,
 }
 
 impl UiAction {
     /// 界面上可选的动作（Web / Android 各自适用的）
-    pub const WEB: [UiAction; 11] = [
+    pub const WEB: [UiAction; 15] = [
         UiAction::Click,
         UiAction::Fill,
         UiAction::Select,
@@ -456,8 +604,12 @@ impl UiAction {
         UiAction::Expect,
         UiAction::Screenshot,
         UiAction::Wait,
+        UiAction::Repeat,
+        UiAction::If,
+        UiAction::Exec,
+        UiAction::Break,
     ];
-    pub const DESKTOP: [UiAction; 12] = [
+    pub const DESKTOP: [UiAction; 16] = [
         UiAction::Click,
         UiAction::Fill,
         UiAction::Select,
@@ -470,8 +622,12 @@ impl UiAction {
         UiAction::Expect,
         UiAction::Screenshot,
         UiAction::Wait,
+        UiAction::Repeat,
+        UiAction::If,
+        UiAction::Exec,
+        UiAction::Break,
     ];
-    pub const ANDROID: [UiAction; 13] = [
+    pub const ANDROID: [UiAction; 17] = [
         UiAction::Click,
         UiAction::Fill,
         UiAction::Type,
@@ -485,6 +641,10 @@ impl UiAction {
         UiAction::Expect,
         UiAction::Screenshot,
         UiAction::Wait,
+        UiAction::Repeat,
+        UiAction::If,
+        UiAction::Exec,
+        UiAction::Break,
     ];
 
     /// 写进文件的键（点击：Web 写 click，Android 写 tap）
@@ -507,6 +667,10 @@ impl UiAction {
             UiAction::Expect => "expect",
             UiAction::Screenshot => "screenshot",
             UiAction::Wait => "wait",
+            UiAction::Repeat => "repeat",
+            UiAction::If => "if",
+            UiAction::Exec => "exec",
+            UiAction::Break => "break",
         }
     }
 
@@ -528,6 +692,10 @@ impl UiAction {
             UiAction::Expect => "断言",
             UiAction::Screenshot => "截图",
             UiAction::Wait => "静候",
+            UiAction::Repeat => "重复",
+            UiAction::If => "如果",
+            UiAction::Exec => "运行命令",
+            UiAction::Break => "跳出循环",
         }
     }
 
@@ -566,6 +734,10 @@ impl UiStep {
         add(self.expect.is_some(), UiAction::Expect);
         add(self.screenshot.is_some(), UiAction::Screenshot);
         add(self.wait.is_some(), UiAction::Wait);
+        add(self.repeat.is_some(), UiAction::Repeat);
+        add(self.if_.is_some(), UiAction::If);
+        add(self.exec.is_some(), UiAction::Exec);
+        add(self.break_.is_some(), UiAction::Break);
         // click 与 tap 同时写算两个动作
         if self.click.is_some() && self.tap.is_some() {
             out.push(UiAction::Click);
@@ -591,6 +763,7 @@ impl UiStep {
             .or(self.select.as_ref())
             .or(self.wait_for.as_ref())
             .or(self.expect.as_ref())
+            .or(self.if_.as_ref().map(|b| &b.when))
     }
 
     /// 文字内容（变量引用扫描用）
@@ -604,8 +777,49 @@ impl UiStep {
                 t.extend(l.texts());
             }
         }
+        // 重复里的子步骤和 until 各自执行时再检查（轮次变量 {{i}} 只在循环里有值）；这里只看本层的环境变量
+        if let Some(e) = self.exec.as_ref().and_then(|e| e.env()) {
+            t.extend(e.values().cloned());
+        }
         t
     }
+
+    /// 本步自己用到的全部定位：动作目标 / 条件、repeat 的 until、capture 里的元素（不含子步骤）
+    pub fn all_locators(&self) -> Vec<&Locator> {
+        let mut out: Vec<&Locator> = self.locator().into_iter().collect();
+        out.extend(self.repeat.as_ref().and_then(|r| r.until.as_ref()));
+        for c in self.capture.values() {
+            if let CaptureSource::Element(l) = c {
+                out.push(l);
+            }
+        }
+        out
+    }
+
+    /// 子步骤（repeat / if 里的）：依次是 repeat.steps、if.then、if.else
+    pub fn children(&self) -> Vec<&UiStep> {
+        let mut out: Vec<&UiStep> = vec![];
+        if let Some(r) = &self.repeat {
+            out.extend(r.steps.iter());
+        }
+        if let Some(b) = &self.if_ {
+            out.extend(b.then.iter());
+            out.extend(b.else_.iter());
+        }
+        out
+    }
+}
+
+/// 把嵌套的步骤展平（含 repeat / if 里的子步骤，先父后子）：扫描「用没用到某种能力」时用
+pub fn flatten_steps(steps: &[UiStep]) -> Vec<&UiStep> {
+    let mut out = vec![];
+    for s in steps {
+        out.push(s);
+        for c in s.children() {
+            out.extend(flatten_steps(std::slice::from_ref(c)));
+        }
+    }
+    out
 }
 
 impl Locator {
@@ -867,6 +1081,65 @@ mod tests {
         // 超出图外的部分被截掉
         assert_eq!(Region { x: 0.9, y: 0.9, w: 0.5, h: 0.5 }.to_pixels(1000, 1000), Some((900, 900, 100, 100)));
         assert_eq!(Region { x: 1.0, y: 0.0, w: 0.5, h: 0.5 }.to_pixels(100, 100), None);
+    }
+
+    #[test]
+    fn wait_accepts_ms_or_random_range() {
+        let s: UiStep = serde_json::from_str(r#"{"wait": 300}"#).unwrap();
+        assert_eq!((s.action(), s.wait), (Some(UiAction::Wait), Some(Wait::Ms(300))));
+        assert_eq!(Wait::Ms(300).pick(), 300);
+        let w: Wait = serde_json::from_str(r#"{"min": 3000, "max": 8000}"#).unwrap();
+        assert_eq!(w.describe(), "3000~8000 ms（随机）");
+        let picks: Vec<u64> = (0..200).map(|_| w.pick()).collect();
+        assert!(picks.iter().all(|p| (3000..=8000).contains(p)), "{picks:?}");
+        assert!(picks.iter().collect::<std::collections::BTreeSet<_>>().len() > 20, "随机区间应当取到不同的值");
+        // 两端相等 = 固定值；反过来写会被检查出来
+        assert_eq!(Wait::Range(WaitRange { min: 5, max: 5 }).pick(), 5);
+        assert!(Wait::Range(WaitRange { min: 9, max: 1 }).check().is_err() && w.check().is_ok());
+        assert!(serde_json::from_str::<Wait>(r#"{"min": 1, "max": 2, "x": 3}"#).is_err());
+        assert!(serde_json::from_str::<Wait>(r#"{"min": 1}"#).is_err());
+    }
+
+    #[test]
+    fn repeat_if_exec_parse_nest_and_flatten() {
+        let s: UiStep = serde_json::from_str(
+            r#"{"repeat": {"forMs": 60000, "var": "n", "until": {"ocr": "有号"}, "steps": [
+                {"tap": {"ocr": "11-28"}},
+                {"if": {"when": {"ocr": "有号"}, "then": [{"exec": {"command": "./n.sh", "env": {"D": "{{n}}"}}}], "else": [{"wait": {"min": 1, "max": 2}}]}}
+            ]}}"#,
+        )
+        .unwrap();
+        assert_eq!(s.action(), Some(UiAction::Repeat));
+        let r = s.repeat.as_ref().unwrap();
+        assert_eq!((r.var_name(), r.times, r.for_ms), ("n", None, Some(60000)));
+        assert_eq!(Repeat::default().var_name(), "i");
+        // 展平：repeat、tap、if、then 里的 exec、else 里的 wait
+        let flat = flatten_steps(std::slice::from_ref(&s));
+        assert_eq!(flat.iter().filter_map(|x| x.action()).collect::<Vec<_>>(), [UiAction::Repeat, UiAction::Click, UiAction::If, UiAction::Exec, UiAction::Wait]);
+        // 扫描 ocr 要能看到 until、if.when 里的定位
+        assert!(s.all_locators().iter().any(|l| l.is_ocr()));
+        assert!(flat[2].locator().is_some_and(|l| l.is_ocr()));
+        // 变量引用扫描只看本层：子步骤里的 {{n}} 在循环里才有值，执行到那一步再检查
+        assert!(!s.texts().iter().any(|t| t.contains("{{n}}")));
+        let exec = flat[3];
+        assert_eq!(exec.exec.as_ref().unwrap().command(), "./n.sh");
+        assert!(exec.texts().contains(&"{{n}}".to_string()));
+        // exec 可以只写命令字符串；写了不认识的字段会被挡住
+        let e: UiStep = serde_json::from_str(r#"{"exec": "echo hi"}"#).unwrap();
+        assert_eq!((e.action(), e.exec.as_ref().unwrap().command(), e.exec.as_ref().unwrap().env().is_none()), (Some(UiAction::Exec), "echo hi", true));
+        assert!(serde_json::from_str::<UiStep>(r#"{"exec": {"command": "x", "shell": "zsh"}}"#).is_err());
+        assert!(serde_json::from_str::<UiStep>(r#"{"repeat": {"times": 2, "step": []}}"#).is_err());
+        assert!(serde_json::from_str::<UiStep>(r#"{"if": {"when": {"text": "a"}, "than": []}}"#).is_err());
+        // 同一步写两个动作仍然只算多动作
+        let two: UiStep = serde_json::from_str(r#"{"exec": "x", "wait": 1}"#).unwrap();
+        assert_eq!(two.action(), None);
+        // 三端都能用
+        for kind in [UiKind::Web, UiKind::Android, UiKind::Desktop] {
+            assert!([UiAction::Repeat, UiAction::If, UiAction::Exec].iter().all(|a| a.supported(kind)), "{kind:?}");
+        }
+        // 写回时字段名不变（if / else 是保留字，序列化要还原）
+        let back = serde_json::to_value(&s).unwrap();
+        assert!(back["repeat"]["steps"][1]["if"]["else"].is_array() && back["repeat"]["steps"][1]["if"]["then"].is_array(), "{back}");
     }
 
     #[test]

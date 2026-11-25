@@ -5,7 +5,7 @@
 //! 断言 / 等待通过时框出验证到的元素（绿框）；失败时另存现场（页面结构、控制台、网络 / logcat）。
 use super::{discover, leftover_error, CaseResult, Exchanged, RunEvent, RunOptions, Runner};
 use crate::config::ui::ScreenshotPolicy;
-use crate::config::{CaptureSource, Locator, Protocol, TestCase, UiAction, UiKind, UiState, UiStep};
+use crate::config::{CaptureSource, Exec, ExecSpec, IfBlock, Locator, Protocol, Repeat, TestCase, UiAction, UiKind, UiState, UiStep};
 use crate::engine::cdp::{self, Browser};
 use crate::engine::ui::{self as eui, Actionable, Element, Mark, MarkKind, StepRecord, UiDriver, UiEvidence, UiStepStatus};
 use crate::script::{ReqData, RespData, TestOutcome};
@@ -131,7 +131,30 @@ pub fn describe_ui_step(s: &UiStep, kind: UiKind) -> String {
         UiAction::Stop => "关闭应用".into(),
         UiAction::WaitFor | UiAction::Expect => format!("{} {}", a.label(), s.locator().map(|l| l.describe_condition()).unwrap_or_default()),
         UiAction::Screenshot => format!("截图「{}」", s.screenshot.clone().unwrap_or_default()),
-        UiAction::Wait => format!("静候 {} ms", s.wait.unwrap_or(0)),
+        UiAction::Wait => format!("静候 {}", s.wait.map(|w| w.describe()).unwrap_or_else(|| "0 ms".into())),
+        UiAction::Repeat => {
+            let r = s.repeat.clone().unwrap_or_default();
+            let mut bound = vec![];
+            if let Some(t) = r.times {
+                bound.push(format!("最多 {t} 次"));
+            }
+            if let Some(ms) = r.for_ms {
+                bound.push(format!("最长 {ms} ms"));
+            }
+            if let Some(u) = &r.until {
+                bound.push(format!("直到{}", u.describe_condition()));
+            }
+            format!("重复（{}）{} 步", bound.join("，"), r.steps.len())
+        }
+        UiAction::If => {
+            let b = s.if_.clone().unwrap_or_default();
+            format!("如果 {}（满足 {} 步 / 否则 {} 步）", b.when.describe_condition(), b.then.len(), b.else_.len())
+        }
+        UiAction::Exec => {
+            let c = s.exec.as_ref().map(|e| e.command().to_string()).unwrap_or_default();
+            format!("运行命令 {}", clip(&c))
+        }
+        UiAction::Break => "跳出循环".into(),
     };
     if s.optional == Some(true) {
         d.push_str("（可选）");
@@ -324,6 +347,97 @@ fn check_once(d: &mut dyn UiDriver, loc: &Locator) -> anyhow::Result<(bool, Stri
         }
     }
     Ok((problems.is_empty(), problems.join("；"), rects))
+}
+
+/// 步骤执行栈的一层：顶层步骤、`if` 选中的分支，或 `repeat` 的一轮
+struct Frame {
+    steps: Vec<UiStep>,
+    pos: usize,
+    lp: Option<LoopState>,
+}
+
+/// `repeat` 的进度
+struct LoopState {
+    spec: Repeat,
+    /// 当前是第几轮（从 1 开始）
+    iter: u32,
+    started: Instant,
+    /// 本轮开始时 证据步骤 / 断言结果 的条数：下一轮开始前丢掉本轮留下的（只保留最后一轮），避免长时间监控时证据无限增长
+    ev_mark: usize,
+    out_mark: usize,
+    /// 本轮里遇到了 `break`：不再判断 until / 次数，直接结束循环
+    broke: bool,
+}
+
+/// 丢掉一轮循环留下的步骤记录、截图与断言结果。`exec`（通知回调）的记录保留：它们是「发生过什么」的证据
+fn trim_iteration(ev: &mut UiEvidence, outcomes: &mut Vec<TestOutcome>, dir: &Path, ev_mark: usize, out_mark: usize) {
+    let dropped: Vec<StepRecord> = ev.steps.drain(ev_mark.min(ev.steps.len())..).collect();
+    for r in dropped {
+        if r.action == "exec" {
+            ev.steps.push(r);
+        } else if let Some(f) = &r.screenshot {
+            let _ = std::fs::remove_file(dir.join(f));
+        }
+    }
+    outcomes.truncate(out_mark);
+}
+
+/// 运行一条本机命令（`sh -c`；Windows 用 `cmd /C`）：输出写到临时文件，避免命令留下后台进程时一直等管道。
+/// 返回 (退出码, 输出末尾)；超时 / 取消会结束命令并返回错误
+fn run_command(cmd: &str, env: &[(String, String)], cwd: &Path, timeout: Duration, cancelled: &dyn Fn() -> bool) -> Result<(Option<i32>, String), String> {
+    use std::process::{Command, Stdio};
+    let out_path = std::env::temp_dir().join(format!("requestbaby-exec-{}-{}.log", std::process::id(), crate::history::now_ms()));
+    let out_file = std::fs::File::create(&out_path).map_err(|e| format!("无法创建命令输出文件：{e}"))?;
+    let err_file = out_file.try_clone().map_err(|e| format!("无法创建命令输出文件：{e}"))?;
+    #[cfg(unix)]
+    let mut c = {
+        let mut c = Command::new("sh");
+        c.arg("-c").arg(cmd);
+        c
+    };
+    #[cfg(windows)]
+    let mut c = {
+        let mut c = Command::new("cmd");
+        c.arg("/C").arg(cmd);
+        c
+    };
+    c.current_dir(cwd).envs(env.iter().map(|(k, v)| (k.as_str(), v.as_str()))).stdin(Stdio::null()).stdout(Stdio::from(out_file)).stderr(Stdio::from(err_file));
+    let read_tail = |path: &Path| {
+        let text = std::fs::read_to_string(path).unwrap_or_default();
+        let _ = std::fs::remove_file(path);
+        let t = text.trim();
+        let skip = t.chars().count().saturating_sub(400);
+        t.chars().skip(skip).collect::<String>()
+    };
+    let mut child = match c.spawn() {
+        Ok(ch) => ch,
+        Err(e) => {
+            let _ = std::fs::remove_file(&out_path);
+            return Err(format!("无法启动命令：{e}"));
+        }
+    };
+    let deadline = Instant::now() + timeout;
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) => return Ok((status.code(), read_tail(&out_path))),
+            Ok(None) => {
+                let timed_out = Instant::now() >= deadline;
+                if timed_out || cancelled() {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    let tail = read_tail(&out_path);
+                    let why = if timed_out { format!("命令超过 {} 秒还没结束，已终止", timeout.as_secs_f64()) } else { "已取消，命令已终止".to_string() };
+                    return Err(if tail.is_empty() { why } else { format!("{why}（输出：{tail}）") });
+                }
+                std::thread::sleep(Duration::from_millis(50));
+            }
+            Err(e) => {
+                let _ = child.kill();
+                let _ = std::fs::remove_file(&out_path);
+                return Err(format!("等待命令结束失败：{e}"));
+            }
+        }
+    }
 }
 
 impl Runner {
@@ -675,13 +789,86 @@ impl Runner {
         self.emit_ui_step(&rel, &ev.dir, &rec);
         ev.steps.push(rec);
 
-        // ---- 逐步执行 ----
+        // ---- 逐步执行：用一个栈展开 repeat / if 的子步骤 ----
         let mut failed = false;
-        for (i, raw) in steps.iter().enumerate() {
+        let all_shots_base = all_shots;
+        let project_root = discover::find_project_root(&dc.path).unwrap_or_else(|| PathBuf::from("."));
+        let mut stack: Vec<Frame> = vec![Frame { steps: steps.to_vec(), pos: 0, lp: None }];
+        let mut n = 0usize;
+        'run: loop {
             if cancelled() {
                 break;
             }
-            let n = i + 1;
+            let Some(top) = stack.last_mut() else { break };
+            // ---- 这一层的步骤用完了：循环要判断是否再来一轮 ----
+            if top.pos >= top.steps.len() {
+                let mut frame = stack.pop().expect("非空");
+                let Some(mut lp) = frame.lp.take() else { continue };
+                let name = lp.spec.var_name().to_string();
+                let v = {
+                    let mut v = self.vars_for(&dc.chain);
+                    if let Some(row) = row {
+                        v.push_layer(row.clone());
+                    }
+                    v
+                };
+                let mut stop: Option<String> = lp.broke.then(|| "遇到 break 提前结束".to_string());
+                let mut until_err: Option<String> = None;
+                if let (None, Some(u)) = (&stop, &lp.spec.until) {
+                    match check_once(d, &render_locator(u, &v)) {
+                        Ok((true, _, _)) => stop = Some("满足 until 条件".into()),
+                        Ok(_) => {}
+                        Err(e) => until_err = Some(format!("判断 until 条件出错：{e:#}")),
+                    }
+                }
+                if stop.is_none() && until_err.is_none() {
+                    if lp.spec.times.is_some_and(|t| lp.iter >= t) {
+                        stop = Some(format!("达到 times = {} 次", lp.iter));
+                    } else if lp.spec.for_ms.is_some_and(|ms| lp.started.elapsed().as_millis() as u64 >= ms) {
+                        stop = Some(format!("达到 forMs = {} ms", lp.spec.for_ms.unwrap_or(0)));
+                    }
+                }
+                if stop.is_none() && until_err.is_none() && !cancelled() {
+                    // 再来一轮：丢掉上一轮留下的证据
+                    trim_iteration(&mut ev, &mut outcomes, dir, lp.ev_mark, lp.out_mark);
+                    lp.iter += 1;
+                    lp.ev_mark = ev.steps.len();
+                    lp.out_mark = outcomes.len();
+                    self.runtime_vars.insert(name, VarVal::Str(lp.iter.to_string()));
+                    frame.steps = lp.spec.steps.clone();
+                    frame.pos = 0;
+                    frame.lp = Some(lp);
+                    stack.push(frame);
+                    continue;
+                }
+                // 循环结束：记一条汇总（最后一轮的步骤记录保留在它前面）
+                n += 1;
+                let at = started.elapsed().as_millis() as u64;
+                let why = stop.clone().or(until_err.clone()).unwrap_or_else(|| "已取消".into());
+                let title = format!("重复结束：共 {} 次，{}", lp.iter, why);
+                let shot = if all_shots_base { snap(d, &format!("{n:02}-repeat.jpg"), &[], false).ok() } else { None };
+                let status = if until_err.is_some() { UiStepStatus::Failed } else { UiStepStatus::Passed };
+                self.emit(RunEvent::Log { file: rel.clone(), line: self.redact_str(&format!("{} #{n} {title}", if until_err.is_some() { "✘" } else { "✔" })) });
+                let rec = StepRecord { index: n, action: "repeat".into(), title, status, at_ms: at, duration_ms: lp.started.elapsed().as_millis() as u64, screenshot: shot, detail: None };
+                self.emit_ui_step(&rel, &ev.dir, &rec);
+                ev.steps.push(rec);
+                if let Some(e) = until_err {
+                    outcomes.push(TestOutcome { expr: format!("#{n} 重复的 until 条件"), pass: false, detail: Some(e) });
+                    failed = true;
+                    break 'run;
+                }
+                continue;
+            }
+            let raw = top.steps[top.pos].clone();
+            top.pos += 1;
+            // 循环里的步骤只在失败时留截图（每一轮都拍会让监控越跑越慢、证据越堆越多），结束时有一张汇总截图
+            let in_loop = stack.iter().any(|f| f.lp.is_some());
+            let all_shots = all_shots_base && !in_loop;
+            let loop_depth = stack.iter().filter(|f| f.lp.is_some()).count();
+            let mut next_frame: Option<Frame> = None;
+            let mut do_break = false;
+            n += 1;
+            let raw = &raw;
             let v = {
                 let mut v = self.vars_for(&dc.chain);
                 if let Some(row) = row {
@@ -792,10 +979,86 @@ impl Runner {
                         Ok(Done { marks: Some(vec![]), shot: None, detail: None, skipped: false, asserted: false, title: None })
                     }
                     UiAction::Wait => {
-                        let until = Instant::now() + Duration::from_millis(step.wait.unwrap_or(0));
+                        let w = step.wait.unwrap_or(crate::config::Wait::Ms(0));
+                        let ms = w.pick();
+                        let until = Instant::now() + Duration::from_millis(ms);
                         while Instant::now() < until && !cancelled() {
                             std::thread::sleep(until.saturating_duration_since(Instant::now()).min(Duration::from_millis(100)));
                         }
+                        let detail = matches!(w, crate::config::Wait::Range(_)).then(|| format!("本次等了 {ms} ms"));
+                        Ok(Done { marks: None, shot: None, detail, skipped: false, asserted: false, title: None })
+                    }
+                    UiAction::Exec => {
+                        let e = step.exec.as_ref().expect("exec");
+                        let cmd = e.command();
+                        if cmd.trim().is_empty() {
+                            return Err(Failed::new("exec 要写命令"));
+                        }
+                        // 路径给绝对路径：通知脚本要附截图、读文件时不依赖当前目录
+                        let abs = |p: &Path| std::fs::canonicalize(p).unwrap_or_else(|_| p.to_path_buf()).display().to_string();
+                        let mut env: Vec<(String, String)> = vec![
+                            ("REQUESTBABY_FILE".into(), dc.rel.clone()),
+                            ("REQUESTBABY_ROOT".into(), abs(&project_root)),
+                            ("REQUESTBABY_EVIDENCE".into(), abs(dir)),
+                        ];
+                        env.extend(e.env().into_iter().flatten().map(|(k, val)| (k.clone(), val.clone())));
+                        let limit = Duration::from_millis(step.timeout_ms.unwrap_or(30_000).max(1));
+                        match run_command(cmd, &env, &project_root, limit, &cancelled) {
+                            Ok((Some(0), out)) => Ok(Done { marks: Some(vec![]), shot: None, detail: Some(if out.is_empty() { "命令退出码 0".to_string() } else { format!("命令退出码 0；输出：{}", self.redact_str(&out)) }), skipped: false, asserted: false, title: None }),
+                            Ok((code, out)) => {
+                                let why = format!("命令退出码 {}{}", code.map(|c| c.to_string()).unwrap_or_else(|| "（被信号终止）".into()), if out.is_empty() { String::new() } else { format!("；输出：{}", self.redact_str(&out)) });
+                                if optional {
+                                    Ok(Done { marks: Some(vec![]), shot: None, detail: Some(format!("跳过：{why}")), skipped: true, asserted: false, title: None })
+                                } else {
+                                    Err(Failed::new(why))
+                                }
+                            }
+                            Err(why) if optional => Ok(Done { marks: Some(vec![]), shot: None, detail: Some(format!("跳过：{why}")), skipped: true, asserted: false, title: None }),
+                            Err(why) => Err(Failed::new(why)),
+                        }
+                    }
+                    UiAction::If => {
+                        let blk = step.if_.as_ref().expect("if");
+                        let until = Instant::now() + Duration::from_millis(step.timeout_ms.unwrap_or(0));
+                        let (hit, rects) = loop {
+                            match check_once(d, &blk.when) {
+                                Ok((ok, _, rects)) => {
+                                    if ok || Instant::now() >= until || cancelled() {
+                                        break (ok, rects);
+                                    }
+                                }
+                                Err(e) => return Err(Failed::new(format!("判断条件出错：{e:#}"))),
+                            }
+                            std::thread::sleep(kind.poll());
+                        };
+                        let branch = if hit { &blk.then } else { &blk.else_ };
+                        let detail = format!("条件{}，执行 {} 里的 {} 步", if hit { "满足" } else { "不满足" }, if hit { "then" } else { "else" }, branch.len());
+                        next_frame = Some(Frame { steps: branch.clone(), pos: 0, lp: None });
+                        let marks = if hit { rects.into_iter().map(|r| Mark { rect: r, kind: MarkKind::Verified, point: None }).collect() } else { vec![] };
+                        Ok(Done { marks: Some(marks), shot: None, detail: Some(detail), skipped: false, asserted: false, title: None })
+                    }
+                    UiAction::Break => {
+                        if loop_depth == 0 {
+                            return Err(Failed::new("break 只能写在 repeat 里面"));
+                        }
+                        do_break = true;
+                        Ok(Done { marks: None, shot: None, detail: Some("跳出循环".into()), skipped: false, asserted: false, title: None })
+                    }
+                    UiAction::Repeat => {
+                        let r = step.repeat.as_ref().expect("repeat");
+                        if r.times.is_none() && r.for_ms.is_none() {
+                            return Err(Failed::new("repeat 要写 times（次数）或 forMs（总时长），至少一个，避免无限循环"));
+                        }
+                        if r.times == Some(0) {
+                            return Err(Failed::new("repeat 的 times 至少是 1"));
+                        }
+                        if r.steps.is_empty() {
+                            return Err(Failed::new("repeat 里没有步骤"));
+                        }
+                        if loop_depth >= Repeat::MAX_DEPTH {
+                            return Err(Failed::new(format!("repeat 嵌套太深（最多 {} 层）", Repeat::MAX_DEPTH)));
+                        }
+                        next_frame = Some(Frame { steps: r.steps.clone(), pos: 0, lp: Some(LoopState { spec: r.clone(), iter: 1, started: Instant::now(), ev_mark: 0, out_mark: 0, broke: false }) });
                         Ok(Done { marks: None, shot: None, detail: None, skipped: false, asserted: false, title: None })
                     }
                     UiAction::Screenshot => Ok(Done { marks: Some(vec![]), shot: None, detail: None, skipped: false, asserted: false, title: None }),
@@ -816,6 +1079,20 @@ impl Runner {
                     }
                 }
             })();
+
+            // ---- repeat 开始：不单独记一条（结束时记汇总）；校验没通过才走失败记录 ----
+            if step.action() == Some(UiAction::Repeat) && res.is_ok() {
+                if let Some(mut f) = next_frame.take() {
+                    if let Some(lp) = f.lp.as_mut() {
+                        lp.ev_mark = ev.steps.len();
+                        lp.out_mark = outcomes.len();
+                        self.runtime_vars.insert(lp.spec.var_name().to_string(), VarVal::Str("1".into()));
+                    }
+                    stack.push(f);
+                }
+                n -= 1;
+                continue;
+            }
 
             // ---- 屏幕文字识别的摘要：通过时记命中与置信度，失败时列出屏幕上识别到的文字 ----
             let res = if step_ocr {
@@ -907,15 +1184,42 @@ impl Runner {
             };
             self.emit(RunEvent::Log { file: rel.clone(), line: self.redact_str(&format!("{mark} #{n} {title}  {duration}ms")) });
             let rec = StepRecord { index: n, action: key.to_string(), title, status, at_ms: at, duration_ms: duration, screenshot: shot, detail };
-            self.emit_ui_step(&rel, &ev.dir, &rec);
+            // 循环里的步骤只写日志：实时面板每轮都追加会越跑越长；通知命令和失败照常推送
+            if !in_loop || rec.action == "exec" || rec.status == UiStepStatus::Failed {
+                self.emit_ui_step(&rel, &ev.dir, &rec);
+            }
             ev.steps.push(rec);
             if failed {
+                // 失败时还在循环里：每个没走完的循环记一条，说明是第几轮挂的
+                for f in stack.iter().rev() {
+                    if let Some(lp) = &f.lp {
+                        n += 1;
+                        let title = format!("重复在第 {} 次中途失败", lp.iter);
+                        let rec = StepRecord { index: n, action: "repeat".into(), title, status: UiStepStatus::Failed, at_ms: started.elapsed().as_millis() as u64, duration_ms: lp.started.elapsed().as_millis() as u64, screenshot: None, detail: None };
+                        self.emit_ui_step(&rel, &ev.dir, &rec);
+                        ev.steps.push(rec);
+                    }
+                }
                 break;
+            }
+            if do_break {
+                // 丢掉 if 分支等内层帧，把最近的循环标记为结束：下一轮判断时记汇总、不再开始新一轮
+                while let Some(f) = stack.last_mut() {
+                    if let Some(lp) = f.lp.as_mut() {
+                        lp.broke = true;
+                        f.pos = f.steps.len();
+                        break;
+                    }
+                    stack.pop();
+                }
+            }
+            if let Some(f) = next_frame.take() {
+                stack.push(f);
             }
         }
 
         // ---- 结束画面 + 失败现场 ----
-        let n = steps.len() + 1;
+        let n = n + 1;
         let at = started.elapsed().as_millis() as u64;
         if !failed {
             let shot = snap(d, &format!("{n:02}-final.jpg"), &[], false).ok();
@@ -997,6 +1301,12 @@ fn render_step(s: &UiStep, v: &Vars) -> UiStep {
         expect: rl(&s.expect),
         screenshot: r(&s.screenshot),
         value: r(&s.value),
+        // 命令本身不替换变量（捕获到的文字不能被当成命令执行），只替换传给它的环境变量
+        exec: s.exec.as_ref().map(|e| match e {
+            Exec::Cmd(c) => Exec::Cmd(c.clone()),
+            Exec::Spec(sp) => Exec::Spec(ExecSpec { command: sp.command.clone(), env: sp.env.iter().map(|(k, val)| (k.clone(), v.render(val))).collect() }),
+        }),
+        if_: s.if_.as_ref().map(|b| IfBlock { when: render_locator(&b.when, v), then: b.then.clone(), else_: b.else_.clone() }),
         capture: s
             .capture
             .iter()
@@ -1016,5 +1326,81 @@ fn render_step(s: &UiStep, v: &Vars) -> UiStep {
 
 /// 步骤清单（dry-run 预览）
 pub fn describe_steps(steps: &[UiStep], vars: &Vars, kind: UiKind) -> String {
-    steps.iter().enumerate().map(|(i, s)| format!("#{} {}", i + 1, describe_ui_step(&render_step(s, vars), kind))).collect::<Vec<_>>().join("\n")
+    let mut lines = vec![];
+    describe_into(steps, vars, kind, 0, &mut lines);
+    lines.join("\n")
+}
+
+fn describe_into(steps: &[UiStep], vars: &Vars, kind: UiKind, depth: usize, out: &mut Vec<String>) {
+    let pad = "  ".repeat(depth);
+    for (i, s) in steps.iter().enumerate() {
+        out.push(format!("{pad}#{} {}", i + 1, describe_ui_step(&render_step(s, vars), kind)));
+        if let Some(r) = &s.repeat {
+            describe_into(&r.steps, vars, kind, depth + 1, out);
+        }
+        if let Some(b) = &s.if_ {
+            describe_into(&b.then, vars, kind, depth + 1, out);
+            if !b.else_.is_empty() {
+                out.push(format!("{pad}  否则"));
+                describe_into(&b.else_, vars, kind, depth + 1, out);
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn rec(index: usize, action: &str, shot: Option<&str>) -> StepRecord {
+        StepRecord { index, action: action.into(), title: String::new(), status: UiStepStatus::Passed, at_ms: 0, duration_ms: 0, screenshot: shot.map(String::from), detail: None }
+    }
+
+    #[test]
+    fn command_reports_exit_code_output_and_env() {
+        let cwd = std::env::temp_dir();
+        let never = || false;
+        let env = vec![("RB_TEST_MSG".to_string(), "你好 && $(echo 不执行)".to_string())];
+        // 值走环境变量，不会被当成命令展开
+        let (code, out) = run_command("printf '%s' \"$RB_TEST_MSG\"", &env, &cwd, Duration::from_secs(10), &never).unwrap();
+        assert_eq!((code, out.as_str()), (Some(0), "你好 && $(echo 不执行)"));
+        let (code, out) = run_command("echo 出错了 >&2; exit 7", &[], &cwd, Duration::from_secs(10), &never).unwrap();
+        assert_eq!((code, out.as_str()), (Some(7), "出错了"));
+        // 工作目录
+        let (_, out) = run_command("pwd", &[], &cwd, Duration::from_secs(10), &never).unwrap();
+        assert_eq!(std::fs::canonicalize(out).unwrap(), std::fs::canonicalize(&cwd).unwrap());
+        // 超时：结束命令并说明
+        let started = Instant::now();
+        let e = run_command("sleep 30", &[], &cwd, Duration::from_millis(300), &never).unwrap_err();
+        assert!(e.contains("还没结束") && started.elapsed() < Duration::from_secs(10), "{e}");
+        // 取消
+        let e = run_command("sleep 30", &[], &cwd, Duration::from_secs(30), &|| true).unwrap_err();
+        assert!(e.contains("已取消"), "{e}");
+        // 命令留下后台进程也不会一直等
+        let started = Instant::now();
+        let (code, _) = run_command("(sleep 5 >/dev/null 2>&1 &) ; echo done", &[], &cwd, Duration::from_secs(10), &never).unwrap();
+        assert_eq!(code, Some(0));
+        assert!(started.elapsed() < Duration::from_secs(4));
+    }
+
+    #[test]
+    fn trimming_an_iteration_drops_records_and_shots_but_keeps_exec() {
+        let dir = tempfile::tempdir().unwrap();
+        for f in ["02-tap.jpg", "03-final.jpg", "01-keep.jpg"] {
+            std::fs::write(dir.path().join(f), b"x").unwrap();
+        }
+        let mut ev = UiEvidence {
+            steps: vec![rec(0, "open", None), rec(1, "tap", Some("01-keep.jpg")), rec(2, "tap", Some("02-tap.jpg")), rec(3, "exec", None), rec(4, "expect", Some("03-final.jpg"))],
+            ..Default::default()
+        };
+        let mut outcomes = vec![
+            TestOutcome { expr: "前".into(), pass: true, detail: None },
+            TestOutcome { expr: "本轮".into(), pass: true, detail: None },
+        ];
+        // 本轮从第 2 条记录、第 1 条断言开始
+        trim_iteration(&mut ev, &mut outcomes, dir.path(), 2, 1);
+        assert_eq!(ev.steps.iter().map(|s| s.index).collect::<Vec<_>>(), [0, 1, 3], "只丢本轮的，exec 保留");
+        assert_eq!(outcomes.len(), 1);
+        assert!(dir.path().join("01-keep.jpg").exists() && !dir.path().join("02-tap.jpg").exists() && !dir.path().join("03-final.jpg").exists());
+    }
 }

@@ -176,9 +176,14 @@ pub fn ui_targets_locator(a: UiAction) -> bool {
     a.targets_element() || matches!(a, UiAction::WaitFor | UiAction::Expect)
 }
 
-/// 动作带一行文字内容
+/// 动作带一行文字内容（repeat / if 是 JSON 对象文本，exec 是命令或 JSON 对象文本，wait 是毫秒数或 `{"min", "max"}`）
 pub fn ui_has_text(a: UiAction) -> bool {
-    matches!(a, UiAction::Goto | UiAction::Type | UiAction::Press | UiAction::Swipe | UiAction::Screenshot | UiAction::Wait)
+    matches!(a, UiAction::Goto | UiAction::Type | UiAction::Press | UiAction::Swipe | UiAction::Screenshot | UiAction::Wait | UiAction::Repeat | UiAction::If | UiAction::Exec)
+}
+
+/// 目标是一整块 JSON 对象的动作：repeat / if
+pub fn ui_is_block(a: UiAction) -> bool {
+    matches!(a, UiAction::Repeat | UiAction::If)
 }
 
 /// 定位输入框的文字 → 定位：JSON 对象原样；其余当作可见文字
@@ -199,6 +204,8 @@ impl UiStepForm {
     pub fn new(action: UiAction) -> Self {
         let target = match action {
             UiAction::Wait => "500".to_string(),
+            UiAction::Repeat => r#"{"times": 10, "steps": [{"wait": {"min": 3000, "max": 8000}}]}"#.to_string(),
+            UiAction::If => r#"{"when": {"text": "要判断的文字"}, "then": [{"wait": 1000}]}"#.to_string(),
             UiAction::Swipe => "up".to_string(),
             UiAction::Press => "Enter".to_string(),
             _ => String::new(),
@@ -217,7 +224,12 @@ impl UiStepForm {
             o.get(key).or_else(|| o.get(if key == "tap" { "click" } else if key == "click" { "tap" } else { key })).map(compact).unwrap_or_default()
         } else {
             match action {
-                UiAction::Wait => o.get("wait").map(|x| x.to_string()).unwrap_or_default(),
+                // 毫秒数或 {"min", "max"}；repeat / if 是整个对象；exec 是命令，带 env 时是对象
+                UiAction::Wait | UiAction::Repeat | UiAction::If | UiAction::Exec => match o.get(action.key(kind)) {
+                    Some(Value::String(t)) => t.clone(),
+                    Some(x) => compact(x),
+                    None => String::new(),
+                },
                 a => o.get(a.key(kind)).and_then(Value::as_str).unwrap_or_default().to_string(),
             }
         };
@@ -247,8 +259,34 @@ impl UiStepForm {
             let loc = parse_locator(t).map_err(|e| format!("第 {n} 步：{e}"))?;
             o.insert(a.key(kind).into(), loc);
         } else if a == UiAction::Wait {
-            let ms: u64 = t.parse().map_err(|_| format!("第 {n} 步的静候时长「{t}」不是毫秒数"))?;
-            o.insert("wait".into(), json!(ms));
+            if t.starts_with('{') {
+                let v: Value = serde_json::from_str(t).map_err(|e| format!("第 {n} 步的静候不是合法 JSON：{e}（写毫秒数，或 {{\"min\": 3000, \"max\": 8000}}）"))?;
+                let w = serde_json::from_value::<requestbaby_core::config::Wait>(v.clone()).map_err(|e| format!("第 {n} 步的静候写法不对：{e}"))?;
+                w.check().map_err(|e| format!("第 {n} 步：{e}"))?;
+                o.insert("wait".into(), v);
+            } else {
+                let ms: u64 = t.parse().map_err(|_| format!("第 {n} 步的静候时长「{t}」不是毫秒数（随机区间写 {{\"min\": 3000, \"max\": 8000}}）"))?;
+                o.insert("wait".into(), json!(ms));
+            }
+        } else if ui_is_block(a) {
+            let v: Value = serde_json::from_str(t).map_err(|e| format!("第 {n} 步（{}）不是合法 JSON：{e}", a.label()))?;
+            let ok = match a {
+                UiAction::Repeat => serde_json::from_value::<requestbaby_core::config::Repeat>(v.clone()).map(|_| ()),
+                _ => serde_json::from_value::<requestbaby_core::config::IfBlock>(v.clone()).map(|_| ()),
+            };
+            ok.map_err(|e| format!("第 {n} 步（{}）写法不对：{e}", a.label()))?;
+            o.insert(a.key(kind).into(), v);
+        } else if a == UiAction::Exec {
+            if t.is_empty() {
+                return Err(format!("第 {n} 步（运行命令）没有写命令"));
+            }
+            if t.starts_with('{') {
+                let v: Value = serde_json::from_str(t).map_err(|e| format!("第 {n} 步的命令不是合法 JSON：{e}（直接写命令，或 {{\"command\": \"…\", \"env\": {{…}}}}）"))?;
+                serde_json::from_value::<requestbaby_core::config::ExecSpec>(v.clone()).map_err(|e| format!("第 {n} 步的命令写法不对：{e}"))?;
+                o.insert("exec".into(), v);
+            } else {
+                o.insert("exec".into(), Value::String(t.into()));
+            }
         } else if ui_has_text(a) {
             if t.is_empty() {
                 return Err(format!("第 {n} 步（{}）没有写内容", a.label()));
@@ -967,6 +1005,61 @@ mod tests {
         serde_json::from_value::<requestbaby_core::config::TestCase>(d.clone()).unwrap();
         let back = CaseForm::from_doc(&d);
         assert_eq!((back.protocol, back.ui.target.as_str(), back.ui.window.as_str(), back.ui.restart), (Protocol::Desktop, "TextEdit", "Untitled", true));
+    }
+
+    /// 循环 / 条件 / 随机等待 / 本机命令：读出来是文本、没改原样写回，改了按动作写；写错报第几步
+    #[test]
+    fn ui_control_steps_round_trip_and_report_mistakes() {
+        use requestbaby_core::config::UiKind;
+        let steps = json!([
+            {"repeat": {"times": 5, "until": {"ocr": "有号"}, "steps": [{"tap": {"ocr": "11-28"}}, {"wait": {"min": 3000, "max": 8000}}]}},
+            {"if": {"when": {"ocr": "有号"}, "then": [{"exec": "./notify.sh"}]}},
+            {"exec": {"command": "./notify.sh", "env": {"MSG": "{{date}}"}}, "optional": true},
+            {"wait": {"min": 1, "max": 2}},
+            {"wait": 500}
+        ]);
+        let forms: Vec<UiStepForm> = steps.as_array().unwrap().iter().map(|v| UiStepForm::from_value(v, UiKind::Android)).collect();
+        assert_eq!(forms.iter().map(|f| f.action).collect::<Vec<_>>(), [UiAction::Repeat, UiAction::If, UiAction::Exec, UiAction::Wait, UiAction::Wait]);
+        // 文本：repeat / if 是整个对象，exec 带 env 时是对象、只有命令时是命令本身，wait 是毫秒数或区间对象
+        assert!(forms[0].target.starts_with('{') && forms[0].target.contains("\"times\":5"), "{}", forms[0].target);
+        assert!(forms[2].target.starts_with('{') && forms[2].optional);
+        let range: Value = serde_json::from_str(&forms[3].target).unwrap();
+        assert_eq!(range, json!({"min": 1, "max": 2}));
+        assert_eq!(forms[4].target, "500");
+        for (f, v) in forms.iter().zip(steps.as_array().unwrap()) {
+            assert_eq!(&f.to_value(1, UiKind::Android).unwrap(), v, "没改应当原样写回");
+        }
+        // 改一下（让 raw 不再相等）：按动作重新生成
+        let mut f = forms[0].clone();
+        f.target = r#"{"times": 3, "steps": [{"wait": 1000}]}"#.into();
+        assert_eq!(f.to_value(1, UiKind::Android).unwrap(), json!({"repeat": {"times": 3, "steps": [{"wait": 1000}]}}));
+        let mut e = UiStepForm::new(UiAction::Exec);
+        e.target = "./notify.sh".into();
+        assert_eq!(e.to_value(1, UiKind::Web).unwrap(), json!({"exec": "./notify.sh"}));
+        e.target = r#"{"command": "x", "env": {"A": "{{b}}"}}"#.into();
+        e.optional = true;
+        assert_eq!(e.to_value(1, UiKind::Web).unwrap(), json!({"exec": {"command": "x", "env": {"A": "{{b}}"}}, "optional": true}));
+        let mut w = UiStepForm::new(UiAction::Wait);
+        w.target = r#"{"min": 3000, "max": 8000}"#.into();
+        assert_eq!(w.to_value(1, UiKind::Web).unwrap(), json!({"wait": {"min": 3000, "max": 8000}}));
+        // 新建时的默认内容本身是合法写法
+        for a in [UiAction::Repeat, UiAction::If, UiAction::Wait] {
+            let v = UiStepForm::new(a).to_value(1, UiKind::Web).unwrap();
+            serde_json::from_value::<requestbaby_core::config::UiStep>(v).unwrap();
+        }
+        // 写错：报第几步和原因
+        let bad = |a: UiAction, t: &str| {
+            let mut f = UiStepForm::new(a);
+            f.target = t.into();
+            f.to_value(3, UiKind::Web).unwrap_err()
+        };
+        assert!(bad(UiAction::Repeat, "{oops").contains("第 3 步"));
+        assert!(bad(UiAction::Repeat, r#"{"times": 2, "step": []}"#).contains("写法不对"));
+        assert!(bad(UiAction::If, r#"{"then": []}"#).contains("写法不对"));
+        assert!(bad(UiAction::Exec, "  ").contains("没有写命令"));
+        assert!(bad(UiAction::Exec, r#"{"cmd": "x"}"#).contains("写法不对"));
+        assert!(bad(UiAction::Wait, r#"{"min": 9, "max": 1}"#).contains("不能大于"));
+        assert!(bad(UiAction::Wait, "abc").contains("不是毫秒数"));
     }
 
     /// 对话步骤：没改的步骤原样写回，改过的按动作写；内容写错报第几步

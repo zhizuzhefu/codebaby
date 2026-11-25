@@ -649,9 +649,23 @@ fn check_ui(case: &TestCase, push: &mut dyn FnMut(&'static str, String)) {
             push("ui-locator", format!("{at}：attr / regex 只能写在 capture 里"));
         }
     };
-    for (i, step) in steps.iter().enumerate() {
-        let n = i + 1;
-        let at = format!("{key}.steps 第 {n} 步");
+    // repeat / if 里的子步骤展平后逐个检查（位置写成「android.steps 第 3 步 repeat 里的第 1 步」）
+    fn collect<'a>(prefix: &str, steps: &'a [crate::config::UiStep], depth: usize, in_loop: bool, out: &mut Vec<(String, &'a crate::config::UiStep, usize, bool)>) {
+        for (i, step) in steps.iter().enumerate() {
+            let at = format!("{prefix}第 {} 步", i + 1);
+            out.push((at.clone(), step, depth, in_loop));
+            if let Some(r) = &step.repeat {
+                collect(&format!("{at} repeat 里的"), &r.steps, depth + 1, true, out);
+            }
+            if let Some(b) = &step.if_ {
+                collect(&format!("{at} if.then 里的"), &b.then, depth + 1, in_loop, out);
+                collect(&format!("{at} if.else 里的"), &b.else_, depth + 1, in_loop, out);
+            }
+        }
+    }
+    let mut flat = vec![];
+    collect(&format!("{key}.steps "), steps, 0, false, &mut flat);
+    for (at, step, depth, in_loop) in flat {
         let Some(a) = step.action() else {
             let list = kind.actions().iter().map(|a| a.key(kind)).collect::<Vec<_>>().join(" / ");
             if step.actions().is_empty() {
@@ -667,7 +681,59 @@ fn check_ui(case: &TestCase, push: &mut dyn FnMut(&'static str, String)) {
             continue;
         }
         if let Some(l) = step.locator() {
-            lint_locator(l, &at, matches!(a, UiAction::WaitFor | UiAction::Expect), push);
+            lint_locator(l, &at, matches!(a, UiAction::WaitFor | UiAction::Expect | UiAction::If), push);
+        }
+        if let Some(Err(why)) = step.wait.as_ref().map(|w| w.check()) {
+            push("ui-step", format!("{at}：{why}"));
+        }
+        if let Some(r) = &step.repeat {
+            if r.times.is_none() && r.for_ms.is_none() {
+                push("ui-step", format!("{at}：repeat 要写 times（次数）或 forMs（总时长），至少一个，避免无限循环（要一直跑就在外面用 shell 循环调用 requestbaby run）"));
+            }
+            if r.times == Some(0) || r.for_ms == Some(0) {
+                push("ui-step", format!("{at}：repeat 的 times / forMs 至少是 1"));
+            }
+            if r.steps.is_empty() {
+                push("ui-step", format!("{at}：repeat 里没有步骤：写 steps"));
+            }
+            if depth >= crate::config::Repeat::MAX_DEPTH {
+                push("ui-step", format!("{at}：repeat / if 嵌套太深（最多 {} 层）", crate::config::Repeat::MAX_DEPTH));
+            }
+            if let Some(u) = &r.until {
+                lint_locator(u, &format!("{at} until"), true, push);
+            }
+            if let Some(v) = &r.var {
+                if v.is_empty() || !v.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') || v.starts_with(|c: char| c.is_ascii_digit()) {
+                    push("ui-step", format!("{at}：repeat.var「{v}」要写成变量名（字母 / 数字 / 下划线，不以数字开头），如 \"i\""));
+                }
+            }
+        }
+        if let Some(b) = &step.if_ {
+            if b.then.is_empty() && b.else_.is_empty() {
+                push("ui-step", format!("{at}：if 没有要执行的步骤：写 then 或 else"));
+            }
+            if depth >= crate::config::Repeat::MAX_DEPTH {
+                push("ui-step", format!("{at}：repeat / if 嵌套太深（最多 {} 层）", crate::config::Repeat::MAX_DEPTH));
+            }
+        }
+        if step.break_.is_some() && !in_loop {
+            push("ui-step", format!("{at}：break 只能写在 repeat 里面（用来提前结束循环）"));
+        }
+        if let Some(e) = &step.exec {
+            if e.command().trim().is_empty() {
+                push("ui-step", format!("{at}：exec 要写命令，如 \"curl -s https://…\" 或 \"./notify.sh\""));
+            }
+            if e.command().contains("{{") {
+                push("ui-step", format!("{at}：exec 的命令不做变量替换（捕获到的文字不能被当成命令执行）；要传值写成 {{\"command\": \"…\", \"env\": {{\"MSG\": \"{{{{变量}}}}\"}}}}，命令里用 $MSG（requestbaby guide control）"));
+            }
+            for k in e.env().into_iter().flatten().map(|(k, _)| k) {
+                if k.is_empty() || k.contains('=') || k.contains(char::is_whitespace) {
+                    push("ui-step", format!("{at}：exec.env 的名称「{k}」不合法（不能为空，不能含 = 和空白）"));
+                }
+            }
+        }
+        if !step.capture.is_empty() && matches!(a, UiAction::Repeat | UiAction::If | UiAction::Exec | UiAction::Break) {
+            push("ui-step", format!("{at}：capture 不能写在 {} 上，写在循环 / 分支里面的步骤上", a.key(kind)));
         }
         match (a, &step.value) {
             (UiAction::Fill | UiAction::Select, None) => push("ui-step", format!("{at}：{} 要写 value（{}）", a.key(kind), if a == UiAction::Fill { "要填的内容" } else { "选项文字或值" })),

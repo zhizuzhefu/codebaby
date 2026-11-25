@@ -1575,6 +1575,151 @@ fn web_case_runs_in_real_browser_with_step_screenshots() {
     assert_eq!(steps.len(), final_steps);
 }
 
+/// 循环 / 条件 / 随机等待 / 本机命令回调：真实浏览器里点计数按钮，repeat 点到 until 满足就停，if 走 then 分支用 exec 写文件；
+/// 循环里只保留最后一轮的步骤记录，exec 命令失败算失败（optional 则跳过）
+#[test]
+fn web_repeat_if_wait_range_and_exec_callbacks() {
+    if requestbaby_core::engine::cdp::find_browser(None).is_err() {
+        eprintln!("跳过：本机没有 Chrome / Edge / Chromium");
+        return;
+    }
+    let dir = TempDir::new().unwrap();
+    let d = dir.path();
+    std::fs::write(d.join("requestbaby.json"), r#"{"version":1,"defaultEnv":"dev"}"#).unwrap();
+    std::fs::create_dir_all(d.join("site")).unwrap();
+    std::fs::create_dir_all(d.join("collections/web")).unwrap();
+    std::fs::create_dir_all(d.join("envs")).unwrap();
+    std::fs::write(
+        d.join("site/count.html"),
+        r#"<!doctype html><meta charset="utf-8"><title>计数</title><button id="b">加一</button><p id="n">0</p><p id="flag"></p>
+<script>b.onclick=()=>{n.textContent=String(+n.textContent+1);if(+n.textContent>=3)flag.textContent='到'+'了'}</script>"#,
+    )
+    .unwrap();
+    let base = format!("file://{}", d.join("site").display());
+    std::fs::write(d.join("envs/dev.json"), serde_json::json!({ "vars": { "site": base } }).to_string()).unwrap();
+    std::fs::write(
+        d.join("collections/web/01-循环.json"),
+        r#"{"name":"循环","web":{"url":"{{site}}/count.html","steps":[
+            {"repeat":{"times":10,"var":"k","until":{"text":"到了"},"steps":[
+                {"click":{"role":"button","name":"加一"}},
+                {"wait":{"min":10,"max":30}}
+            ]}},
+            {"expect":{"text":"到了"}},
+            {"if":{"when":{"text":"到了"},
+                "then":[{"exec":{"command":"echo \"$MSG\" > \"$REQUESTBABY_ROOT/hit.txt\"; echo \"$REQUESTBABY_EVIDENCE\" > \"$REQUESTBABY_ROOT/evidence.txt\"","env":{"MSG":"第{{k}}轮命中"}}}],
+                "else":[{"exec":"exit 1"}]}},
+            {"if":{"when":{"text":"不存在的文字"},"then":[{"exec":"exit 1"}],"else":[{"wait":1}]}}
+        ]}}"#,
+    )
+    .unwrap();
+    std::fs::write(
+        d.join("collections/web/02-次数.json"),
+        r#"{"name":"次数","web":{"url":"{{site}}/count.html","steps":[
+            {"repeat":{"times":2,"steps":[{"click":{"role":"button","name":"加一"}}]}},
+            {"expect":{"text":"2"}}
+        ]}}"#,
+    )
+    .unwrap();
+    std::fs::write(
+        d.join("collections/web/03-命令失败.json"),
+        r#"{"name":"命令失败","web":{"url":"{{site}}/count.html","steps":[{"exec":"echo boom; exit 3"}]}}"#,
+    )
+    .unwrap();
+    std::fs::write(
+        d.join("collections/web/04-命令失败可跳过.json"),
+        r#"{"name":"命令失败可跳过","web":{"url":"{{site}}/count.html","steps":[{"exec":"exit 3","optional":true},{"expect":{"text":"0"}}]}}"#,
+    )
+    .unwrap();
+    std::fs::write(
+        d.join("collections/web/05-跳出.json"),
+        r#"{"name":"跳出","web":{"url":"{{site}}/count.html","steps":[
+            {"repeat":{"times":10,"steps":[
+                {"click":{"role":"button","name":"加一"}},
+                {"if":{"when":{"text":"到了"},"then":[{"break":true}]}}
+            ]}},
+            {"expect":{"text":"到了"}}
+        ]}}"#,
+    )
+    .unwrap();
+    let out = run_cli(&["run", "--report", "json"], d);
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap_or_else(|_| panic!("{}{}", String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr)));
+    let by = |name: &str| v["results"].as_array().unwrap().iter().find(|r| r["name"] == name).unwrap_or_else(|| panic!("没有 {name}")).clone();
+
+    // 循环：until 在第 3 轮满足；then 分支的命令拿到了轮次变量
+    let c = by("循环");
+    assert_eq!(c["passed"], true, "{c:#}");
+    assert_eq!(std::fs::read_to_string(d.join("hit.txt")).unwrap().trim(), "第3轮命中");
+    // 证据目录是绝对路径，且就是本用例的证据目录（通知里要附截图时用）
+    let evidence = std::fs::read_to_string(d.join("evidence.txt")).unwrap();
+    let evidence = Path::new(evidence.trim());
+    assert!(evidence.is_absolute() && evidence.is_dir() && evidence.join("00-open.jpg").is_file(), "{}", evidence.display());
+    let steps = c["response"]["evidence"]["steps"].as_array().unwrap().clone();
+    let summary = steps.iter().find(|s| s["action"] == "repeat").expect("循环汇总");
+    assert!(summary["title"].as_str().unwrap().contains("共 3 次") && summary["title"].as_str().unwrap().contains("until"), "{summary:#}");
+    // 前两轮的步骤记录被丢掉，只剩最后一轮：1 次点击 + 1 次随机等待
+    assert_eq!(steps.iter().filter(|s| s["action"] == "click").count(), 1, "{steps:#?}");
+    let wait = steps.iter().find(|s| s["action"] == "wait").unwrap();
+    assert!(wait["detail"].as_str().unwrap().contains("本次等了"), "{wait:#}");
+    assert!(steps.iter().any(|s| s["action"] == "exec" && s["detail"].as_str().is_some_and(|d| d.contains("命令退出码 0"))), "{steps:#?}");
+    assert!(steps.iter().any(|s| s["action"] == "if" && s["detail"].as_str().is_some_and(|d| d.contains("条件不满足"))), "{steps:#?}");
+    // 步骤序号不重复（截图文件名由它生成）
+    let idx: Vec<u64> = steps.iter().map(|s| s["index"].as_u64().unwrap()).collect();
+    let mut uniq = idx.clone();
+    uniq.sort();
+    uniq.dedup();
+    assert_eq!(idx.len(), uniq.len(), "{idx:?}");
+
+    // 只写 times：点满次数就结束
+    let c = by("次数");
+    assert_eq!(c["passed"], true, "{c:#}");
+    let steps = c["response"]["evidence"]["steps"].as_array().unwrap();
+    assert!(steps.iter().any(|s| s["title"].as_str().is_some_and(|t| t.contains("共 2 次") && t.contains("times"))), "{steps:#?}");
+
+    // break：if 里发现目标就结束循环（第 3 轮），不会点满 10 次
+    let c = by("跳出");
+    assert_eq!(c["passed"], true, "{c:#}");
+    let steps = c["response"]["evidence"]["steps"].as_array().unwrap();
+    assert!(steps.iter().any(|s| s["title"].as_str().is_some_and(|t| t.contains("共 3 次") && t.contains("break"))), "{steps:#?}");
+
+    // 命令失败：用例失败，原因里有退出码和输出；optional 则跳过
+    let c = by("命令失败");
+    assert_eq!(c["passed"], false);
+    let why = c["tests"][0]["detail"].as_str().unwrap();
+    assert!(why.contains("命令退出码 3") && why.contains("boom"), "{c:#}");
+    let c = by("命令失败可跳过");
+    assert_eq!(c["passed"], true, "{c:#}");
+    assert!(c["response"]["evidence"]["steps"].as_array().unwrap().iter().any(|s| s["status"] == "skipped"), "{c:#}");
+}
+
+/// 写法有误的循环 / 命令：validate 报错，不会跑起来无限循环
+#[test]
+fn repeat_if_exec_authoring_mistakes_are_caught_by_validate() {
+    let dir = TempDir::new().unwrap();
+    let d = dir.path();
+    std::fs::write(d.join("requestbaby.json"), r#"{"version":1,"defaultEnv":"dev"}"#).unwrap();
+    std::fs::create_dir_all(d.join("collections/web")).unwrap();
+    std::fs::create_dir_all(d.join("envs")).unwrap();
+    std::fs::write(d.join("envs/dev.json"), r#"{"vars":{}}"#).unwrap();
+    std::fs::write(
+        d.join("collections/web/01-错.json"),
+        r#"{"name":"错","web":{"url":"https://example.com","steps":[
+            {"repeat":{"steps":[{"click":{"text":"a"}}]}},
+            {"wait":{"min":9,"max":1}},
+            {"exec":"echo {{x}}"},
+            {"if":{"when":{"text":"a"}}},
+            {"repeat":{"times":2,"steps":[{"exec":""}]}},
+            {"break":true}
+        ]}}"#,
+    )
+    .unwrap();
+    let out = run_cli(&["validate", "--report", "json"], d);
+    assert_eq!(out.status.code(), Some(2), "{}", String::from_utf8_lossy(&out.stdout));
+    let text = String::from_utf8_lossy(&out.stdout).to_string();
+    for want in ["至少一个", "min（9）不能大于 max（1）", "不做变量替换", "if 没有要执行的步骤", "exec 要写命令", "repeat 里的第 1 步", "break 只能写在 repeat 里面"] {
+        assert!(text.contains(want), "缺少「{want}」：{text}");
+    }
+}
+
 /// 实时步骤事件与日志同样脱敏：填进页面的 secret 变量值（手机号 / 密码）不能出现在事件流里
 #[test]
 fn web_live_step_events_redact_secret_values() {
