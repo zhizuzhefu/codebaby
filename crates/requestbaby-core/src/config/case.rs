@@ -28,6 +28,8 @@ pub struct TestCase {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ws: Option<super::protocols::WsSpec>,
     /// 浏览器界面验收（Chrome DevTools 协议驱动本机浏览器）
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub regions: std::collections::BTreeMap<String, super::ui::Region>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub web: Option<super::ui::WebSpec>,
     /// 安卓应用界面验收（adb + uiautomator）

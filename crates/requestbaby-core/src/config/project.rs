@@ -39,6 +39,9 @@ pub struct Project {
     /// 屏幕文字识别（OCR）：识别语言
     #[serde(default, skip_serializing_if = "is_default")]
     pub ocr: super::ui::OcrConfig,
+    /// 命名命令：`{"exec": "notify"}` 直接引用；长命令（通知、回调）只在这里写一次。值是命令字符串，或 `{"command", "env"}`
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub commands: BTreeMap<String, super::ui::Exec>,
     /// 代理：所有对外连接（HTTP / gRPC / WebSocket / 浏览器 / adb）经同一个代理；不配置则跟随系统（环境变量 → 系统代理设置）
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub proxy: Option<ProxyConfig>,
@@ -149,6 +152,7 @@ impl Default for Project {
             android: Default::default(),
             desktop: Default::default(),
             ocr: Default::default(),
+            commands: BTreeMap::new(),
             proxy: None,
         }
     }

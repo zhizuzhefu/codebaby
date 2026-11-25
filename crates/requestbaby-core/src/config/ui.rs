@@ -20,11 +20,14 @@ pub struct WebSpec {
     pub url: String,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub steps: Vec<UiStep>,
+    /// 用例失败时运行的命令（只能写 `exec`）：失败通知。`{{error}}` 是失败原因，`{{failedStep}}` 是出错的那一步
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub on_fail: Vec<UiStep>,
     /// 视口尺寸（缺省 1280×800，或项目 web.viewport）
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub viewport: Option<Viewport>,
     /// 每一步等待的默认超时毫秒（缺省 10000）；打开页面用项目 timeoutMs
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none", alias = "timeout", deserialize_with = "de_ms_opt")]
     pub timeout_ms: Option<u64>,
 }
 
@@ -49,8 +52,11 @@ pub struct AndroidSpec {
     pub attach: Option<bool>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub steps: Vec<UiStep>,
+    /// 用例失败时运行的命令（只能写 `exec`）：失败通知。`{{error}}` 是失败原因，`{{failedStep}}` 是出错的那一步
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub on_fail: Vec<UiStep>,
     /// 每一步等待的默认超时毫秒（缺省 10000）
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none", alias = "timeout", deserialize_with = "de_ms_opt")]
     pub timeout_ms: Option<u64>,
 }
 
@@ -68,8 +74,11 @@ pub struct DesktopSpec {
     pub restart: Option<bool>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub steps: Vec<UiStep>,
+    /// 用例失败时运行的命令（只能写 `exec`）：失败通知。`{{error}}` 是失败原因，`{{failedStep}}` 是出错的那一步
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub on_fail: Vec<UiStep>,
     /// 每一步等待的默认超时毫秒（缺省 10000）
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none", alias = "timeout", deserialize_with = "de_ms_opt")]
     pub timeout_ms: Option<u64>,
 }
 
@@ -176,7 +185,7 @@ pub struct Locator {
     pub ocr: Option<String>,
     /// 只识别 / 查找屏幕的这一块：x / y / w / h 取 0~1，是占整张截图的比例，与分辨率无关
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub region: Option<Region>,
+    pub region: Option<RegionRef>,
     /// 只取和这行文字在同一横排的结果（卡片、表格里「某某那一行的『已约满』」）；这行文字要在 region 之内
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub row: Option<String>,
@@ -217,6 +226,30 @@ pub struct Locator {
     /// 用正则从取到的文字里截取（有分组取第 1 组）
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub regex: Option<String>,
+}
+
+/// `region` 的写法：直接写 `{"x","y","w","h"}`，或写用例 `regions` 里起的名字（同一块区域在很多步骤里反复用时）
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
+#[serde(untagged)]
+pub enum RegionRef {
+    Name(String),
+    Rect(Region),
+}
+
+impl RegionRef {
+    /// 取出具体区域；写的是名字但没解析过（用例里没有定义）时报错
+    pub fn rect(&self) -> Result<Region, String> {
+        match self {
+            RegionRef::Rect(r) => Ok(*r),
+            RegionRef::Name(n) => Err(format!("区域「{n}」没有定义：在用例顶层 regions 里写 \"{n}\": {{ x, y, w, h }}")),
+        }
+    }
+}
+
+impl From<Region> for RegionRef {
+    fn from(r: Region) -> Self {
+        RegionRef::Rect(r)
+    }
 }
 
 /// 屏幕上的一块区域：x / y / w / h 都是 0~1 的比例（相对整张截图，左上角为原点），与分辨率无关
@@ -349,12 +382,103 @@ pub enum CaptureSource {
     Element(Box<Locator>),
 }
 
-/// 静候时长：固定毫秒数，或 `{"min", "max"}` 随机区间（含两端）
+/// 时长文字 → 毫秒：`500ms` / `2.5s` / `3s` / `1m` / `8h` / `1d`，可连写 `1h30m`；纯数字当毫秒；`forever` = 不限时（只给 repeat 的 `for` 用）
+pub fn parse_duration_ms(text: &str) -> Result<u64, String> {
+    let t = text.trim().to_ascii_lowercase();
+    if t.is_empty() {
+        return Err("时长是空的".into());
+    }
+    if matches!(t.as_str(), "forever" | "永远" | "不限") {
+        return Ok(FOREVER_MS);
+    }
+    if let Ok(n) = t.parse::<u64>() {
+        return Ok(n);
+    }
+    let bad = || format!("看不懂时长「{text}」：写法如 500ms / 2.5s / 1m / 8h / 1h30m");
+    let (mut total, mut rest) = (0f64, t.as_str());
+    while !rest.is_empty() {
+        let num_end = rest.find(|c: char| !(c.is_ascii_digit() || c == '.')).ok_or_else(bad)?;
+        let n: f64 = rest[..num_end].parse().map_err(|_| bad())?;
+        rest = &rest[num_end..];
+        let (unit_ms, len) = if rest.starts_with("ms") {
+            (1.0, 2)
+        } else if rest.starts_with('s') {
+            (1000.0, 1)
+        } else if rest.starts_with('m') {
+            (60_000.0, 1)
+        } else if rest.starts_with('h') {
+            (3_600_000.0, 1)
+        } else if rest.starts_with('d') {
+            (86_400_000.0, 1)
+        } else {
+            return Err(bad());
+        };
+        total += n * unit_ms;
+        rest = &rest[len..];
+    }
+    Ok(total.round() as u64)
+}
+
+/// 「不限时」：`repeat` 的 `for: "forever"`
+pub const FOREVER_MS: u64 = u64::MAX;
+
+/// 随机区间文字：`3s-8s` / `3-8s`（前面没写单位就沿用后面的）/ `500ms~2s`
+fn parse_wait_range(text: &str) -> Option<Result<WaitRange, String>> {
+    let sep = text.find(['~', '～', '–', '—']).or_else(|| text.find('-'))?;
+    let (a, b) = (text[..sep].trim(), text[sep..].trim_start_matches(['~', '～', '–', '—', '-']).trim());
+    if a.is_empty() || b.is_empty() {
+        return None;
+    }
+    // 前一个只有数字时借用后一个的单位
+    let unit: String = b.chars().skip_while(|c| c.is_ascii_digit() || *c == '.').collect();
+    let a_text = if a.chars().all(|c| c.is_ascii_digit() || c == '.') && !a.is_empty() { format!("{a}{unit}") } else { a.to_string() };
+    Some((|| Ok(WaitRange { min: parse_duration_ms(&a_text)?, max: parse_duration_ms(b)? }))())
+}
+
+/// `timeout` / `for` 这类字段：数字 = 毫秒，字符串 = 时长文字
+fn de_ms_opt<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<u64>, D::Error> {
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum Raw {
+        Ms(u64),
+        Text(String),
+    }
+    match Option::<Raw>::deserialize(d)? {
+        None => Ok(None),
+        Some(Raw::Ms(n)) => Ok(Some(n)),
+        Some(Raw::Text(t)) => parse_duration_ms(&t).map(Some).map_err(serde::de::Error::custom),
+    }
+}
+
+/// 静候时长：毫秒数、`"2.5s"` / `"3s-8s"` 这样的文字，或 `{"min", "max"}` 随机区间（含两端）
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(try_from = "WaitRaw")]
 #[serde(untagged)]
 pub enum Wait {
     Ms(u64),
     Range(WaitRange),
+}
+
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum WaitRaw {
+    Ms(u64),
+    Range(WaitRange),
+    Text(String),
+}
+
+impl TryFrom<WaitRaw> for Wait {
+    type Error = String;
+    fn try_from(r: WaitRaw) -> Result<Self, String> {
+        match r {
+            WaitRaw::Ms(n) => Ok(Wait::Ms(n)),
+            WaitRaw::Range(r) => Ok(Wait::Range(r)),
+            WaitRaw::Text(t) => match parse_wait_range(&t) {
+                Some(r) => r.map(Wait::Range),
+                None => parse_duration_ms(&t).map(Wait::Ms),
+            },
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
@@ -412,9 +536,13 @@ pub struct Repeat {
     /// 最多重复几次
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub times: Option<u32>,
-    /// 最长重复多久（毫秒）：一轮结束时已超过就不再开始下一轮
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    /// 最长重复多久（毫秒；写 `for` 可以用 `"8h"` / `"30m"` / `"forever"`）：一轮结束时已超过就不再开始下一轮
+    #[serde(default, skip_serializing_if = "Option::is_none", alias = "for", deserialize_with = "de_ms_opt")]
     pub for_ms: Option<u64>,
+    /// 轮换取值：每一轮取下一个值，到头了从头再来。`{"date": ["11-28", "11-29"]}` → 步骤里写 `{{date}}`；
+    /// 只写 `cycle`（不写 times / for）就是每个值各来一轮
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub cycle: BTreeMap<String, Vec<String>>,
     /// 每轮结束后判断的条件（写法同 expect，只判断一次、不等待）：满足就提前结束
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub until: Option<Locator>,
@@ -431,6 +559,17 @@ impl Repeat {
 
     pub fn var_name(&self) -> &str {
         self.var.as_deref().filter(|v| !v.trim().is_empty()).unwrap_or("i")
+    }
+
+    /// 最多几轮：写了 times 用它；只写了 cycle（没有 for）= 最长的那一组各来一轮
+    pub fn effective_times(&self) -> Option<u32> {
+        self.times.or_else(|| if self.for_ms.is_none() { self.cycle.values().map(|v| v.len() as u32).max().filter(|n| *n > 0) } else { None })
+    }
+
+    /// 第 `round` 轮（从 1 开始）各 cycle 变量取什么值
+    pub fn cycle_values(&self, round: u32) -> Vec<(String, String)> {
+        let idx = round.saturating_sub(1) as usize;
+        self.cycle.iter().filter(|(_, v)| !v.is_empty()).map(|(k, v)| (k.clone(), v[idx % v.len()].clone())).collect()
     }
 }
 
@@ -559,7 +698,7 @@ pub struct UiStep {
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub capture: BTreeMap<String, CaptureSource>,
     /// 本步等待超时毫秒
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none", alias = "timeout", deserialize_with = "de_ms_opt")]
     pub timeout_ms: Option<u64>,
     /// 找不到目标时跳过本步而不失败（如可能出现的弹窗）
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -796,6 +935,35 @@ impl UiStep {
         out
     }
 
+    /// 把 `region` 写的名字换成用例 `regions` 里定义的区域（含 repeat / if 里的子步骤）；名字没有定义的保持原样（运行时报错、validate 提前报）
+    pub fn resolve_regions(&mut self, names: &BTreeMap<String, Region>) {
+        let fix = |l: &mut Locator| {
+            if let Some(RegionRef::Name(n)) = &l.region {
+                if let Some(r) = names.get(n) {
+                    l.region = Some(RegionRef::Rect(*r));
+                }
+            }
+        };
+        for l in [&mut self.click, &mut self.tap, &mut self.long_press, &mut self.hover, &mut self.fill, &mut self.select, &mut self.wait_for, &mut self.expect].into_iter().flatten() {
+            fix(l);
+        }
+        for c in self.capture.values_mut() {
+            if let CaptureSource::Element(l) = c {
+                fix(l);
+            }
+        }
+        if let Some(r) = &mut self.repeat {
+            if let Some(u) = r.until.as_mut() {
+                fix(u);
+            }
+            r.steps.iter_mut().for_each(|st| st.resolve_regions(names));
+        }
+        if let Some(b) = &mut self.if_ {
+            fix(&mut b.when);
+            b.then.iter_mut().chain(b.else_.iter_mut()).for_each(|st| st.resolve_regions(names));
+        }
+    }
+
     /// 子步骤（repeat / if 里的）：依次是 repeat.steps、if.then、if.else
     pub fn children(&self) -> Vec<&UiStep> {
         let mut out: Vec<&UiStep> = vec![];
@@ -808,6 +976,15 @@ impl UiStep {
         }
         out
     }
+}
+
+/// 复制一份步骤，并把 `region` 里写的区域名换成用例 `regions` 里的区域（没有用到名字时原样返回）
+pub fn with_regions(steps: &[UiStep], names: &BTreeMap<String, Region>) -> Vec<UiStep> {
+    let mut v = steps.to_vec();
+    if !names.is_empty() {
+        v.iter_mut().for_each(|s| s.resolve_regions(names));
+    }
+    v
 }
 
 /// 把嵌套的步骤展平（含 repeat / if 里的子步骤，先父后子）：扫描「用没用到某种能力」时用
@@ -1081,6 +1258,74 @@ mod tests {
         // 超出图外的部分被截掉
         assert_eq!(Region { x: 0.9, y: 0.9, w: 0.5, h: 0.5 }.to_pixels(1000, 1000), Some((900, 900, 100, 100)));
         assert_eq!(Region { x: 1.0, y: 0.0, w: 0.5, h: 0.5 }.to_pixels(100, 100), None);
+    }
+
+    #[test]
+    fn durations_read_like_people_write_them() {
+        for (text, ms) in [("500ms", 500), ("2.5s", 2500), ("3s", 3000), ("1m", 60_000), ("8h", 28_800_000), ("1h30m", 5_400_000), ("1m30s", 90_000), ("2500", 2500), (" 1S ", 1000)] {
+            assert_eq!(parse_duration_ms(text), Ok(ms), "{text}");
+        }
+        assert_eq!(parse_duration_ms("forever"), Ok(FOREVER_MS));
+        for bad in ["", "三秒", "s", "3x", "1.2.3s", "5 分钟"] {
+            let e = parse_duration_ms(bad).unwrap_err();
+            assert!(e.contains("500ms") || e.contains("空"), "{bad}: {e}");
+        }
+        // wait：毫秒 / 文字 / 区间文字 / 区间对象
+        let w = |j: &str| serde_json::from_str::<Wait>(j).map_err(|e| e.to_string());
+        assert_eq!(w("1500"), Ok(Wait::Ms(1500)));
+        assert_eq!(w("\"2.5s\""), Ok(Wait::Ms(2500)));
+        assert_eq!(w("\"3s-8s\""), Ok(Wait::Range(WaitRange { min: 3000, max: 8000 })));
+        assert_eq!(w("\"3-8s\""), Ok(Wait::Range(WaitRange { min: 3000, max: 8000 })), "前面没写单位沿用后面的");
+        assert_eq!(w("\"500ms~2s\""), Ok(Wait::Range(WaitRange { min: 500, max: 2000 })));
+        assert_eq!(w("{\"min\":1,\"max\":2}"), Ok(Wait::Range(WaitRange { min: 1, max: 2 })));
+        assert!(w("\"三秒\"").unwrap_err().contains("看不懂时长"));
+        // repeat.for / timeout 别名
+        let r: Repeat = serde_json::from_str(r#"{"for":"8h","steps":[]}"#).unwrap();
+        assert_eq!(r.for_ms, Some(28_800_000));
+        let r: Repeat = serde_json::from_str(r#"{"for":"forever","steps":[]}"#).unwrap();
+        assert_eq!(r.for_ms, Some(FOREVER_MS));
+        let st: UiStep = serde_json::from_str(r#"{"wait":1,"timeout":"15s"}"#).unwrap();
+        assert_eq!(st.timeout_ms, Some(15_000));
+        let st: UiStep = serde_json::from_str(r#"{"wait":1,"timeoutMs":20}"#).unwrap();
+        assert_eq!(st.timeout_ms, Some(20));
+    }
+
+    #[test]
+    fn cycle_takes_the_next_value_each_round_and_defaults_to_one_pass() {
+        let r: Repeat = serde_json::from_str(r#"{"cycle":{"date":["a","b","c"],"who":["x","y"]},"steps":[]}"#).unwrap();
+        assert_eq!(r.effective_times(), Some(3), "只写 cycle = 最长的一组各来一轮");
+        assert_eq!(r.cycle_values(1), vec![("date".to_string(), "a".to_string()), ("who".to_string(), "x".to_string())]);
+        assert_eq!(r.cycle_values(3), vec![("date".to_string(), "c".to_string()), ("who".to_string(), "x".to_string())], "短的一组从头再来");
+        assert_eq!(r.cycle_values(4)[0].1, "a");
+        // 写了 for 就由时长决定什么时候停，不再默认只走一遍
+        let r: Repeat = serde_json::from_str(r#"{"cycle":{"d":["a"]},"for":"1h","steps":[]}"#).unwrap();
+        assert_eq!(r.effective_times(), None);
+        // 写了 times 以 times 为准
+        let r: Repeat = serde_json::from_str(r#"{"cycle":{"d":["a","b"]},"times":5,"steps":[]}"#).unwrap();
+        assert_eq!(r.effective_times(), Some(5));
+    }
+
+    #[test]
+    fn region_names_resolve_from_the_case_regions_everywhere_in_the_steps() {
+        let names: BTreeMap<String, Region> = [("条".to_string(), Region { x: 0.0, y: 0.1, w: 1.0, h: 0.1 })].into();
+        let steps: Vec<UiStep> = serde_json::from_str(
+            r#"[{"expect":{"ocr":"a","region":"条"}},
+                {"repeat":{"times":1,"until":{"ocr":"b","region":"条"},"steps":[{"tap":{"ocr":"c","region":"条"}}]}},
+                {"if":{"when":{"ocr":"d","region":"条"},"then":[{"expect":{"ocr":"e","region":"没定义"}}]}},
+                {"expect":{"ocr":"f","region":{"x":0.5,"y":0.5,"w":0.1,"h":0.1}}}]"#,
+        )
+        .unwrap();
+        let out = with_regions(&steps, &names);
+        let rect = |l: &Locator| l.region.as_ref().unwrap().rect();
+        let want = Region { x: 0.0, y: 0.1, w: 1.0, h: 0.1 };
+        assert_eq!(rect(out[0].expect.as_ref().unwrap()), Ok(want));
+        let rep = out[1].repeat.as_ref().unwrap();
+        assert_eq!(rect(rep.until.as_ref().unwrap()), Ok(want));
+        assert_eq!(rect(rep.steps[0].tap.as_ref().unwrap()), Ok(want));
+        let blk = out[2].if_.as_ref().unwrap();
+        assert_eq!(rect(&blk.when), Ok(want));
+        assert!(rect(blk.then[0].expect.as_ref().unwrap()).unwrap_err().contains("没有定义"), "没定义的名字运行时要说清楚");
+        assert_eq!(rect(out[3].expect.as_ref().unwrap()), Ok(Region { x: 0.5, y: 0.5, w: 0.1, h: 0.1 }));
     }
 
     #[test]

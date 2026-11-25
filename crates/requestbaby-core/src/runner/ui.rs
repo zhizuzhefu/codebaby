@@ -138,8 +138,14 @@ pub fn describe_ui_step(s: &UiStep, kind: UiKind) -> String {
             if let Some(t) = r.times {
                 bound.push(format!("最多 {t} 次"));
             }
-            if let Some(ms) = r.for_ms {
-                bound.push(format!("最长 {ms} ms"));
+            match r.for_ms {
+                Some(crate::config::ui::FOREVER_MS) => bound.push("一直重复".into()),
+                Some(ms) => bound.push(format!("最长 {ms} ms")),
+                None => {}
+            }
+            if !r.cycle.is_empty() {
+                let keys: Vec<String> = r.cycle.iter().map(|(k, v)| format!("{k}×{}", v.len())).collect();
+                bound.push(format!("轮换 {}", keys.join("、")));
             }
             if let Some(u) = &r.until {
                 bound.push(format!("直到{}", u.describe_condition()));
@@ -382,12 +388,12 @@ pub fn human_duration(ms: u64) -> String {
 /// 最外层循环的进度文字：「第 12 轮，已运行 9 分 12 秒（共 8 小时）」
 pub(crate) fn loop_progress_text(lp: &LoopState) -> String {
     let elapsed = lp.started.elapsed().as_millis() as u64;
-    let mut t = match lp.spec.times {
+    let mut t = match lp.spec.effective_times() {
         Some(n) => format!("第 {}/{} 轮", lp.iter, n),
         None => format!("第 {} 轮", lp.iter),
     };
     t.push_str(&format!("，已运行 {}", human_duration(elapsed)));
-    if let Some(ms) = lp.spec.for_ms {
+    if let Some(ms) = lp.spec.for_ms.filter(|ms| *ms != crate::config::ui::FOREVER_MS) {
         t.push_str(&format!("（最长 {}）", human_duration(ms)));
     }
     t
@@ -517,7 +523,7 @@ impl Runner {
         }
         result.url = url.clone();
         if opts.dry_run {
-            result.body_preview = Some(super::clip_preview(&describe_steps(&spec.steps, vars, UiKind::Web)));
+            result.body_preview = Some(super::clip_preview(&describe_case(&spec.steps, &spec.on_fail, vars, UiKind::Web)));
             self.redact_result(result);
             return None;
         }
@@ -564,7 +570,7 @@ impl Runner {
         let (dir, display) = self.evidence_dir(dc, &result.name, opts);
         let policy = cfg.screenshots.unwrap_or_default();
         let step_timeout = spec.timeout_ms.unwrap_or(DEFAULT_STEP_TIMEOUT_MS);
-        let (outcomes, evidence) = self.ui_steps(&mut page, dc, row, &spec.steps, Open::Goto(url), step_timeout, &dir, display, policy, opts);
+        let (outcomes, evidence) = self.ui_steps(&mut page, dc, row, &crate::config::with_regions(&spec.steps, &case.regions), &crate::config::with_regions(&spec.on_fail, &case.regions), Open::Goto(url), step_timeout, &dir, display, policy, opts);
         if self.ctx.project.cookies {
             let now = crate::history::now_ms();
             for c in page.cookies() {
@@ -614,7 +620,7 @@ impl Runner {
             None => app.clone(),
         };
         if opts.dry_run {
-            result.body_preview = Some(super::clip_preview(&describe_steps(&spec.steps, vars, UiKind::Android)));
+            result.body_preview = Some(super::clip_preview(&describe_case(&spec.steps, &spec.on_fail, vars, UiKind::Android)));
             self.redact_result(result);
             return None;
         }
@@ -656,7 +662,7 @@ impl Runner {
         let (dir, display) = self.evidence_dir(dc, &result.name, opts);
         let policy = cfg.screenshots.unwrap_or_default();
         let step_timeout = spec.timeout_ms.unwrap_or(DEFAULT_STEP_TIMEOUT_MS);
-        let (outcomes, evidence) = self.ui_steps(&mut dev, dc, row, &spec.steps, if spec.attach == Some(true) { Open::Attach } else { Open::Launch(spec.clear_data.unwrap_or(false)) }, step_timeout, &dir, display, policy, opts);
+        let (outcomes, evidence) = self.ui_steps(&mut dev, dc, row, &crate::config::with_regions(&spec.steps, &case.regions), &crate::config::with_regions(&spec.on_fail, &case.regions), if spec.attach == Some(true) { Open::Attach } else { Open::Launch(spec.clear_data.unwrap_or(false)) }, step_timeout, &dir, display, policy, opts);
         let info = dev.page().unwrap_or_default();
         let resp = RespData {
             status: 0,
@@ -691,7 +697,7 @@ impl Runner {
             None => app.clone(),
         };
         if opts.dry_run {
-            result.body_preview = Some(super::clip_preview(&describe_steps(&spec.steps, vars, UiKind::Desktop)));
+            result.body_preview = Some(super::clip_preview(&describe_case(&spec.steps, &spec.on_fail, vars, UiKind::Desktop)));
             self.redact_result(result);
             return None;
         }
@@ -713,7 +719,7 @@ impl Runner {
         let (dir, display) = self.evidence_dir(dc, &result.name, opts);
         let policy = cfg.screenshots.unwrap_or_default();
         let step_timeout = spec.timeout_ms.unwrap_or(DEFAULT_STEP_TIMEOUT_MS);
-        let (outcomes, evidence) = self.ui_steps(&mut app_driver, dc, row, &spec.steps, Open::Launch(spec.restart.unwrap_or(false)), step_timeout, &dir, display, policy, opts);
+        let (outcomes, evidence) = self.ui_steps(&mut app_driver, dc, row, &crate::config::with_regions(&spec.steps, &case.regions), &crate::config::with_regions(&spec.on_fail, &case.regions), Open::Launch(spec.restart.unwrap_or(false)), step_timeout, &dir, display, policy, opts);
         let info = app_driver.page().unwrap_or_default();
         let resp = RespData {
             status: 0,
@@ -736,6 +742,7 @@ impl Runner {
         dc: &discover::DiscoveredCase,
         row: Option<&crate::config::DataRow>,
         steps: &[UiStep],
+        on_fail: &[UiStep],
         open: Open,
         default_timeout: u64,
         dir: &Path,
@@ -846,8 +853,8 @@ impl Runner {
                     }
                 }
                 if stop.is_none() && until_err.is_none() {
-                    if lp.spec.times.is_some_and(|t| lp.iter >= t) {
-                        stop = Some(format!("达到 times = {} 次", lp.iter));
+                    if lp.spec.effective_times().is_some_and(|t| lp.iter >= t) {
+                        stop = Some(if lp.spec.times.is_some() { format!("达到 times = {} 次", lp.iter) } else { format!("轮换的每个值都轮过了（共 {} 轮）", lp.iter) });
                     } else if lp.spec.for_ms.is_some_and(|ms| lp.started.elapsed().as_millis() as u64 >= ms) {
                         stop = Some(format!("达到 forMs = {} ms", lp.spec.for_ms.unwrap_or(0)));
                     }
@@ -859,6 +866,9 @@ impl Runner {
                     lp.ev_mark = ev.steps.len();
                     lp.out_mark = outcomes.len();
                     self.runtime_vars.insert(name, VarVal::Str(lp.iter.to_string()));
+                    for (k, val) in lp.spec.cycle_values(lp.iter) {
+                        self.runtime_vars.insert(k, VarVal::Str(val));
+                    }
                     if !stack.iter().any(|f| f.lp.is_some()) {
                         self.emit_loop_progress(&rel, &ev.dir, &lp);
                     }
@@ -1017,29 +1027,8 @@ impl Runner {
                     }
                     UiAction::Exec => {
                         let e = step.exec.as_ref().expect("exec");
-                        let cmd = e.command();
-                        if cmd.trim().is_empty() {
-                            return Err(Failed::new("exec 要写命令"));
-                        }
-                        // 路径给绝对路径：通知脚本要附截图、读文件时不依赖当前目录
-                        let abs = |p: &Path| std::fs::canonicalize(p).unwrap_or_else(|_| p.to_path_buf()).display().to_string();
-                        let mut env: Vec<(String, String)> = vec![
-                            ("REQUESTBABY_FILE".into(), dc.rel.clone()),
-                            ("REQUESTBABY_ROOT".into(), abs(&project_root)),
-                            ("REQUESTBABY_EVIDENCE".into(), abs(dir)),
-                        ];
-                        env.extend(e.env().into_iter().flatten().map(|(k, val)| (k.clone(), val.clone())));
-                        let limit = Duration::from_millis(step.timeout_ms.unwrap_or(30_000).max(1));
-                        match run_command(cmd, &env, &project_root, limit, &cancelled) {
-                            Ok((Some(0), out)) => Ok(Done { marks: Some(vec![]), shot: None, detail: Some(if out.is_empty() { "命令退出码 0".to_string() } else { format!("命令退出码 0；输出：{}", self.redact_str(&out)) }), skipped: false, asserted: false, title: None }),
-                            Ok((code, out)) => {
-                                let why = format!("命令退出码 {}{}", code.map(|c| c.to_string()).unwrap_or_else(|| "（被信号终止）".into()), if out.is_empty() { String::new() } else { format!("；输出：{}", self.redact_str(&out)) });
-                                if optional {
-                                    Ok(Done { marks: Some(vec![]), shot: None, detail: Some(format!("跳过：{why}")), skipped: true, asserted: false, title: None })
-                                } else {
-                                    Err(Failed::new(why))
-                                }
-                            }
+                        match self.exec_once(e, step.timeout_ms, &dc.rel, &project_root, dir, &cancelled) {
+                            Ok(detail) => Ok(Done { marks: Some(vec![]), shot: None, detail: Some(detail), skipped: false, asserted: false, title: None }),
                             Err(why) if optional => Ok(Done { marks: Some(vec![]), shot: None, detail: Some(format!("跳过：{why}")), skipped: true, asserted: false, title: None }),
                             Err(why) => Err(Failed::new(why)),
                         }
@@ -1073,8 +1062,8 @@ impl Runner {
                     }
                     UiAction::Repeat => {
                         let r = step.repeat.as_ref().expect("repeat");
-                        if r.times.is_none() && r.for_ms.is_none() {
-                            return Err(Failed::new("repeat 要写 times（次数）或 forMs（总时长），至少一个，避免无限循环"));
+                        if r.effective_times().is_none() && r.for_ms.is_none() {
+                            return Err(Failed::new("repeat 要写 times（次数）、for（总时长，如 \"8h\" / \"forever\"）或 cycle（轮换取值），至少一个"));
                         }
                         if r.times == Some(0) {
                             return Err(Failed::new("repeat 的 times 至少是 1"));
@@ -1114,6 +1103,9 @@ impl Runner {
                         lp.ev_mark = ev.steps.len();
                         lp.out_mark = outcomes.len();
                         self.runtime_vars.insert(lp.spec.var_name().to_string(), VarVal::Str("1".into()));
+                        for (k, val) in lp.spec.cycle_values(1) {
+                            self.runtime_vars.insert(k, VarVal::Str(val));
+                        }
                         if !stack.iter().any(|f| f.lp.is_some()) {
                             self.emit_loop_progress(&rel, &ev.dir, lp);
                         }
@@ -1268,7 +1260,67 @@ impl Runner {
                 }
             }
         }
+        // ---- 失败回调（onFail）：用例失败时运行通知命令；失败了也不改变用例的结论 ----
+        if failed && !on_fail.is_empty() && !cancelled() {
+            let why = outcomes.iter().rev().find(|o| !o.pass).and_then(|o| o.detail.clone().or_else(|| Some(o.expr.clone()))).unwrap_or_else(|| "用例失败".into());
+            let failed_step = ev.steps.iter().rev().find(|r| r.status == UiStepStatus::Failed && r.action != "repeat").map(|r| r.title.clone()).unwrap_or_default();
+            // 失败原因可能很长（带整屏识别结果）：通知里只留开头
+            let why = if why.chars().count() > 200 { format!("{}…", why.chars().take(200).collect::<String>()) } else { why };
+            self.runtime_vars.insert("error".into(), VarVal::Str(self.redact_str(&why)));
+            self.runtime_vars.insert("failedStep".into(), VarVal::Str(self.redact_str(&failed_step)));
+            let v = {
+                let mut v = self.vars_for(&dc.chain);
+                if let Some(row) = row {
+                    v.push_layer(row.clone());
+                }
+                v
+            };
+            let mut k = n;
+            for st in on_fail {
+                k += 1;
+                let st = render_step(st, &v);
+                let t0 = Instant::now();
+                let (status, detail) = match st.exec.as_ref() {
+                    Some(e) => match self.exec_once(e, st.timeout_ms, &rel, &project_root, dir, &cancelled) {
+                        Ok(d) => (UiStepStatus::Passed, Some(d)),
+                        Err(w) => (UiStepStatus::Failed, Some(w)),
+                    },
+                    None => (UiStepStatus::Failed, Some("失败回调里只能写 exec".to_string())),
+                };
+                let title = format!("失败回调：{}", describe_ui_step(&st, kind));
+                self.emit(RunEvent::Log { file: rel.clone(), line: self.redact_str(&format!("{} #{k} {title}", if status == UiStepStatus::Passed { "✔" } else { "✘" })) });
+                let rec = StepRecord { index: k, action: "exec".into(), title, status, at_ms: started.elapsed().as_millis() as u64, duration_ms: t0.elapsed().as_millis() as u64, screenshot: None, detail };
+                self.emit_ui_step(&rel, &ev.dir, &rec);
+                ev.steps.push(rec);
+            }
+        }
         (outcomes, ev)
+    }
+
+    /// 项目里命名的命令：`exec` 写的恰好是 `requestbaby.json` 的 `commands` 里的名字就用它（步骤的 `env` 覆盖命名命令自带的）
+    fn resolve_exec(&self, e: &Exec) -> Exec {
+        let Some(def) = self.ctx.project.commands.get(e.command().trim()) else { return e.clone() };
+        let mut env = def.env().cloned().unwrap_or_default();
+        env.extend(e.env().into_iter().flatten().map(|(k, v)| (k.clone(), v.clone())));
+        Exec::Spec(ExecSpec { command: def.command().to_string(), env })
+    }
+
+    /// 运行一条命令：退出码 0 返回说明，否则返回原因。路径给绝对路径，通知脚本要附截图、读文件时不依赖当前目录
+    fn exec_once(&self, e: &Exec, timeout_ms: Option<u64>, rel: &str, project_root: &Path, dir: &Path, cancelled: &dyn Fn() -> bool) -> Result<String, String> {
+        let e = self.resolve_exec(e);
+        let cmd = e.command();
+        if cmd.trim().is_empty() {
+            return Err("exec 要写命令".into());
+        }
+        let abs = |p: &Path| std::fs::canonicalize(p).unwrap_or_else(|_| p.to_path_buf()).display().to_string();
+        let mut env: Vec<(String, String)> = vec![("REQUESTBABY_FILE".into(), rel.to_string()), ("REQUESTBABY_ROOT".into(), abs(project_root)), ("REQUESTBABY_EVIDENCE".into(), abs(dir))];
+        env.extend(e.env().into_iter().flatten().map(|(k, val)| (k.clone(), val.clone())));
+        let limit = Duration::from_millis(timeout_ms.unwrap_or(30_000).max(1));
+        match run_command(cmd, &env, project_root, limit, cancelled) {
+            Ok((Some(0), out)) => Ok(if out.is_empty() { "命令退出码 0".to_string() } else { format!("命令退出码 0；输出：{}", self.redact_str(&out)) }),
+            Ok((code, out)) => Err(format!("命令退出码 {}{}", code.map(|c| c.to_string()).unwrap_or_else(|| "（被信号终止）".into()), if out.is_empty() { String::new() } else { format!("；输出：{}", self.redact_str(&out)) })),
+            Err(why) => Err(why),
+        }
     }
 
     /// 本步完成后的捕获：(变量名, 值)
@@ -1358,6 +1410,17 @@ fn render_step(s: &UiStep, v: &Vars) -> UiStep {
 pub fn describe_steps(steps: &[UiStep], vars: &Vars, kind: UiKind) -> String {
     let mut lines = vec![];
     describe_into(steps, vars, kind, 0, &mut lines);
+    lines.join("\n")
+}
+
+/// 步骤清单 + 用例失败时的回调（dry-run 预览）
+pub fn describe_case(steps: &[UiStep], on_fail: &[UiStep], vars: &Vars, kind: UiKind) -> String {
+    let mut lines = vec![];
+    describe_into(steps, vars, kind, 0, &mut lines);
+    if !on_fail.is_empty() {
+        lines.push("失败时：".into());
+        describe_into(on_fail, vars, kind, 1, &mut lines);
+    }
     lines.join("\n")
 }
 

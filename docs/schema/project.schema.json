@@ -91,6 +91,24 @@
         }
       }
     },
+    "commands": {
+      "type": "object",
+      "description": "命名命令：界面用例里 {\"exec\": \"名字\"} 直接引用；长命令（通知、回调）只在这里写一次。值是命令字符串，或 {\"command\", \"env\"}（env 是命令的默认环境变量，步骤里写的 env 覆盖它）。命令不做变量替换，要传值走 env",
+      "additionalProperties": {
+        "oneOf": [
+          { "type": "string", "description": "命令（sh -c 运行，工作目录是项目根）" },
+          {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["command"],
+            "properties": {
+              "command": { "type": "string", "description": "命令（sh -c 运行，工作目录是项目根）" },
+              "env": { "type": "object", "additionalProperties": { "type": "string" }, "description": "默认环境变量，值支持 {{变量}}" }
+            }
+          }
+        ]
+      }
+    },
     "proxy": {
       "type": "object",
       "additionalProperties": false,

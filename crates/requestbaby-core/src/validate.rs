@@ -128,6 +128,21 @@ pub(crate) fn validate_selected(paths: &[std::path::PathBuf], env_name: &str, wo
                             issues.push(ValidationIssue { fixable: false, file: pf.display().to_string(), level: "error", rule: "proxy-url", message });
                         }
                     }
+                    // 命名命令：名字、命令不能为空；命令本身不做变量替换（值走 env）
+                    for (name, cmd) in &p.commands {
+                        let problem = if name.is_empty() || !name.chars().all(|c| c.is_alphanumeric() || matches!(c, '_' | '-' | '.')) {
+                            Some(format!("commands.{name}：名字只能是字母、数字、下划线、短横线、点"))
+                        } else if cmd.command().trim().is_empty() {
+                            Some(format!("commands.{name}：命令是空的"))
+                        } else if cmd.command().contains("{{") {
+                            Some(format!("commands.{name}：命令本身不做变量替换（捕获到的文字不能被当成命令执行），要传值写 env，命令里用 $变量（requestbaby guide control）"))
+                        } else {
+                            None
+                        };
+                        if let Some(message) = problem {
+                            issues.push(ValidationIssue { fixable: false, file: pf.display().to_string(), level: "error", rule: "command", message });
+                        }
+                    }
                     // 写法建议：多个流程各自重复同一个开头（如登录）→ 抽成被依赖的流程
                     push_advice(&pf.display().to_string(), crate::teach::project_advice(&p), &mut issues);
                     // workflow step.run 存在性
@@ -515,8 +530,13 @@ fn check_protocol(case: &TestCase, dc: &DiscoveredCase, file: &str, issues: &mut
 /// 界面用例：地址 / 包名、每一步恰好一个动作且适用于该端、定位写法、动作参数
 fn check_ui(case: &TestCase, push: &mut dyn FnMut(&'static str, String)) {
     use crate::config::{CaptureSource, Locator, UiAction, UiKind};
+    for (name, r) in &case.regions {
+        if let Err(why) = r.check() {
+            push("ui-locator", format!("regions.{name}：{why}"));
+        }
+    }
     let has_var = |t: &str| t.contains("{{");
-    let (kind, steps) = match (&case.web, &case.android, &case.desktop) {
+    let (kind, steps, on_fail) = match (&case.web, &case.android, &case.desktop) {
         (Some(w), _, _) => {
             let u = w.url.trim();
             if u.is_empty() {
@@ -529,7 +549,7 @@ fn check_ui(case: &TestCase, push: &mut dyn FnMut(&'static str, String)) {
                     push("web-viewport", format!("web.viewport {}×{} 不合理（宽高 200 ~ 7680）", v.width, v.height));
                 }
             }
-            (UiKind::Web, &w.steps)
+            (UiKind::Web, &w.steps, &w.on_fail)
         }
         (_, Some(a), _) => {
             let app = a.app.trim();
@@ -544,7 +564,7 @@ fn check_ui(case: &TestCase, push: &mut dyn FnMut(&'static str, String)) {
                     push("android-attach", format!("android.attach 接管设备当前界面（不启动、不安装、不清数据），不能同时写 {}", conflict.join(" / ")));
                 }
             }
-            (UiKind::Android, &a.steps)
+            (UiKind::Android, &a.steps, &a.on_fail)
         }
         (_, _, Some(d)) => {
             if d.app.trim().is_empty() {
@@ -553,7 +573,7 @@ fn check_ui(case: &TestCase, push: &mut dyn FnMut(&'static str, String)) {
             if d.window.as_deref().is_some_and(|w| w.trim().is_empty()) {
                 push("desktop-window", "desktop.window 不能为空：写窗口标题里的一段文字，或删掉这一项".into());
             }
-            (UiKind::Desktop, &d.steps)
+            (UiKind::Desktop, &d.steps, &d.on_fail)
         }
         _ => return,
     };
@@ -593,8 +613,18 @@ fn check_ui(case: &TestCase, push: &mut dyn FnMut(&'static str, String)) {
             if l.min_confidence.is_some_and(|c| !(0.0..=1.0).contains(&c)) {
                 push("ui-locator", format!("{at}：minConfidence 取 0~1"));
             }
-            if let Some(Err(why)) = l.region.as_ref().map(|r| r.check()) {
-                push("ui-locator", format!("{at}：region {why}"));
+            match l.region.as_ref() {
+                Some(crate::config::RegionRef::Rect(r)) => {
+                    if let Err(why) = r.check() {
+                        push("ui-locator", format!("{at}：region {why}"));
+                    }
+                }
+                Some(crate::config::RegionRef::Name(n)) if !case.regions.contains_key(n) => {
+                    let known: Vec<&str> = case.regions.keys().map(String::as_str).collect();
+                    let hint = if known.is_empty() { "用例顶层还没有 regions".to_string() } else { format!("已定义：{}", known.join("、")) };
+                    push("ui-locator", format!("{at}：region「{n}」没有定义（{hint}）：在用例顶层写 \"regions\": {{ \"{n}\": {{ \"x\": 0, \"y\": 0, \"w\": 1, \"h\": 0.1 }} }}"));
+                }
+                _ => {}
             }
         } else {
             let stray: Vec<&str> = [("region", l.region.is_some()), ("row", l.row.is_some()), ("fuzzy", l.fuzzy.is_some()), ("minConfidence", l.min_confidence.is_some())].into_iter().filter(|(_, on)| *on).map(|(k, _)| k).collect();
@@ -669,6 +699,13 @@ fn check_ui(case: &TestCase, push: &mut dyn FnMut(&'static str, String)) {
     }
     let mut flat = vec![];
     collect(&format!("{key}.steps "), steps, 0, false, &mut flat);
+    // 失败回调：只能写 exec（此时界面可能已经不可用），写法检查同普通步骤
+    for (i, st) in on_fail.iter().enumerate() {
+        if st.action() != Some(crate::config::UiAction::Exec) {
+            push("ui-step", format!("{key}.onFail 第 {} 步：失败回调里只能写 exec（运行命令）", i + 1));
+        }
+    }
+    collect(&format!("{key}.onFail "), on_fail, 0, false, &mut flat);
     for (at, step, depth, in_loop) in flat {
         let Some(a) = step.action() else {
             let list = kind.actions().iter().map(|a| a.key(kind)).collect::<Vec<_>>().join(" / ");
@@ -691,11 +728,22 @@ fn check_ui(case: &TestCase, push: &mut dyn FnMut(&'static str, String)) {
             push("ui-step", format!("{at}：{why}"));
         }
         if let Some(r) = &step.repeat {
-            if r.times.is_none() && r.for_ms.is_none() {
-                push("ui-step", format!("{at}：repeat 要写 times（次数）或 forMs（总时长），至少一个，避免无限循环（要一直跑就在外面用 shell 循环调用 requestbaby run）"));
+            if r.effective_times().is_none() && r.for_ms.is_none() {
+                push("ui-step", format!("{at}：repeat 要写 times（次数）、for（总时长，如 \"8h\"；一直跑写 \"forever\"）或 cycle（轮换取值）之一，避免写成不知道何时停的循环"));
             }
             if r.times == Some(0) || r.for_ms == Some(0) {
-                push("ui-step", format!("{at}：repeat 的 times / forMs 至少是 1"));
+                push("ui-step", format!("{at}：repeat 的 times / for 至少是 1"));
+            }
+            for (name, values) in &r.cycle {
+                if values.is_empty() {
+                    push("ui-step", format!("{at}：repeat 的 cycle「{name}」没有值：写成 [\"a\", \"b\"]"));
+                }
+                if !name.chars().all(|c| c.is_alphanumeric() || c == '_') || name.is_empty() {
+                    push("ui-step", format!("{at}：repeat 的 cycle 变量名「{name}」只能是字母、数字、下划线"));
+                }
+                if name == r.var_name() {
+                    push("ui-step", format!("{at}：repeat 的 cycle 变量「{name}」和轮次变量重名，改一个（var 可以换名字）"));
+                }
             }
             if r.steps.is_empty() {
                 push("ui-step", format!("{at}：repeat 里没有步骤：写 steps"));

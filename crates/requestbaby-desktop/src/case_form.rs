@@ -238,7 +238,13 @@ impl UiStepForm {
             target,
             value: text(o.get("value")),
             capture: o.get("capture").map(compact).unwrap_or_default(),
-            timeout: o.get("timeoutMs").map(|x| x.to_string()).unwrap_or_default(),
+            // timeoutMs 写毫秒数；timeout 可以写人话（"15s"）
+            timeout: match (o.get("timeoutMs"), o.get("timeout")) {
+                (Some(x), _) => x.to_string(),
+                (None, Some(Value::String(t))) => t.clone(),
+                (None, Some(x)) => x.to_string(),
+                _ => String::new(),
+            },
             optional: o.get("optional").and_then(Value::as_bool).unwrap_or(false),
             clear_data: o.get("clearData").and_then(Value::as_bool).unwrap_or(false),
             raw: Some(v.clone()),
@@ -264,9 +270,13 @@ impl UiStepForm {
                 let w = serde_json::from_value::<requestbaby_core::config::Wait>(v.clone()).map_err(|e| format!("第 {n} 步的静候写法不对：{e}"))?;
                 w.check().map_err(|e| format!("第 {n} 步：{e}"))?;
                 o.insert("wait".into(), v);
-            } else {
-                let ms: u64 = t.parse().map_err(|_| format!("第 {n} 步的静候时长「{t}」不是毫秒数（随机区间写 {{\"min\": 3000, \"max\": 8000}}）"))?;
+            } else if let Ok(ms) = t.parse::<u64>() {
                 o.insert("wait".into(), json!(ms));
+            } else {
+                // 人话：「2.5s」「3s-8s」（原样保留用户写的文字）
+                let w = serde_json::from_value::<requestbaby_core::config::Wait>(Value::String(t.into())).map_err(|e| format!("第 {n} 步的静候「{t}」写法不对：{e}"))?;
+                w.check().map_err(|e| format!("第 {n} 步：{e}"))?;
+                o.insert("wait".into(), Value::String(t.into()));
             }
         } else if ui_is_block(a) {
             let v: Value = serde_json::from_str(t).map_err(|e| format!("第 {n} 步（{}）不是合法 JSON：{e}", a.label()))?;
@@ -311,7 +321,15 @@ impl UiStepForm {
         }
         let tm = self.timeout.trim();
         if !tm.is_empty() {
-            o.insert("timeoutMs".into(), json!(tm.parse::<u64>().map_err(|_| format!("第 {n} 步的超时「{tm}」不是毫秒数"))?));
+            match tm.parse::<u64>() {
+                Ok(ms) => {
+                    o.insert("timeoutMs".into(), json!(ms));
+                }
+                Err(_) => {
+                    requestbaby_core::config::ui::parse_duration_ms(tm).map_err(|e| format!("第 {n} 步的超时：{e}"))?;
+                    o.insert("timeout".into(), Value::String(tm.into()));
+                }
+            }
         }
         if self.optional {
             o.insert("optional".into(), Value::Bool(true));
@@ -1007,6 +1025,38 @@ mod tests {
         assert_eq!((back.protocol, back.ui.target.as_str(), back.ui.window.as_str(), back.ui.restart), (Protocol::Desktop, "TextEdit", "Untitled", true));
     }
 
+    /// 人话时长：`"3s-8s"` / `"2.5s"` / `"timeout": "15s"` 读出来是原文，改动后仍写成原文，不被换成毫秒数
+    #[test]
+    fn ui_human_durations_round_trip_and_report_mistakes() {
+        use requestbaby_core::config::UiKind;
+        let steps = json!([
+            {"wait": "3s-8s"},
+            {"wait": "2.5s"},
+            {"tap": {"ocr": "11-28"}, "timeout": "15s"},
+            {"repeat": {"for": "forever", "cycle": {"date": ["11-28", "11-29"]}, "steps": [{"wait": "1s"}]}}
+        ]);
+        let forms: Vec<UiStepForm> = steps.as_array().unwrap().iter().map(|v| UiStepForm::from_value(v, UiKind::Android)).collect();
+        assert_eq!((forms[0].target.as_str(), forms[1].target.as_str(), forms[2].timeout.as_str()), ("3s-8s", "2.5s", "15s"));
+        assert!(forms[3].target.contains("\"cycle\""), "{}", forms[3].target);
+        for (f, v) in forms.iter().zip(steps.as_array().unwrap()) {
+            assert_eq!(&f.to_value(1, UiKind::Android).unwrap(), v, "没改原样写回");
+        }
+        // 改成别的人话时长：按文字写回；毫秒数仍写 timeoutMs
+        let mut w = forms[0].clone();
+        w.target = "1s~2s".into();
+        assert_eq!(w.to_value(1, UiKind::Android).unwrap(), json!({"wait": "1s~2s"}));
+        let mut t = forms[2].clone();
+        t.timeout = "2m".into();
+        assert_eq!(t.to_value(1, UiKind::Android).unwrap(), json!({"tap": {"ocr": "11-28"}, "timeout": "2m"}));
+        t.timeout = "5000".into();
+        assert_eq!(t.to_value(1, UiKind::Android).unwrap(), json!({"tap": {"ocr": "11-28"}, "timeoutMs": 5000}));
+        // 写错报第几步
+        w.target = "三秒".into();
+        assert!(w.to_value(4, UiKind::Android).unwrap_err().contains("第 4 步"));
+        t.timeout = "很久".into();
+        assert!(t.to_value(2, UiKind::Android).unwrap_err().contains("第 2 步"));
+    }
+
     /// 循环 / 条件 / 随机等待 / 本机命令：读出来是文本、没改原样写回，改了按动作写；写错报第几步
     #[test]
     fn ui_control_steps_round_trip_and_report_mistakes() {
@@ -1059,7 +1109,7 @@ mod tests {
         assert!(bad(UiAction::Exec, "  ").contains("没有写命令"));
         assert!(bad(UiAction::Exec, r#"{"cmd": "x"}"#).contains("写法不对"));
         assert!(bad(UiAction::Wait, r#"{"min": 9, "max": 1}"#).contains("不能大于"));
-        assert!(bad(UiAction::Wait, "abc").contains("不是毫秒数"));
+        assert!(bad(UiAction::Wait, "abc").contains("看不懂时长"));
     }
 
     /// 对话步骤：没改的步骤原样写回，改过的按动作写；内容写错报第几步

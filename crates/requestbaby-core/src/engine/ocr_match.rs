@@ -316,7 +316,8 @@ fn summarize(frame: &Frame, hits: &[Hit], whole: bool) -> String {
 pub fn find(d: &mut dyn UiDriver, loc: &Locator) -> Result<Vec<Element>> {
     let Some(q) = Search::from_locator(loc) else { return Ok(vec![]) };
     let shot = d.screenshot_for_ocr()?;
-    let frame = ocr::recognize(&shot.bytes, loc.region.as_ref(), &ocr::languages())?;
+    let region = loc.region.as_ref().map(|r| r.rect().map_err(|e| anyhow::anyhow!(e))).transpose()?;
+    let frame = ocr::recognize(&shot.bytes, region.as_ref(), &ocr::languages())?;
     let hits = search(&frame, &q);
     let note = summarize(&frame, &hits, q.text.trim() == "*");
     NOTE.with(|n| *n.borrow_mut() = Some(note));

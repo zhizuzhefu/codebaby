@@ -1915,9 +1915,137 @@ fn repeat_if_exec_authoring_mistakes_are_caught_by_validate() {
     let out = run_cli(&["validate", "--report", "json"], d);
     assert_eq!(out.status.code(), Some(2), "{}", String::from_utf8_lossy(&out.stdout));
     let text = String::from_utf8_lossy(&out.stdout).to_string();
-    for want in ["至少一个", "min（9）不能大于 max（1）", "不做变量替换", "if 没有要执行的步骤", "exec 要写命令", "repeat 里的第 1 步", "break 只能写在 repeat 里面"] {
+    for want in ["之一", "min（9）不能大于 max（1）", "不做变量替换", "if 没有要执行的步骤", "exec 要写命令", "repeat 里的第 1 步", "break 只能写在 repeat 里面"] {
         assert!(text.contains(want), "缺少「{want}」：{text}");
     }
+}
+
+/// 简化写法：`cycle` 轮换取值、`"3s-8s"` / `"2s"` 这样的人话时长、项目里命名的命令、用例失败时的 `onFail` 通知
+#[test]
+fn web_cycle_human_durations_named_commands_and_on_fail() {
+    if requestbaby_core::engine::cdp::find_browser(None).is_err() {
+        eprintln!("跳过：本机没有 Chrome / Edge / Chromium");
+        return;
+    }
+    let dir = TempDir::new().unwrap();
+    let d = dir.path();
+    // 命名命令只在项目里写一次，用例里 {"exec": "note"} 引用，值走 env
+    std::fs::write(
+        d.join("requestbaby.json"),
+        serde_json::json!({ "version": 1, "defaultEnv": "dev", "commands": { "note": "echo \"$MSG\" >> \"$REQUESTBABY_ROOT/notes.txt\"" } }).to_string(),
+    )
+    .unwrap();
+    std::fs::create_dir_all(d.join("site")).unwrap();
+    std::fs::create_dir_all(d.join("collections/web")).unwrap();
+    std::fs::create_dir_all(d.join("envs")).unwrap();
+    std::fs::write(
+        d.join("site/count.html"),
+        r#"<!doctype html><meta charset="utf-8"><title>计数</title><button id="b">加一</button><p id="n">0</p><p id="flag"></p>
+<script>b.onclick=()=>{n.textContent=String(+n.textContent+1);if(+n.textContent>=3)flag.textContent='到'+'了'}</script>"#,
+    )
+    .unwrap();
+    let base = format!("file://{}", d.join("site").display());
+    std::fs::write(d.join("envs/dev.json"), serde_json::json!({ "vars": { "site": base } }).to_string()).unwrap();
+    std::fs::write(
+        d.join("collections/web/01-轮换.json"),
+        r#"{"name":"轮换","web":{"url":"{{site}}/count.html","steps":[
+            {"repeat":{"cycle":{"who":["甲","乙","丙"]},"steps":[
+                {"click":{"role":"button","name":"加一"}},
+                {"exec":{"command":"note","env":{"MSG":"轮到{{who}}"}}},
+                {"wait":"10ms-30ms"}
+            ]}},
+            {"expect":{"text":"到了"}}
+        ]}}"#,
+    )
+    .unwrap();
+    std::fs::write(
+        d.join("collections/web/02-人话时长.json"),
+        r#"{"name":"人话时长","web":{"url":"{{site}}/count.html","timeout":"5s","steps":[
+            {"repeat":{"for":"3s","until":{"text":"到了"},"steps":[
+                {"click":{"role":"button","name":"加一"}},
+                {"wait":"20ms"}
+            ]}},
+            {"expect":{"text":"到了"},"timeout":"2s"}
+        ]}}"#,
+    )
+    .unwrap();
+    std::fs::write(
+        d.join("collections/web/03-失败通知.json"),
+        r#"{"name":"失败通知","web":{"url":"{{site}}/count.html",
+            "onFail":[{"exec":{"command":"note","env":{"MSG":"失败：{{error}}"}}}],
+            "steps":[{"expect":{"text":"这段文字不存在"},"timeout":"300ms"}]}}"#,
+    )
+    .unwrap();
+    std::fs::write(
+        d.join("collections/web/04-成功不通知.json"),
+        r#"{"name":"成功不通知","web":{"url":"{{site}}/count.html",
+            "onFail":[{"exec":{"command":"note","env":{"MSG":"不该出现"}}}],
+            "steps":[{"expect":{"text":"加一"}}]}}"#,
+    )
+    .unwrap();
+    let out = run_cli(&["run", "--report", "json"], d);
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap_or_else(|_| panic!("{}{}", String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr)));
+    let by = |name: &str| v["results"].as_array().unwrap().iter().find(|r| r["name"] == name).unwrap_or_else(|| panic!("没有 {name}")).clone();
+
+    // cycle：每个值各一轮（共 3 轮），命名命令拿到了 {{who}}
+    let c = by("轮换");
+    assert_eq!(c["passed"], true, "{c:#}");
+    let steps = c["response"]["evidence"]["steps"].as_array().unwrap();
+    assert!(steps.iter().any(|s| s["title"].as_str().is_some_and(|t| t.contains("共 3 次") && t.contains("轮换的每个值都轮过了"))), "{steps:#?}");
+    // 人话时长：for / timeout / wait 都能写文字
+    let c = by("人话时长");
+    assert_eq!(c["passed"], true, "{c:#}");
+    // onFail：失败了才通知，带失败原因；通知本身不改变用例结论
+    let c = by("失败通知");
+    assert_eq!(c["passed"], false, "{c:#}");
+    let steps = c["response"]["evidence"]["steps"].as_array().unwrap();
+    assert!(steps.iter().any(|s| s["title"].as_str().is_some_and(|t| t.starts_with("失败回调：")) && s["status"] == "passed"), "{steps:#?}");
+    assert_eq!(by("成功不通知")["passed"], true);
+
+    let notes = std::fs::read_to_string(d.join("notes.txt")).unwrap();
+    let lines: Vec<&str> = notes.lines().collect();
+    assert_eq!(&lines[..3], ["轮到甲", "轮到乙", "轮到丙"], "{notes}");
+    assert!(lines.iter().any(|l| l.starts_with("失败：") && l.contains("这段文字不存在")), "{notes}");
+    assert!(!notes.contains("不该出现"), "{notes}");
+}
+
+/// 简化写法写错了：validate 提前说清楚（区域名没定义、onFail 里写了别的动作、cycle 没有值、看不懂的时长）
+#[test]
+fn new_authoring_shortcuts_report_mistakes_in_validate() {
+    let dir = TempDir::new().unwrap();
+    let d = dir.path();
+    std::fs::write(d.join("requestbaby.json"), r#"{"version":1,"defaultEnv":"dev","commands":{"note":"echo hi"}}"#).unwrap();
+    std::fs::create_dir_all(d.join("collections/a")).unwrap();
+    std::fs::create_dir_all(d.join("envs")).unwrap();
+    std::fs::write(d.join("envs/dev.json"), r#"{"vars":{}}"#).unwrap();
+    std::fs::write(
+        d.join("collections/a/01-错.json"),
+        r#"{"name":"错","regions":{"条":{"x":0,"y":0.1,"w":1,"h":0.1}},
+            "android":{"app":"com.tencent.mm","attach":true,
+              "onFail":[{"tap":{"text":"x"}}],
+              "steps":[
+                {"expect":{"ocr":"已约满","region":"没起过的名字"}},
+                {"expect":{"ocr":"已约满","region":"条"}},
+                {"repeat":{"cycle":{"d":[]},"for":"8h","steps":[{"wait":"1s"}]}}
+              ]}}"#,
+    )
+    .unwrap();
+    let out = run_cli(&["validate", "--report", "json"], d);
+    assert_eq!(out.status.code(), Some(2), "{}", String::from_utf8_lossy(&out.stdout));
+    let text = String::from_utf8_lossy(&out.stdout).to_string();
+    for want in ["没起过的名字", "没有定义", "已定义：条", "失败回调里只能写 exec", "cycle「d」没有值"] {
+        assert!(text.contains(want), "缺少「{want}」：{text}");
+    }
+    assert!(!text.contains("region「条」"), "已定义的区域名不该报错：{text}");
+
+    std::fs::write(
+        d.join("collections/a/01-错.json"),
+        r#"{"name":"错","android":{"app":"com.tencent.mm","attach":true,"steps":[{"wait":"三秒"}]}}"#,
+    )
+    .unwrap();
+    let out = run_cli(&["validate", "--report", "json"], d);
+    let text = String::from_utf8_lossy(&out.stdout).to_string() + &String::from_utf8_lossy(&out.stderr);
+    assert!(text.contains("看不懂时长") && text.contains("2.5s"), "{text}");
 }
 
 /// 实时步骤事件与日志同样脱敏：填进页面的 secret 变量值（手机号 / 密码）不能出现在事件流里

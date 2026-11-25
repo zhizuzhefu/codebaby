@@ -9,7 +9,7 @@ pub use case::{enabled_kv, BodySpec, CasesSpec, DataRow, KvValue, MultipartValue
 pub use collection::{env_path, list_envs, load_env, local_env_path, Collection, EnvFile, LOCAL_SUFFIX};
 pub use project::{GrpcConfig, Project, ProxyConfig, Workflow, WorkflowStep};
 pub use protocols::{GrpcSpec, Protocol, WsAction, WsClose, WsSpec, WsStep};
-pub use ui::{flatten_steps, AndroidSpec, CaptureSource, Count, DesktopSpec, Exec, ExecSpec, IfBlock, Locator, OcrConfig, Region, Repeat, UiAction, UiKind, UiState, UiStep, Wait, WebSpec};
+pub use ui::{flatten_steps, with_regions, RegionRef, AndroidSpec, CaptureSource, Count, DesktopSpec, Exec, ExecSpec, IfBlock, Locator, OcrConfig, Region, Repeat, UiAction, UiKind, UiState, UiStep, Wait, WebSpec};
 pub use vars_map::StringVars;
 
 use anyhow::{Context, Result};
