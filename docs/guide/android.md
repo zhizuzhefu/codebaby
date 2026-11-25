@@ -68,7 +68,7 @@
 
 | 步骤 | 作用 |
 |------|------|
-| `{"tap": 定位}` | 点按（写 `click` 也行） |
+| `{"tap": 定位}` | 点按 |
 | `{"longPress": 定位}` | 长按 |
 | `{"fill": 定位, "value": "…"}` | 点进输入框、清空、输入 |
 | `{"type": "…"}` | 往当前焦点输入文字 |
@@ -77,7 +77,7 @@
 | `{"launch": true, "clearData": true}` | （重新）启动应用 |
 | `{"stop": true}` | 关闭应用 |
 
-循环、条件、随机等待、运行本机命令（做监控、通知回调）与 Web 相同：`{"repeat": …}` / `{"if": …}` / `{"wait": {"min": 3000, "max": 8000}}` / `{"exec": "…"}`，见 `requestbaby guide control`。
+循环、条件、随机等待、运行本机命令（做监控、通知回调）与 Web 相同：`{"repeat": …}` / `{"if": …}` / `{"wait": "3s-8s"}` / `{"exec": "…"}`，见 `requestbaby guide control`。
 
 输入中文需要设备装 [ADBKeyBoard](https://github.com/senzhk/ADBKeyBoard) 输入法（装好即可，requestbaby 输入时临时切换，用完切回）。
 
@@ -122,7 +122,7 @@
 
 - **序列号写 `主机:端口`**：没连上时自动 `adb connect`（之前的连接掉线停在 offline 时先断开再连），连不上会说明原因
 - **设备接在另一台机器上**：那台机器运行 `adb kill-server && adb -a server nodaemon`，这边写 `"android": { "server": "那台机器:5037" }`，相当于每条 adb 命令加 `-H -P`；再按需用 `serial` 选设备
-- 步骤、截图、证据与本机完全相同，运行环境里记录连接方式；网络慢时截图和读取界面会慢一些，`timeoutMs` 可适当调大
+- 步骤、截图、证据与本机完全相同，运行环境里记录连接方式；网络慢时截图和读取界面会慢一些，`timeout` 可适当调大（如 `"30s"`）
 - `ANDROID_SERIAL=10.0.0.8:5555 requestbaby android devices` 连接并列出设备
 - 配了代理时（`requestbaby guide proxy`），网络设备和远程 adb server 经代理连接（adb 本身不支持代理，requestbaby 开本地转发端口）
 

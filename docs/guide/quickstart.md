@@ -76,7 +76,7 @@ token 这类每个用例都要带的请求头，在目录的 `collection.json` �
 
 ## Web / Android / Mac 与多端混合
 
-`web` / `android` / `desktop`（Mac 应用）用例写步骤（点击、填写、断言文字），每步自动截图；先用 `web snapshot <url>` / `android snapshot` / `desktop snapshot <应用>` 看元素与定位（`guide web` / `android` / `desktop`）。各端用例可放进同一个流程，`capture` 的值互通。每个场景都要先登录：登录做成一个流程，其他流程 `"needs": ["login"]` 依赖它（登录态沿用，不重复登录）；步骤 `"as": "student"` 切换用户（`guide flow`）。
+`web` / `android` / `desktop`（Mac 应用）用例写步骤（点击、填写、断言文字），每步自动截图；先用 `web snapshot <url>` / `android snapshot` / `desktop snapshot <应用>` 看元素与定位（`guide web` / `android` / `desktop`）。各端用例可放进同一个流程，`capture` 的值互通（完整例子 `guide mixed`）。每个场景都要先登录：登录做成一个流程，其他流程 `"needs": ["login"]` 依赖它（登录态沿用，不重复登录）；步骤 `"as": "student"` 切换用户（`guide flow`）。
 
 ## 闭环命令
 
@@ -104,4 +104,4 @@ requestbaby verify -e dev            # 0 必验通过 / 1 用例失败 / 2 验�
 
 ## 主题（`requestbaby guide <主题>`）
 
-`expect` 断言 · `capture` 捕获与串联 · `vars` 变量进阶 · `flow` 流程 · `auth` 鉴权登录 · `e2e` 多步 · `data` 数据驱动 · `setup` 造数清数 · `env` 环境 · `grpc` gRPC · `ws` WebSocket · `web` 网页 · `android` 安卓 · `desktop` Mac 桌面 · `ocr` 文字识别 · `control` 循环回调 · `proxy` 代理 · `scripts` 脚本 · `cli` 命令 · `ref` 全部字段 · `all` 全部
+`expect` 断言 · `capture` 捕获与串联 · `vars` 变量进阶 · `flow` 流程 · `auth` 鉴权登录 · `e2e` 多步 · `mixed` 多端混合 · `data` 数据驱动 · `setup` 造数清数 · `env` 环境 · `grpc` gRPC · `ws` WebSocket · `web` 网页 · `android` 安卓 · `desktop` Mac 桌面 · `ocr` 文字识别 · `control` 循环回调 · `proxy` 代理 · `scripts` 脚本 · `cli` 命令 · `ref` 全部字段 · `all` 全部

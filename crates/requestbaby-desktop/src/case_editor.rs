@@ -1236,7 +1236,11 @@ impl CaseEditor {
             .child(
                 h_flex()
                     .gap_3()
-                    .child(v_flex().w(px(200.)).gap_1().child(label(if self.protocol == Protocol::Ws { "连接与每次等待的超时 timeoutMs" } else { "超时 timeoutMs" })).child(Input::new(&self.timeout).small()))
+                    .child(v_flex().w(px(200.)).gap_1().child(label(match self.protocol {
+                        Protocol::Ws => "连接与每次等待的超时 timeoutMs",
+                        Protocol::Web | Protocol::Android | Protocol::Desktop => "每步超时 timeout（如 15s）",
+                        _ => "超时 timeoutMs",
+                    })).child(Input::new(&self.timeout).small()))
                     .when(self.protocol == Protocol::Http, |this| this.child(v_flex().w(px(200.)).gap_1().child(label("传输层重试 retry")).child(Input::new(&self.retry).small()))),
             )
             .when(self.protocol == Protocol::Ws, |this| {

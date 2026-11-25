@@ -597,7 +597,12 @@ fn guide_examples_validate_and_dry_run() {
             match info.as_str() {
                 "json case" => {
                     n += 1;
-                    parse(body);
+                    let v = parse(body);
+                    // guide 只展示规范写法：界面用例部分经 fmt 规范化后不变（Android 写 tap、Web / Mac 写 click、时长写人话）
+                    let canon = requestbaby_core::fmt::canonical_case(&v);
+                    for key in ["web", "android", "desktop"] {
+                        assert_eq!(canon[key], v[key], "{name}.md 的示例不是规范写法（requestbaby fmt 会改成左边那样）：\n{body}");
+                    }
                     std::fs::write(col.join(format!("{n:02}-example.json")), body).unwrap();
                     sources.push_str(body);
                 }
@@ -2046,6 +2051,51 @@ fn new_authoring_shortcuts_report_mistakes_in_validate() {
     let out = run_cli(&["validate", "--report", "json"], d);
     let text = String::from_utf8_lossy(&out.stdout).to_string() + &String::from_utf8_lossy(&out.stderr);
     assert!(text.contains("看不懂时长") && text.contains("2.5s"), "{text}");
+}
+
+/// fmt 把界面用例的别名统一成规范写法：Android 点击写 tap、Web / Mac 写 click、时长写人话；改写后再格式化不变，validate 仍然通过
+#[test]
+fn fmt_fix_rewrites_ui_aliases_to_one_canonical_form() {
+    let dir = TempDir::new().unwrap();
+    let d = dir.path();
+    std::fs::write(d.join("requestbaby.json"), r#"{"version":1,"defaultEnv":"dev"}"#).unwrap();
+    std::fs::create_dir_all(d.join("collections/ui")).unwrap();
+    std::fs::create_dir_all(d.join("envs")).unwrap();
+    std::fs::write(d.join("envs/dev.json"), r#"{"vars":{}}"#).unwrap();
+    std::fs::write(
+        d.join("collections/ui/01-旧写法.json"),
+        r#"{"name":"旧写法","android":{"app":"com.tencent.mm","attach":true,"timeoutMs":15000,"steps":[
+            {"click":{"text":"登录"},"timeoutMs":2500},
+            {"wait":2500},
+            {"wait":{"min":3000,"max":8000}},
+            {"repeat":{"forMs":28800000,"times":3,"steps":[{"click":{"text":"刷新"}},{"wait":500}]}}
+        ]}}"#,
+    )
+    .unwrap();
+    std::fs::write(
+        d.join("collections/ui/02-网页.json"),
+        r#"{"name":"网页","web":{"url":"https://example.com","timeoutMs":20000,"steps":[{"tap":{"text":"登录"}},{"wait":1500}]}}"#,
+    )
+    .unwrap();
+    let out = run_cli(&["fmt", "--check"], d);
+    assert_eq!(out.status.code(), Some(1), "{}", String::from_utf8_lossy(&out.stdout));
+    assert!(String::from_utf8_lossy(&out.stdout).matches("可精简").count() >= 2);
+    let out = run_cli(&["fmt", "--fix"], d);
+    assert!(out.status.success(), "{}{}", String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr));
+    let a: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(d.join("collections/ui/01-旧写法.json")).unwrap()).unwrap();
+    assert_eq!(a["android"]["timeout"], "15s");
+    assert_eq!(a["android"]["steps"][0], serde_json::json!({"tap": {"text": "登录"}, "timeout": "2.5s"}));
+    assert_eq!((&a["android"]["steps"][1], &a["android"]["steps"][2]), (&serde_json::json!({"wait": "2.5s"}), &serde_json::json!({"wait": "3s-8s"})));
+    assert_eq!(a["android"]["steps"][3]["repeat"]["for"], "8h");
+    assert_eq!(a["android"]["steps"][3]["repeat"]["steps"][0], serde_json::json!({"tap": {"text": "刷新"}}));
+    let w: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(d.join("collections/ui/02-网页.json")).unwrap()).unwrap();
+    assert_eq!((&w["web"]["timeout"], &w["web"]["steps"][0], &w["web"]["steps"][1]), (&serde_json::json!("20s"), &serde_json::json!({"click": {"text": "登录"}}), &serde_json::json!({"wait": "1.5s"})));
+    // 改写后：再检查是干净的，validate 仍然通过
+    let out = run_cli(&["fmt", "--check"], d);
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stdout));
+    let out = run_cli(&["validate", "--report", "json"], d);
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(v["errors"], 0, "{v:#}");
 }
 
 /// 实时步骤事件与日志同样脱敏：填进页面的 secret 变量值（手机号 / 密码）不能出现在事件流里

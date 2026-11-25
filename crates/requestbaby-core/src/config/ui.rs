@@ -419,6 +419,21 @@ pub fn parse_duration_ms(text: &str) -> Result<u64, String> {
     Ok(total.round() as u64)
 }
 
+/// 毫秒 → 最短的人话写法（`parse_duration_ms` 的反向）：`28800000` → `8h`，`2500` → `2.5s`，`90000` → `90s`，`1500000` → `25m`
+pub fn format_duration_ms(ms: u64) -> String {
+    const SECOND: u64 = 1000;
+    match ms {
+        0 => "0s".into(),
+        n if n < SECOND => format!("{n}ms"),
+        n if n % 86_400_000 == 0 => format!("{}d", n / 86_400_000),
+        n if n % 3_600_000 == 0 => format!("{}h", n / 3_600_000),
+        n if n % 60_000 == 0 && n >= 120_000 => format!("{}m", n / 60_000),
+        n if n % SECOND == 0 => format!("{}s", n / SECOND),
+        n if n % 100 == 0 => format!("{}.{}s", n / SECOND, n % SECOND / 100),
+        n => format!("{n}ms"),
+    }
+}
+
 /// 「不限时」：`repeat` 的 `for: "forever"`
 pub const FOREVER_MS: u64 = u64::MAX;
 

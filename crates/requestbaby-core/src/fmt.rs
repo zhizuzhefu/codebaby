@@ -2,7 +2,7 @@
 
 /// 字段规范排序与空字段清理
 pub fn canonical_case(d: &serde_json::Value) -> serde_json::Value {
-    let order = ["name", "tags", "skip", "expectStatus", "request", "grpc", "ws", "web", "android", "desktop", "expect", "capture", "cases", "pre", "post", "tests"];
+    let order = ["name", "tags", "skip", "expectStatus", "request", "grpc", "ws", "regions", "web", "android", "desktop", "expect", "capture", "cases", "pre", "post", "tests"];
     let mut out = serde_json::Map::new();
     if let Some(obj) = d.as_object() {
         for key in order {
@@ -60,9 +60,9 @@ pub fn canonical_case(d: &serde_json::Value) -> serde_json::Value {
     for (key, fields) in [
         ("grpc", &["target", "method", "message", "messages", "metadata", "timeoutMs", "insecure"][..]),
         ("ws", &["url", "query", "headers", "subprotocols", "steps", "timeoutMs", "insecure"][..]),
-        ("web", &["url", "viewport", "timeoutMs", "steps"][..]),
-        ("android", &["app", "activity", "apk", "clearData", "timeoutMs", "steps"][..]),
-        ("desktop", &["app", "window", "restart", "timeoutMs", "steps"][..]),
+        ("web", &["url", "viewport", "timeout", "timeoutMs", "steps", "onFail"][..]),
+        ("android", &["app", "activity", "apk", "clearData", "attach", "timeout", "timeoutMs", "steps", "onFail"][..]),
+        ("desktop", &["app", "window", "restart", "timeout", "timeoutMs", "steps", "onFail"][..]),
     ] {
         if let Some(v) = out.get_mut(key) {
             *v = reorder(v, fields);
@@ -73,19 +73,105 @@ pub fn canonical_case(d: &serde_json::Value) -> serde_json::Value {
             *st = reorder(st, &["send", "sendBinary", "receive", "waitFor", "wait", "close", "capture", "timeoutMs"]);
         }
     }
-    // 界面步骤：动作在前，参数（value / clearData）其次，capture / timeoutMs / optional 在后
-    const UI_STEP: [&str; 22] = [
-        "goto", "click", "tap", "longPress", "hover", "fill", "select", "type", "press", "swipe", "back", "launch", "stop", "waitFor", "expect", "screenshot", "wait",
-        "value", "clearData", "capture", "timeoutMs", "optional",
-    ];
+    // 界面用例：别名统一成一种规范写法，步骤里动作在前、参数其次、capture / timeout / optional 在后
     for key in ["web", "android", "desktop"] {
-        if let Some(steps) = out.get_mut(key).and_then(|w| w.get_mut("steps")).and_then(|s| s.as_array_mut()) {
-            for st in steps.iter_mut() {
-                *st = reorder(st, &UI_STEP);
-            }
+        if let Some(spec) = out.get_mut(key) {
+            canonical_ui_spec(spec, key);
         }
     }
     serde_json::Value::Object(out)
+}
+
+/// 界面步骤的字段顺序
+const UI_STEP: [&str; 25] = [
+    "goto", "click", "tap", "longPress", "hover", "fill", "select", "type", "press", "swipe", "back", "launch", "stop", "waitFor", "expect", "screenshot", "wait", "repeat", "if", "break", "exec",
+    "value", "clearData", "capture", "timeout",
+];
+
+/// 界面用例（web / android / desktop）的规范写法，同一件事只留一种：
+/// - 点击：Web / Mac 桌面写 `click`，Android 写 `tap`
+/// - 时长写人话：`timeout`（不写 timeoutMs）、`repeat.for`（不写 forMs）、`wait: "2.5s"` / `"3s-8s"`（不写毫秒数 / `{min, max}`）
+fn canonical_ui_spec(spec: &mut serde_json::Value, kind: &str) {
+    let Some(o) = spec.as_object_mut() else { return };
+    duration_key(o, "timeoutMs", "timeout");
+    for key in ["steps", "onFail"] {
+        if let Some(steps) = o.get_mut(key).and_then(|s| s.as_array_mut()) {
+            steps.iter_mut().for_each(|st| canonical_ui_step(st, kind));
+        }
+    }
+    let fields: &[&str] = match kind {
+        "web" => &["url", "viewport", "timeout", "steps", "onFail"],
+        "android" => &["app", "activity", "apk", "clearData", "attach", "timeout", "steps", "onFail"],
+        _ => &["app", "window", "restart", "timeout", "steps", "onFail"],
+    };
+    *spec = reorder(spec, fields);
+}
+
+fn canonical_ui_step(step: &mut serde_json::Value, kind: &str) {
+    use serde_json::Value;
+    let Some(o) = step.as_object_mut() else { return };
+    let (want, other) = if kind == "android" { ("tap", "click") } else { ("click", "tap") };
+    if !o.contains_key(want) {
+        if let Some(v) = o.remove(other) {
+            o.insert(want.into(), v);
+        }
+    }
+    duration_key(o, "timeoutMs", "timeout");
+    let wait = match o.get("wait") {
+        Some(Value::Number(n)) => n.as_u64().map(crate::config::ui::format_duration_ms),
+        Some(Value::Object(r)) => match (r.get("min").and_then(Value::as_u64), r.get("max").and_then(Value::as_u64), r.len()) {
+            (Some(a), Some(b), 2) => Some(format!("{}-{}", crate::config::ui::format_duration_ms(a), crate::config::ui::format_duration_ms(b))),
+            _ => None,
+        },
+        _ => None,
+    };
+    if let Some(t) = wait {
+        o.insert("wait".into(), Value::String(t));
+    }
+    if let Some(r) = o.get_mut("repeat").and_then(|r| r.as_object_mut()) {
+        duration_key(r, "forMs", "for");
+        if let Some(steps) = r.get_mut("steps").and_then(|s| s.as_array_mut()) {
+            steps.iter_mut().for_each(|st| canonical_ui_step(st, kind));
+        }
+        let ordered = reorder(&Value::Object(std::mem::take(r)), &["for", "times", "cycle", "until", "var", "steps"]);
+        *step.pointer_mut("/repeat").expect("repeat") = ordered;
+    }
+    if let Some(b) = step.get_mut("if").and_then(|b| b.as_object_mut()) {
+        for key in ["then", "else"] {
+            if let Some(steps) = b.get_mut(key).and_then(|s| s.as_array_mut()) {
+                steps.iter_mut().for_each(|st| canonical_ui_step(st, kind));
+            }
+        }
+        let ordered = reorder(&Value::Object(std::mem::take(b)), &["when", "then", "else"]);
+        *step.pointer_mut("/if").expect("if") = ordered;
+    }
+    *step = reorder(step, &UI_STEP);
+}
+
+/// 数字毫秒的 `num_key`（timeoutMs / forMs）改成人话的 `text_key`（timeout / for）；已经写了人话就不动
+fn duration_key(o: &mut serde_json::Map<String, serde_json::Value>, num_key: &str, text_key: &str) {
+    use serde_json::Value;
+    if o.contains_key(num_key) && o.contains_key(text_key) {
+        return;
+    }
+    if let Some(v) = o.remove(num_key) {
+        match &v {
+            Value::Number(n) if n.as_u64().is_some() => {
+                o.insert(text_key.into(), Value::String(crate::config::ui::format_duration_ms(n.as_u64().unwrap_or(0))));
+            }
+            // 写成文字的 timeoutMs（"15s"）也归到 timeout
+            Value::String(_) => {
+                o.insert(text_key.into(), v);
+            }
+            _ => {
+                o.insert(num_key.into(), v);
+            }
+        }
+    }
+    // timeout / for 写了数字：也改成人话
+    if let Some(ms) = o.get(text_key).and_then(Value::as_u64) {
+        o.insert(text_key.into(), Value::String(crate::config::ui::format_duration_ms(ms)));
+    }
 }
 
 /// 按给定顺序重排对象键（未知键保留在尾部），去掉 null 与空对象
@@ -308,4 +394,81 @@ pub fn canonical_project_text(d: &serde_json::Value) -> String {
         o.entry("version").or_insert(serde_json::json!(1));
     }
     pretty(&v)
+}
+
+#[cfg(test)]
+mod ui_alias_tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn ui_aliases_become_one_canonical_form() {
+        let d = json!({"name": "x", "android": {"app": "a", "timeoutMs": 15000, "steps": [
+            {"click": {"text": "a"}, "timeoutMs": 2500},
+            {"wait": 2500},
+            {"wait": {"min": 3000, "max": 8000}},
+            {"wait": "3s-8s"},
+            {"repeat": {"steps": [{"click": {"text": "b"}, "wait": 500}], "cycle": {"d": ["a"]}, "forMs": 28800000, "times": 2}},
+            {"if": {"else": [{"wait": 1000}], "then": [{"click": {"text": "c"}}], "when": {"text": "x"}}}
+        ], "onFail": [{"exec": "n", "timeoutMs": 10000}]}});
+        let c = canonical_case(&d);
+        let a = &c["android"];
+        assert_eq!(a["timeout"], "15s");
+        assert!(a.get("timeoutMs").is_none());
+        let steps = a["steps"].as_array().unwrap();
+        assert_eq!(steps[0], json!({"tap": {"text": "a"}, "timeout": "2.5s"}), "Android 点击写 tap，毫秒数写人话");
+        assert_eq!((&steps[1], &steps[2], &steps[3]), (&json!({"wait": "2.5s"}), &json!({"wait": "3s-8s"}), &json!({"wait": "3s-8s"})));
+        // repeat：for 取代 forMs，字段按 for / times / cycle / until / var / steps 排；子步骤同样统一
+        let r = steps[4]["repeat"].as_object().unwrap();
+        assert_eq!(r.keys().collect::<Vec<_>>(), ["for", "times", "cycle", "steps"]);
+        assert_eq!(r["for"], "8h");
+        assert_eq!(r["steps"][0], json!({"tap": {"text": "b"}, "wait": "500ms"}));
+        // if：when / then / else 顺序，分支里同样统一
+        let b = steps[5]["if"].as_object().unwrap();
+        assert_eq!(b.keys().collect::<Vec<_>>(), ["when", "then", "else"]);
+        assert_eq!(b["then"][0], json!({"tap": {"text": "c"}}));
+        assert_eq!(b["else"][0], json!({"wait": "1s"}));
+        assert_eq!(a["onFail"][0], json!({"exec": "n", "timeout": "10s"}));
+        // 规格内字段顺序：app → timeout → steps → onFail
+        assert_eq!(a.as_object().unwrap().keys().collect::<Vec<_>>(), ["app", "timeout", "steps", "onFail"]);
+        // 再格式化一遍不变（Git 零噪音）
+        assert_eq!(canonical_case(&c), c);
+    }
+
+    #[test]
+    fn web_and_desktop_use_click_and_already_canonical_text_is_untouched() {
+        for kind in ["web", "desktop"] {
+            let d = json!({"name": "x", kind: {"app": "a", "url": "u", "steps": [{"tap": {"text": "a"}}, {"click": {"text": "b"}, "timeout": "5s"}]}});
+            let c = canonical_case(&d);
+            assert_eq!(c[kind]["steps"][0], json!({"click": {"text": "a"}}), "{kind}");
+            assert_eq!(c[kind]["steps"][1], json!({"click": {"text": "b"}, "timeout": "5s"}), "{kind}");
+        }
+        // timeoutMs 写成文字、timeout 写成数字，也归到 timeout 的人话写法
+        let d = json!({"name": "x", "web": {"url": "u", "timeoutMs": "20s", "steps": [{"wait": 1, "timeout": 3000}]}});
+        let c = canonical_case(&d);
+        assert_eq!((&c["web"]["timeout"], &c["web"]["steps"][0]["timeout"]), (&json!("20s"), &json!("3s")));
+        // 两种写法同时存在：不替用户做主，原样保留
+        let d = json!({"name": "x", "web": {"url": "u", "timeoutMs": 1000, "timeout": "2s"}});
+        let c = canonical_case(&d);
+        assert_eq!((&c["web"]["timeoutMs"], &c["web"]["timeout"]), (&json!(1000), &json!("2s")));
+    }
+
+    #[test]
+    fn api_ws_and_grpc_numbers_are_left_alone() {
+        let d = json!({"name": "x",
+            "request": {"method": "GET", "url": "{{baseUrl}}/a", "timeoutMs": 800},
+            "ws": {"url": "ws://x", "timeoutMs": 500, "steps": [{"wait": 300, "timeoutMs": 100}]}});
+        let c = canonical_case(&d);
+        assert_eq!(c["request"]["timeoutMs"], 800);
+        assert_eq!((&c["ws"]["timeoutMs"], &c["ws"]["steps"][0]["wait"], &c["ws"]["steps"][0]["timeoutMs"]), (&json!(500), &json!(300), &json!(100)));
+    }
+
+    #[test]
+    fn durations_format_back_to_the_shortest_exact_text() {
+        use crate::config::ui::{format_duration_ms, parse_duration_ms};
+        for (ms, text) in [(0, "0s"), (500, "500ms"), (1000, "1s"), (2500, "2.5s"), (60_000, "60s"), (90_000, "90s"), (120_000, "2m"), (3_600_000, "1h"), (28_800_000, "8h"), (86_400_000, "1d"), (1234, "1234ms")] {
+            assert_eq!(format_duration_ms(ms), text);
+            assert_eq!(parse_duration_ms(text), Ok(ms), "{text} 要能读回来");
+        }
+    }
 }

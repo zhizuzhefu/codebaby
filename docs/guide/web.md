@@ -44,10 +44,10 @@ AI 改完前端，「接口都通过」不等于「用户能用」。Web 用例�
 | `{"waitFor": 条件}` | 一直等到条件满足，超时则失败 |
 | `{"expect": 条件}` | 断言：超时内满足即通过，计入断言结果 |
 | `{"screenshot": "名字"}` | 额外截一张图并命名（每一步本来就会截图） |
-| `{"wait": 500}` | 静候毫秒（尽量用 `waitFor`）；`{"wait": {"min": 3000, "max": 8000}}` 随机静候 |
+| `{"wait": "500ms"}` | 静候（尽量用 `waitFor`）；`{"wait": "3s-8s"}` 随机静候 |
 | `{"repeat": {…}}` / `{"if": {…}}` / `{"exec": "…"}` | 重复一组步骤 / 条件分支 / 运行本机命令（通知回调）：`requestbaby guide control` |
 
-每一步都可以加：`timeoutMs`（本步等待上限，缺省 10000）、`optional: true`（找不到目标就跳过，用于可能出现的弹窗）、`capture`（本步完成后取值存为变量）。
+每一步都可以加：`timeout`（本步等待上限，如 `"15s"`，缺省 10s）、`optional: true`（找不到目标就跳过，用于可能出现的弹窗）、`capture`（本步完成后取值存为变量）。
 
 **不用写 sleep**：每一步自动等目标出现、可见、可用、位置稳定、没被遮挡再操作；点击引起的页面跳转自动等加载完成。
 
@@ -136,7 +136,7 @@ AI 改完前端，「接口都通过」不等于「用户能用」。Web 用例�
 - `web.endpoint`：连接远程浏览器，见下一节
 - `web.headed: true` / `--headed` / `REQUESTBABY_HEADED=1`：显示浏览器窗口，看着它跑
 - `web.screenshots: "failure"`：只截失败、结束画面和 `screenshot` 步骤（用例很多时省空间）
-- 用例里 `web.viewport` 覆盖视口，`web.timeoutMs` 覆盖每一步的缺省超时
+- 用例里 `web.viewport` 覆盖视口，`web.timeout` 覆盖每一步的缺省超时
 - 之前 HTTP 用例登录拿到的 Cookie 自动带进浏览器；浏览器里登录得到的 Cookie 后面的 HTTP 用例也能用
 - 页面里的 `alert` / `confirm` 自动确认，并记在那一步的说明里
 

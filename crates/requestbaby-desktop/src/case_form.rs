@@ -514,7 +514,12 @@ impl CaseForm {
                 .and_then(Value::as_array)
                 .map(|a| a.iter().filter_map(Value::as_str).collect::<Vec<_>>().join(", "))
                 .unwrap_or_default(),
-            timeout: num(d.pointer(&format!("{key}/timeoutMs"))),
+            // 界面用例的超时规范写法是 timeout（人话，如 "15s"），旧写法 timeoutMs 也认；接口 / gRPC / WebSocket 仍是 timeoutMs 毫秒数
+            timeout: match d.pointer(&format!("{key}/timeout")) {
+                Some(Value::String(t)) => t.clone(),
+                Some(x) => x.to_string(),
+                None => num(d.pointer(&format!("{key}/timeoutMs"))),
+            },
             retry: num(d.pointer("/request/retry")),
             skip: d.get("skip").and_then(Value::as_bool).unwrap_or(false),
             insecure: d.pointer(&format!("{key}/insecure")).and_then(Value::as_bool).unwrap_or(false),
@@ -621,7 +626,22 @@ impl CaseForm {
             t.parse::<u64>().map(|n| Some(json!(n))).map_err(|_| format!("「{t}」不是非负整数"))
         };
         if self.timeout != was.timeout {
-            set(req, "timeoutMs", number(&self.timeout)?);
+            if matches!(self.protocol, Protocol::Web | Protocol::Android | Protocol::Desktop) {
+                // 界面用例：写人话的 timeout（输入数字当毫秒，换成 15s 这样的写法），并去掉旧的 timeoutMs
+                let t = self.timeout.trim();
+                let text = if t.is_empty() {
+                    None
+                } else if let Ok(ms) = t.parse::<u64>() {
+                    Some(requestbaby_core::config::ui::format_duration_ms(ms))
+                } else {
+                    requestbaby_core::config::ui::parse_duration_ms(t).map_err(|e| format!("超时：{e}"))?;
+                    Some(t.to_string())
+                };
+                set(req, "timeoutMs", None);
+                set(req, "timeout", text.map(Value::String));
+            } else {
+                set(req, "timeoutMs", number(&self.timeout)?);
+            }
         }
         if self.insecure != was.insecure {
             set(req, "insecure", self.insecure.then_some(Value::Bool(true)));
@@ -865,6 +885,37 @@ mod tests {
             let back = CaseForm::from_doc(&d).to_doc(&d).unwrap();
             assert_eq!(back, d);
         }
+    }
+
+    /// 界面用例的用例级超时：规范写法 timeout（人话），旧写法 timeoutMs 也认；改动后写 timeout 并去掉旧的；接口用例不受影响
+    #[test]
+    fn ui_case_timeout_reads_and_writes_human_text() {
+        let d = json!({"name": "x", "android": {"app": "com.a.b", "timeout": "15s", "steps": [{"tap": {"text": "a"}}]}});
+        let f = CaseForm::from_doc(&d);
+        assert_eq!(f.timeout, "15s");
+        assert_eq!(f.to_doc(&d).unwrap(), d, "没改原样写回");
+        let mut g = f.clone();
+        g.timeout = "2m".into();
+        assert_eq!(g.to_doc(&d).unwrap()["android"]["timeout"], "2m");
+        g.timeout = "20000".into();
+        assert_eq!(g.to_doc(&d).unwrap()["android"]["timeout"], "20s", "输入数字当毫秒，写成人话");
+        g.timeout = String::new();
+        assert!(g.to_doc(&d).unwrap()["android"].get("timeout").is_none());
+        g.timeout = "很久".into();
+        assert!(g.to_doc(&d).is_err());
+        // 旧写法 timeoutMs 读得出来，改动后换成 timeout
+        let old = json!({"name": "x", "web": {"url": "u", "timeoutMs": 5000, "steps": []}});
+        let f = CaseForm::from_doc(&old);
+        assert_eq!(f.timeout, "5000");
+        let mut g = f.clone();
+        g.timeout = "8s".into();
+        let w = g.to_doc(&old).unwrap();
+        assert_eq!((w["web"].get("timeoutMs"), &w["web"]["timeout"]), (None, &json!("8s")));
+        // 接口用例仍是 timeoutMs 毫秒数
+        let api = json!({"name": "x", "request": {"method": "GET", "url": "{{baseUrl}}/a", "timeoutMs": 800}});
+        let mut g = CaseForm::from_doc(&api);
+        g.timeout = "900".into();
+        assert_eq!(g.to_doc(&api).unwrap()["request"]["timeoutMs"], 900);
     }
 
     /// 改了什么就只改什么，结果仍是合法用例

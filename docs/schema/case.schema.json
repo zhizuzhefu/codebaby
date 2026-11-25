@@ -548,7 +548,7 @@
         "expect": { "$ref": "#/definitions/locator", "description": "断言：条件在超时内满足即通过，计入断言结果" },
         "screenshot": { "type": "string", "description": "额外截一张图并命名（每一步本来就会自动截图）" },
         "wait": {
-          "description": "静候：毫秒数，或写人话 \"2.5s\" / \"1m\"，随机区间写 \"3s-8s\"（也可以 {\"min\": 3000, \"max\": 8000}），每次执行在区间内随机取一个值；尽量用 waitFor",
+          "description": "静候，写人话：\"2.5s\" / \"1m\"，随机区间写 \"3s-8s\"（每次执行在区间内随机取一个值）；尽量用 waitFor。毫秒数和 {min, max} 是旧写法，fmt 会改成人话",
           "oneOf": [
             { "type": "integer", "minimum": 0 },
             { "type": "string", "description": "时长文字：500ms / 2.5s / 1m；区间 3s-8s" },
@@ -570,8 +570,8 @@
           "description": "重复执行一组步骤（轮询监控、反复刷新）：times / for / cycle 至少写一个，先到的结束；until 满足也提前结束；循环里的步骤只在失败时留截图，结束时留一张汇总截图",
           "properties": {
             "times": { "type": "integer", "minimum": 1, "description": "最多重复几次" },
-            "forMs": { "type": "integer", "minimum": 1, "description": "最长重复多久（毫秒）：一轮结束时已超过就不再开始下一轮" },
-            "for": { "type": ["integer", "string"], "description": "同 forMs，可以写人话：\"8h\" / \"30m\"；一直重复写 \"forever\"（要停就点停止 / Ctrl-C）" },
+            "forMs": { "type": "integer", "minimum": 1, "deprecated": true, "description": "旧写法（毫秒数），fmt 会改成 for" },
+            "for": { "type": ["integer", "string"], "description": "最长重复多久，写人话：\"8h\" / \"30m\"，一直重复写 \"forever\"（要停就点停止 / Ctrl-C）；一轮结束时已超过就不再开始下一轮" },
             "cycle": {
               "type": "object",
               "description": "轮换取值：每一轮取下一个值，到头了从头再来，步骤里写 {{变量名}}；只写 cycle（不写 times / for）= 每个值各来一轮",
@@ -618,8 +618,8 @@
             "oneOf": [{ "type": "string" }, { "$ref": "#/definitions/locator" }]
           }
         },
-        "timeoutMs": { "type": "integer", "minimum": 1, "description": "本步等待超时毫秒（缺省 10000）" },
-        "timeout": { "type": ["integer", "string"], "description": "同 timeoutMs，可以写人话：\"15s\" / \"2m\"" },
+        "timeoutMs": { "type": "integer", "minimum": 1, "deprecated": true, "description": "旧写法（毫秒数），fmt 会改成 timeout" },
+        "timeout": { "type": ["integer", "string"], "description": "本步等待超时，写人话：\"15s\" / \"2m\"（缺省 10s）" },
         "optional": { "type": "boolean", "description": "找不到目标时跳过本步而不失败（如可能出现的弹窗）" }
       }
     },
@@ -645,9 +645,10 @@
         "timeoutMs": {
           "type": "integer",
           "minimum": 1,
-          "description": "每一步等待的默认超时毫秒（缺省 10000）；打开页面用项目 timeoutMs"
+          "deprecated": true,
+          "description": "旧写法（毫秒数），fmt 会改成 timeout"
         },
-        "timeout": { "type": ["integer", "string"], "description": "同 timeoutMs，可以写人话：\"15s\"" },
+        "timeout": { "type": ["integer", "string"], "description": "每一步等待的默认超时，写人话：\"15s\"（缺省 10s）；打开页面用项目 timeoutMs" },
         "steps": {
           "type": "array",
           "items": { "$ref": "#/definitions/uiStep" },
@@ -668,8 +669,8 @@
         "app": { "type": "string", "description": "应用名称（如 TextEdit）或 bundle ID（如 com.apple.TextEdit）" },
         "window": { "type": "string", "description": "窗口标题包含这段文字的窗口（应用有多个窗口时用；缺省取唯一可见窗口）" },
         "restart": { "type": "boolean", "description": "开始前先正常退出应用再重新启动（缺省接管已在运行的应用，不动它）" },
-        "timeoutMs": { "type": "integer", "minimum": 1, "description": "每一步等待的默认超时毫秒（缺省 10000）" },
-        "timeout": { "type": ["integer", "string"], "description": "同 timeoutMs，可以写人话：\"15s\"" },
+        "timeoutMs": { "type": "integer", "minimum": 1, "deprecated": true, "description": "旧写法（毫秒数），fmt 会改成 timeout" },
+        "timeout": { "type": ["integer", "string"], "description": "每一步等待的默认超时，写人话：\"15s\"（缺省 10s）" },
         "steps": {
           "type": "array",
           "items": { "$ref": "#/definitions/uiStep" },
@@ -695,8 +696,8 @@
           "type": "boolean",
           "description": "接管设备当前的界面：不启动、不关闭应用，从它现在停着的页面开始（微信小程序等要先手动走到目标页的场景）；app 要已在前台，不能和 activity / apk / clearData 同时写"
         },
-        "timeoutMs": { "type": "integer", "minimum": 1, "description": "每一步等待的默认超时毫秒（缺省 10000）" },
-        "timeout": { "type": ["integer", "string"], "description": "同 timeoutMs，可以写人话：\"15s\"" },
+        "timeoutMs": { "type": "integer", "minimum": 1, "deprecated": true, "description": "旧写法（毫秒数），fmt 会改成 timeout" },
+        "timeout": { "type": ["integer", "string"], "description": "每一步等待的默认超时，写人话：\"15s\"（缺省 10s）" },
         "steps": {
           "type": "array",
           "items": { "$ref": "#/definitions/uiStep" },

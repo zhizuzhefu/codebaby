@@ -21,6 +21,7 @@ pub const TOPICS: &[(&str, &[&str], &str, &str)] = &[
     ("flow", &["流程", "workflow"], "流程", include_str!("../../../docs/guide/flow.md")),
     ("auth", &["鉴权", "登录"], "配方：鉴权登录", include_str!("../../../docs/guide/auth.md")),
     ("e2e", &["链路"], "配方：多步链路", include_str!("../../../docs/guide/e2e.md")),
+    ("mixed", &["混合", "多端", "跨端"], "配方：多端混合（API + Web + 手机）", include_str!("../../../docs/guide/mixed.md")),
     ("data", &["数据驱动", "数据"], "配方：数据驱动", include_str!("../../../docs/guide/data.md")),
     ("setup", &["造数", "清数"], "配方：造数清数", include_str!("../../../docs/guide/setup.md")),
     ("env", &["环境", "固定环境"], "环境与固定环境", include_str!("../../../docs/guide/env.md")),
@@ -124,6 +125,10 @@ fn walk(root: &Value, node: &Value, prefix: &str, rows: &mut Vec<(String, String
     let ref_of = |v: &Value| v.get("$ref").and_then(Value::as_str).map(str::to_string);
     for (key, raw) in props {
         let def = resolve(root, raw);
+        // 旧写法（仍然能读，fmt 会改成规范写法）不进字段参考：guide 只展示规范写法
+        if raw.get("deprecated").and_then(Value::as_bool).unwrap_or(false) {
+            continue;
+        }
         let name = format!("{prefix}{key}");
         let desc = raw.get("description").or_else(|| def.get("description")).and_then(Value::as_str).unwrap_or_default().to_string();
         rows.push((name.clone(), type_of(root, def), desc));
