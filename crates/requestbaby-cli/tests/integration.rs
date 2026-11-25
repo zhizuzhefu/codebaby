@@ -786,6 +786,196 @@ fn verify_blocked_by_validation_exits_2_with_reason() {
     assert!(statuses[1..].iter().all(|s| *s == "notRun"), "{statuses:?}");
 }
 
+fn write_gate_project(root: &std::path::Path, port: u16, workflows: serde_json::Value) {
+    std::fs::create_dir(root.join("envs")).unwrap();
+    std::fs::write(root.join("requestbaby.json"), serde_json::json!({"defaultEnv":"test", "workflows":workflows}).to_string()).unwrap();
+    for env in ["test", "local"] {
+        std::fs::write(root.join(format!("envs/{env}.json")), format!(r#"{{"vars":{{"baseUrl":"http://127.0.0.1:{port}"}}}}"#)).unwrap();
+    }
+}
+
+fn gate_case(root: &std::path::Path, file: &str, body: serde_json::Value) {
+    let path = root.join(file);
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    std::fs::write(path, body.to_string()).unwrap();
+}
+
+fn gate_result(root: &std::path::Path, extra: &[&str]) -> (i32, serde_json::Value) {
+    let mut args = vec!["verify", "--report", "json"];
+    if !extra.contains(&"--plan") {
+        args.push("--no-history");
+    }
+    args.extend(extra);
+    let out = run_cli(&args, root);
+    let report = serde_json::from_slice(&out.stdout)
+        .unwrap_or_else(|e| panic!("{e}: {}\n{}", String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr)));
+    (out.status.code().unwrap(), report)
+}
+
+#[test]
+fn verify_without_any_execution_is_incomplete() {
+    let dir = TempDir::new().unwrap();
+    for (root, workflows) in [
+        (dir.path().join("empty"), serde_json::json!({})),
+        (dir.path().join("pinned"), serde_json::json!({"onlyLocal":{"env":"local","steps":[{"run":"fixtures/only.json"}]}})),
+    ] {
+        std::fs::create_dir(&root).unwrap();
+        write_gate_project(&root, 9, workflows.clone());
+        if workflows.get("onlyLocal").is_some() {
+            gate_case(&root, "fixtures/only.json", serde_json::json!({"request":{"method":"GET","url":"{{baseUrl}}/ok"},"expect":{"status":200}}));
+        }
+        let (code, report) = gate_result(&root, &[]);
+        assert_eq!((code, report["total"].as_u64(), report["coverage"]["checked"].as_u64()), (2, Some(0), Some(0)), "{report}");
+    }
+    let root = dir.path().join("empty");
+    gate_case(&root, "collections/collection.json", serde_json::json!({"setup":"throw new Error('skipped collection must not be set up')"}));
+    gate_case(&root, "collections/skipped.json", serde_json::json!({"skip":true,"request":{"method":"GET","url":"{{baseUrl}}/ok"},"expect":{"status":200}}));
+    let (code, report) = gate_result(&root, &[]);
+    assert_eq!(code, 2, "{report}");
+    assert_eq!(report["coverage"]["checked"], 0);
+    assert_eq!(report["coverage"]["unverified"][0]["reason"], "skipped");
+}
+
+#[test]
+fn verify_explicit_required_cases_can_run_unasserted_setup() {
+    let dir = TempDir::new().unwrap();
+    let root = dir.path();
+    write_gate_project(root, spawn_echo(), serde_json::json!({"smoke":{"steps":[{"run":"collections"}]}}));
+    gate_case(root, "collections/01-setup.json", serde_json::json!({"request":{"method":"GET","url":"{{baseUrl}}/setup"}}));
+    let required = "collections/02-check.json";
+    gate_case(root, required, serde_json::json!({"request":{"method":"GET","url":"{{baseUrl}}/check"},"expect":{"status":200}}));
+    let (code, report) = gate_result(root, &["--workflow", "smoke", "--require-case", required]);
+    assert_eq!(code, 0, "{report}");
+    assert_eq!(report["total"], 2);
+    assert_eq!(report["coverage"]["required"], 1);
+    assert_eq!(report["coverage"]["checked"], 1);
+}
+
+#[test]
+fn verify_reports_three_of_five_required_cases_checked() {
+    let dir = TempDir::new().unwrap();
+    let root = dir.path();
+    write_gate_project(root, spawn_echo(), serde_json::json!({"smoke":{"steps":[{"run":"collections"}]}}));
+    let files: Vec<_> = (1..=5).map(|n| format!("collections/{n}.json")).collect();
+    for (index, file) in files.iter().enumerate() {
+        gate_case(root, file, serde_json::json!({"skip":index >= 3,"request":{"method":"GET","url":"{{baseUrl}}/ok"},"expect":{"status":200}}));
+    }
+    let mut args = vec!["--workflow", "smoke"];
+    for file in &files {
+        args.extend(["--require-case", file]);
+    }
+    let (code, report) = gate_result(root, &args);
+    assert_eq!(code, 2, "{report}");
+    let c = &report["coverage"];
+    assert_eq!(c["required"], 5);
+    assert_eq!(c["checked"], 3);
+    let missing: Vec<_> = c["unverified"].as_array().unwrap().iter().map(|r| (r["file"].as_str().unwrap(), r["reason"].as_str().unwrap())).collect();
+    assert_eq!(missing, [(files[3].as_str(), "skipped"), (files[4].as_str(), "skipped")]);
+    assert!(report["blocked"].as_str().unwrap().contains("还有 2 个未验"));
+
+    std::fs::remove_file(root.join(&files[4])).unwrap();
+    let (code, report) = gate_result(root, &args);
+    assert_eq!(code, 2, "{report}");
+    assert_eq!(report["total"], 0);
+    assert_eq!(report["coverage"]["unverified"][0]["reason"], "notSelected");
+    assert_eq!(report["coverage"]["required"], 5);
+}
+
+#[test]
+fn verify_distinguishes_a_missing_assertion_from_a_failed_assertion() {
+    let dir = TempDir::new().unwrap();
+    let port = spawn_server(|_| (500, "application/json".into(), vec![], br#"{"code":17}"#.to_vec()));
+    write_gate_project(dir.path(), port, serde_json::json!({}));
+    let file = "collections/01.json";
+    let mut case = serde_json::json!({"request":{"method":"GET","url":"{{baseUrl}}/bad"}});
+    gate_case(dir.path(), file, case.clone());
+    let (code, report) = gate_result(dir.path(), &[]);
+    assert_eq!(code, 2, "{report}");
+    assert_eq!(report["results"][0]["status"], 500);
+    assert_eq!(report["coverage"]["unverified"][0]["reason"], "noAssertion");
+    case["expect"] = serde_json::json!({"status":200, "body":{"code":0}});
+    gate_case(dir.path(), file, case);
+    let (code, report) = gate_result(dir.path(), &[]);
+    assert_eq!(code, 1, "{report}");
+    assert_eq!(report["coverage"]["checked"], 1);
+    assert_eq!(report["failed"], 1);
+}
+
+#[test]
+fn verify_plan_never_sends_requests_and_combined_verify_blocks_duplicate_writes() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    static REQUESTS: AtomicUsize = AtomicUsize::new(0);
+    let port = spawn_server(|_| {
+        REQUESTS.fetch_add(1, Ordering::SeqCst);
+        (200, "application/json".into(), vec![], br#"{"code":0}"#.to_vec())
+    });
+    let dir = TempDir::new().unwrap();
+    let root = dir.path();
+    write_gate_project(root, port, serde_json::json!({"smoke":{"steps":[{"run":"collections","tags":["smoke"],"as":"teacher"}]}}));
+    gate_case(root, "collections/01.json", serde_json::json!({"name":"创建订单","tags":["smoke"],"request":{"method":"POST","url":"{{baseUrl}}/new"},"expect":{"body":{"code":0}}}));
+    gate_case(root, "collections/02.json", serde_json::json!({"name":"其他用例","request":{"method":"GET","url":"{{baseUrl}}/other"},"expect":{"status":200}}));
+
+    let (code, plan) = gate_result(root, &["--plan"]);
+    assert_eq!(code, 2, "{plan}");
+    assert!(plan["blocked"].as_str().unwrap().contains("多个阶段"));
+    assert_eq!(plan["stages"][2]["cases"].as_array().unwrap().len(), 1);
+    assert_eq!(plan["stages"][2]["cases"][0]["user"], "teacher");
+    assert_eq!(REQUESTS.load(Ordering::SeqCst), 0);
+    assert!(!root.join(".requestbaby").exists());
+
+    let (code, report) = gate_result(root, &[]);
+    assert_eq!(code, 2, "{report}");
+    assert_eq!(REQUESTS.load(Ordering::SeqCst), 0);
+
+    let (code, plan) = gate_result(root, &["--workflow", "smoke", "--plan"]);
+    assert_eq!(code, 0, "{plan}");
+    assert_eq!(plan["stages"].as_array().unwrap().len(), 2);
+    assert_eq!(plan["stages"][1]["cases"][0]["method"], "POST");
+    assert_eq!(REQUESTS.load(Ordering::SeqCst), 0);
+
+    let (code, report) = gate_result(root, &["--workflow", "smoke"]);
+    assert_eq!(code, 0, "{report}");
+    assert_eq!(report["coverage"]["checked"], 1);
+    assert_eq!(REQUESTS.load(Ordering::SeqCst), 1);
+}
+
+#[test]
+fn verify_reports_image_count_and_checks_the_captured_image_response() {
+    let port = spawn_server(|raw| {
+        let line = String::from_utf8_lossy(raw);
+        if line.starts_with("GET /images ") {
+            (200, "application/json".into(), vec![], br#"{"code":0,"data":{"pages":[{"url":"/pic"},{"url":"/pic2"}]}}"#.to_vec())
+        } else {
+            (200, "image/png".into(), vec![], b"\x89PNG\r\n\x1a\n".to_vec())
+        }
+    });
+    let dir = TempDir::new().unwrap();
+    let root = dir.path();
+    write_gate_project(root, port, serde_json::json!({"report":{"steps":[{"run":"collections"}]}}));
+    let listing = "collections/01-images.json";
+    let first = serde_json::json!({
+        "request":{"method":"GET","url":"{{baseUrl}}/images"},
+        "expect":{"status":200,"body":{"code":0,"data.pages":{"len":2}}},
+        "capture":{"image":"data.pages[0].url"}
+    });
+    gate_case(root, listing, first.clone());
+    gate_case(root, "collections/02-download.json", serde_json::json!({
+        "request":{"method":"GET","url":"{{baseUrl}}{{image}}"},
+        "expect":{"status":200,"headers":{"content-type":{"startsWith":"image/"}}}
+    }));
+    let (code, report) = gate_result(root, &["--workflow", "report"]);
+    assert_eq!(code, 0, "{report}");
+    assert_eq!(report["coverage"]["checked"], 2);
+
+    let mut changed = first;
+    changed["expect"]["body"]["data.pages"]["len"] = 3.into();
+    gate_case(root, listing, changed);
+    let (code, report) = gate_result(root, &["--workflow", "report"]);
+    assert_eq!(code, 1, "{report}");
+    assert_eq!(report["coverage"]["checked"], 1);
+    assert_eq!(report["coverage"]["unverified"][0]["reason"], "notRun");
+}
+
 /// 并发跑：结果按文件顺序输出；HEAD 不等正文（服务按规范只回头）
 #[test]
 fn parallel_results_keep_file_order_and_head_requests_finish() {

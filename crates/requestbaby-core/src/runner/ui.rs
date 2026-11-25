@@ -957,7 +957,7 @@ impl Runner {
                             match check_once(d, &loc) {
                                 Ok((true, _, rects)) => {
                                     let marks = rects.into_iter().map(|r| Mark { rect: r, kind: MarkKind::Verified, point: None }).collect();
-                                    return Ok(Done { marks: Some(marks), shot: None, detail: None, skipped: false, asserted: action == UiAction::Expect, title: None });
+                                    return Ok(Done { marks: Some(marks), shot: None, detail: None, skipped: false, asserted: true, title: None });
                                 }
                                 Ok((false, why, rects)) => {
                                     last = why;

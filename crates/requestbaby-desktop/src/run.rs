@@ -383,6 +383,7 @@ impl RunState {
                     let spec = VerifySpec {
                         root,
                         env: Some(env),
+                        selection: Default::default(),
                         output: None,
                         send_mode: true,
                         source: "desktop".into(),

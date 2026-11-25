@@ -196,12 +196,12 @@ requestbaby guide <主题>   # 按场景深入：expect capture vars flow auth e
 
 闭环：写用例 → `requestbaby validate --report json`（exit 2 = 配置错误；warn 是写法建议，`requestbaby fmt --fix` 自动改写）
 → `requestbaby run --report json`（exit 1 = 断言失败，读 results[].tests[].detail 修；`requestbaby run --failed` 只重跑失败的）
-→ `requestbaby verify`（校验 → 全部用例 → 全部流程，exit 0 才算完成）。
+→ `requestbaby verify --plan` 预览 → `requestbaby verify --report json`（核对 coverage，exit 0 才算完成）。明确验收流程时用 `--workflow`，约定的必验文件用 `--require-case` 固定（guide cli）。
 
 约定：
 - 断言写 `expect`，取值写 `capture`；只有跨字段计算才用 JS（tests / post）
 - 用例 = `collections/**/NN-名称.json`，文件名序即执行序；新建用 `requestbaby new case <集合目录> <名称> -m <方法>`，已有 curl 用 `--curl "curl …"`
-- 断言照真实响应写：`requestbaby send <用例> --suggest`
+- 期望结果从需求或契约确定；`requestbaby send <用例> --suggest` 用于查看响应路径和断言写法
 - URL 写 `{{baseUrl}}/路径`；变量用 `requestbaby vars set …` 写进环境，密钥加 `--secret`，本机真实值用 `--local <环境>`
 - 只能在某个环境跑的，用流程固定环境（`requestbaby workflow env <流程> <环境>`），不写环境守卫脚本
 - 界面用例（web / android / desktop）：先 `requestbaby web snapshot <url>` / `android snapshot` / `desktop snapshot <应用>` 看元素与定位；API、Web、Android、Mac 桌面可放进同一个流程，`capture` 的值互通

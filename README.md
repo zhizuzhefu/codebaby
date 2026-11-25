@@ -182,10 +182,10 @@ requestbaby open                                            # 在桌面端打开
 
 ## 放进 CI
 
-`requestbaby verify` 依次做校验、跑全部用例、跑全部流程，给出一个结论：退出码 0 全部通过，1 有用例失败，2 无法完成验证。
+`requestbaby verify --plan` 先查看执行计划。用 `--workflow` 选定验收流程，可重复用 `--require-case` 指定必验文件。运行后，报告列出必验覆盖和未验原因。退出码 0 表示必验通过，1 表示用例失败，2 表示验收不完整。
 
 ```yaml
-- run: requestbaby verify -e ci --report json > verify.json
+- run: requestbaby verify --workflow smoke -e ci --report json > verify.json
 ```
 
 被测服务需要由 CI 先启动。

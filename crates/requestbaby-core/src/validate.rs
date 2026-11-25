@@ -103,6 +103,10 @@ fn schema_check(schema_json: &str, doc_path: &Path, doc_name: &str, issues: &mut
 /// 4. pre/post/tests 脚本语法预编译
 /// 5. workflow step.run 路径与 cases 数据文件存在性
 pub fn validate_paths(paths: &[std::path::PathBuf], env_name: &str) -> Result<Vec<ValidationIssue>> {
+    validate_selected(paths, env_name, None)
+}
+
+pub(crate) fn validate_selected(paths: &[std::path::PathBuf], env_name: &str, workflows: Option<&std::collections::BTreeSet<String>>) -> Result<Vec<ValidationIssue>> {
     let mut issues = vec![];
     let host = QuickJsHost::new();
 
@@ -127,7 +131,7 @@ pub fn validate_paths(paths: &[std::path::PathBuf], env_name: &str) -> Result<Ve
                     // 写法建议：多个流程各自重复同一个开头（如登录）→ 抽成被依赖的流程
                     push_advice(&pf.display().to_string(), crate::teach::project_advice(&p), &mut issues);
                     // workflow step.run 存在性
-                    for (wf_name, wf) in &p.workflows {
+                    for (wf_name, wf) in p.workflows.iter().filter(|(name, _)| workflows.is_none_or(|keys| keys.contains(*name))) {
                         if wf.steps.is_empty() && wf.needs.is_empty() {
                             issues.push(ValidationIssue {
                                 fixable: false,

@@ -472,15 +472,7 @@ impl Runner {
         let mut parallel: Vec<&discover::DiscoveredCase> = vec![];
         for dc in cases {
             let Ok(case) = load_strict::<TestCase>(&dc.path) else { continue };
-            let mut all_tags: Vec<String> = dc.chain.iter().flat_map(|c| c.tags.clone()).collect();
-            all_tags.extend(case.tags.iter().cloned());
-            let name = if case.name.is_empty() {
-                dc.path.file_stem().unwrap_or_default().to_string_lossy().into_owned()
-            } else {
-                case.name.clone()
-            };
-            let stem = dc.path.file_stem().unwrap_or_default().to_string_lossy().into_owned();
-            if !Self::matches_filter(&all_tags, &name, &stem, opts) {
+            if !selected_case(dc, &case, opts) {
                 continue;
             }
             // 写变量的（脚本 / capture）与读这些变量的都串行，保证捕获先于引用
@@ -500,7 +492,7 @@ impl Runner {
             let mut sub_opts = opts.clone();
             sub_opts.parallel = None;
             let rs = self.run_serial(&ser, &sub_opts, &mut |r| sink(r))?;
-            let stop = opts.fail_fast && rs.iter().any(|r| !r.passed());
+            let stop = opts.fail_fast && rs.iter().any(|r| !r.passed() && !r.skipped);
             results.extend(rs);
             if stop {
                 return Ok(results);
@@ -534,7 +526,7 @@ impl Runner {
                 let Some(dc) = jobs.get(i) else { break };
                 let mut out: Vec<CaseResult> = vec![];
                 let _ = runner.run_serial(std::slice::from_ref(dc), &o, &mut |x| out.push(x.clone()));
-                if fail_fast && out.iter().any(|r| !r.passed()) {
+                if fail_fast && out.iter().any(|r| !r.passed() && !r.skipped) {
                     stop.store(true, std::sync::atomic::Ordering::Relaxed);
                 }
                 if tx.send((i, out)).is_err() {
@@ -590,17 +582,7 @@ impl Runner {
         for dc in cases {
             match load_strict::<TestCase>(&dc.path) {
                 Ok(case) => {
-                    let mut all_tags: Vec<String> =
-                        dc.chain.iter().flat_map(|c| c.tags.clone()).collect();
-                    all_tags.extend(case.tags.iter().cloned());
-                    let name = display_name(dc, &case);
-                    let stem = dc
-                        .path
-                        .file_stem()
-                        .unwrap_or_default()
-                        .to_string_lossy()
-                        .into_owned();
-                    if Self::matches_filter(&all_tags, &name, &stem, opts) {
+                    if selected_case(dc, &case, opts) {
                         planned.push((dc, Some(case)));
                     }
                 }
@@ -619,7 +601,7 @@ impl Runner {
                 .unwrap_or_default();
 
             // ---- 进入新目录层级：执行新增层级的 setup（浅 → 深）----
-            if prev_dir.as_deref() != Some(case_dir.as_path()) {
+            if prev_dir.as_deref() != Some(case_dir.as_path()) && !case_opt.as_ref().is_some_and(|case| case.skip) {
                 let new_levels = Self::entering_levels(prev_dir.as_deref(), &case_dir);
                 for lvl in &new_levels {
                     active_dirs.push(lvl.clone());
@@ -667,24 +649,17 @@ impl Runner {
             let name = display_name(dc, &case);
 
             // ---- 数据驱动展开（用例 × 行）----
-            let rows: Vec<Option<crate::config::DataRow>> = match &case.cases {
-                None => vec![None],
-                Some(spec) => {
-                    let base = dc.path.parent().unwrap_or(std::path::Path::new("."));
-                    match spec.resolve(base) {
-                        Ok(rs) if !rs.is_empty() => rs.into_iter().map(Some).collect(),
-                        Ok(_) => vec![None],
-                        Err(e) => {
-                            let r = self.error_result(dc, &name, &all_tags, format!("数据文件加载失败: {e}"));
-                            let r = r.stamped();
-                            sink(&r);
-                            results.push(r);
-                            if opts.fail_fast {
-                                break;
-                            }
-                            continue;
-                        }
+            let rows = match case_rows(dc, &case) {
+                Ok(rows) => rows,
+                Err(e) => {
+                    let r = self.error_result(dc, &name, &all_tags, format!("数据文件加载失败: {e}"));
+                    let r = r.stamped();
+                    sink(&r);
+                    results.push(r);
+                    if opts.fail_fast {
+                        break;
                     }
+                    continue;
                 }
             };
 
@@ -694,15 +669,9 @@ impl Runner {
                     stop = true;
                     break;
                 }
-                let inst_name = match (&case.cases, row) {
-                    (Some(_), Some(r)) => {
-                        let label = r.get("label").map(|v| v.to_render()).unwrap_or_else(|| format!("#{}", i));
-                        format!("{name} [{label}]")
-                    }
-                    _ => name.clone(),
-                };
+                let inst_name = instance_name(&name, i, row.as_ref());
                 let r = self.execute_case(dc, &case, &all_tags, &inst_name, row.as_ref(), opts);
-                let bad = !r.passed();
+                let bad = !r.passed() && !r.skipped;
                 let r = r.stamped();
                 sink(&r);
                 results.push(r);
@@ -1719,7 +1688,7 @@ pub fn scan_leftover_placeholders(text: &str) -> Vec<String> {
 }
 
 /// 用例展示名：name 字段缺省回落文件名 stem
-fn display_name(dc: &discover::DiscoveredCase, case: &TestCase) -> String {
+pub(crate) fn display_name(dc: &discover::DiscoveredCase, case: &TestCase) -> String {
     if case.name.is_empty() {
         dc.path
             .file_stem()
@@ -1728,6 +1697,28 @@ fn display_name(dc: &discover::DiscoveredCase, case: &TestCase) -> String {
             .into_owned()
     } else {
         case.name.clone()
+    }
+}
+
+pub(crate) fn selected_case(dc: &discover::DiscoveredCase, case: &TestCase, opts: &RunOptions) -> bool {
+    let tags = dc.chain.iter().flat_map(|c| &c.tags).chain(&case.tags).cloned().collect::<Vec<_>>();
+    let stem = dc.path.file_stem().unwrap_or_default().to_string_lossy();
+    Runner::matches_filter(&tags, &display_name(dc, case), &stem, opts)
+}
+
+pub(crate) fn case_rows(dc: &discover::DiscoveredCase, case: &TestCase) -> std::io::Result<Vec<Option<crate::config::DataRow>>> {
+    let Some(spec) = &case.cases else { return Ok(vec![None]) };
+    let rows = spec.resolve(dc.path.parent().unwrap_or(std::path::Path::new(".")))?;
+    Ok(if rows.is_empty() { vec![None] } else { rows.into_iter().map(Some).collect() })
+}
+
+pub(crate) fn instance_name(name: &str, index: usize, row: Option<&crate::config::DataRow>) -> String {
+    match row {
+        Some(row) => {
+            let label = row.get("label").map(|v| v.to_render()).unwrap_or_else(|| format!("#{index}"));
+            format!("{name} [{label}]")
+        }
+        None => name.to_string(),
     }
 }
 

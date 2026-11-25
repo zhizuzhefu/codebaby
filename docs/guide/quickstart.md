@@ -80,16 +80,17 @@ token 这类每个用例都要带的请求头，在目录的 `collection.json` �
 
 ## 闭环命令
 
-顺序：`validate` → `run` → `verify`；`-e <环境>` 选环境，缺省用项目默认环境。
+`-e <环境>` 选环境，缺省用项目配置。
 
 ```bash
-requestbaby new case collections/orders 创建订单 -m post   # 新建用例（自动编号）
-requestbaby new case collections/orders --curl "curl …"   # 已有 curl 直接转用例
-requestbaby send collections/orders/01-创建订单.json --suggest   # 看真实响应 + 照它生成 expect / capture
-requestbaby validate --report json   # exit 2 = 配置写错；warn 是写法建议
-requestbaby run --report json        # exit 1 = 断言失败：读 results[].tests[].detail 修
-requestbaby run --failed             # 只重跑失败的（自动带上它依赖的前置用例）
-requestbaby verify -e dev            # 最终结论：校验 → 全部用例 → 全部流程；0 通过 / 1 失败 / 2 无法完成
+requestbaby new case collections/orders 创建订单 -m post
+requestbaby new case collections/orders --curl "curl …"
+requestbaby send collections/orders/01-创建订单.json --suggest   # 查看响应字段与断言写法
+requestbaby validate --report json   # 检查配置
+requestbaby run --report json        # 读 results[].tests[].detail
+requestbaby run --failed             # 重跑失败项及其前置用例
+requestbaby verify -e dev --plan     # 先看计划，不发请求
+requestbaby verify -e dev            # 0 必验通过 / 1 用例失败 / 2 验收不完整
 ```
 
 ## 规矩（写偏了 validate 会提示；多数 `requestbaby fmt --fix` 能自动改写）
@@ -99,7 +100,7 @@ requestbaby verify -e dev            # 最终结论：校验 → 全部用例 �
 3. URL 写 `{{baseUrl}}/路径`，域名只放在环境里
 4. 有先后依赖的用 `NN-` 排序，靠 capture 传值
 5. 只能在某个环境跑的，用流程固定环境（`requestbaby workflow env <流程> <环境>`），不写环境守卫脚本
-6. 交付以 `requestbaby verify` 的 exit 0 为准，不另写脚本串联
+6. 期望来自需求或契约。用 `--workflow` 选流程，`--require-case` 固定必验文件，结论看 `coverage` 和退出码（`guide cli`）
 
 ## 主题（`requestbaby guide <主题>`）
 

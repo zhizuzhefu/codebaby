@@ -206,10 +206,66 @@ pub struct RunReport {
     /// verify 无法给出结论的原因（校验错误 / 服务启动失败 / 阶段配置错误）
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub blocked: Option<String>,
+    /// verify 的必验实例与实际断言覆盖。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub coverage: Option<VerificationCoverage>,
     pub results: Vec<CaseReport>,
     /// 与历史对比（每个用例本次之前最近一次的结论；首次运行 / dry-run 为空）
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub compare: Option<Comparison>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct VerificationCoverage {
+    pub required: usize,
+    pub checked: usize,
+    pub unverified: Vec<UnverifiedCase>,
+}
+
+impl VerificationCoverage {
+    pub fn summary(&self) -> String {
+        format!("必验用例 {}/{} 已检查，还有 {} 个未验", self.checked, self.required, self.unverified.len())
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UnverifiedCase {
+    pub file: String,
+    pub name: String,
+    pub stage: String,
+    pub user: Option<String>,
+    pub reason: UnverifiedReason,
+}
+
+impl UnverifiedCase {
+    pub fn summary(&self) -> String {
+        let user = self.user.as_deref().map(|u| format!(" [{u}]")).unwrap_or_default();
+        format!("{}{} · {} · {}", self.name, user, self.file, self.reason.label())
+    }
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum UnverifiedReason {
+    NotSelected,
+    NotRun,
+    Skipped,
+    NoAssertion,
+    ExecutionError,
+}
+
+impl UnverifiedReason {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::NotSelected => "未进入执行计划",
+            Self::NotRun => "未执行",
+            Self::Skipped => "已跳过",
+            Self::NoAssertion => "没有执行结果断言",
+            Self::ExecutionError => "执行错误，未取得断言结果",
+        }
+    }
 }
 
 /// 用例标识：文件 + 名称（数据驱动每行名称不同）
@@ -306,6 +362,7 @@ impl RunReport {
             steps: vec![],
             issues: vec![],
             blocked: None,
+            coverage: None,
             results,
             compare: None,
         }
@@ -319,6 +376,11 @@ impl RunReport {
         }
         if let Some(b) = &self.blocked {
             parts.push(format!("无法完成: {b}"));
+        }
+        if let Some(coverage) = self.coverage.as_ref().filter(|c| !c.unverified.is_empty()) {
+            let mut lines = vec![coverage.summary()];
+            lines.extend(coverage.unverified.iter().map(UnverifiedCase::summary));
+            parts.push(lines.join("\n"));
         }
         let issues: Vec<String> =
             self.issues.iter().filter(|i| i.level == "error").map(|i| format!("✘ {} [{}] {}", i.file, i.rule, i.message)).collect();
@@ -350,6 +412,11 @@ pub fn render_html(report: &RunReport, root: Option<&std::path::Path>) -> String
         obj.insert("timeline".into(), serde_json::to_value(crate::timeline::timeline(&report.results)).unwrap_or_default());
         obj.insert("sides".into(), serde_json::to_value(crate::timeline::sides(&report.results)).unwrap_or_default());
         obj.insert("artifactText".into(), serde_json::Value::Object(artifact_texts(report, root)));
+        if let Some(coverage) = &report.coverage {
+            let mut lines = vec![coverage.summary()];
+            lines.extend(coverage.unverified.iter().map(UnverifiedCase::summary));
+            obj.insert("coverageText".into(), lines.join("\n").into());
+        }
     }
     let data = serde_json::to_string_pretty(&data).unwrap_or_default().replace("</", "<\\/");
     let mut images = serde_json::Map::new();

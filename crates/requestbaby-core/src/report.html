@@ -82,6 +82,7 @@ details.art pre{max-height:420px}
 <header>
   <h1 id="title">requestbaby 验收报告</h1>
   <div class="meta dim" id="meta"></div>
+  <div class="meta" id="verification" hidden style="white-space:pre-line"></div>
   <div class="bar" id="bar"></div>
 </header>
 <div class="layout">
@@ -128,6 +129,14 @@ const sideName = p => ({ http: 'API', grpc: 'gRPC', ws: 'WebSocket', web: 'Web',
 const bad = r => r.protocol === 'grpc' ? r.status_text !== 'OK' : r.protocol === 'ws' ? r.status !== 101 : r.protocol === 'android' || r.protocol === 'desktop' ? false : (r.status >= 400 || (!r.status && r.protocol !== 'web'));
 const evOf = r => r.response && r.response.evidence;
 const shotKey = (ev, s) => s.screenshot ? ev.dir + '/' + s.screenshot : null;
+
+if (R.coverageText) {
+  const verification = $('verification');
+  verification.hidden = false;
+  if (R.blocked || R.failed) verification.classList.add('fail');
+  const headline = R.blocked ? `验收不完整 · ${R.blocked}` : R.failed ? '验收未通过' : '验收通过';
+  verification.textContent = `${headline}\n${R.coverageText}`;
+}
 
 $('bar').innerHTML =
   `<span class="chip">共 ${R.total} 个用例</span><span class="chip pass">✔ ${R.passed} 通过</span>` +

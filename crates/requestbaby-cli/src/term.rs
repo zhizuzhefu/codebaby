@@ -246,6 +246,7 @@ pub fn print_verify_stage(phase: verify::StagePhase<'_>) {
 /// verify 结论：汇总全部阶段的用例，给出唯一结论
 pub fn print_verify_verdict(out: &verify::VerifyOutcome) {
     if !out.results.is_empty() {
+        println!("执行汇总（必验覆盖见下）");
         print_summary(&out.results, out.report.compare.as_ref());
     } else {
         println!("{DIM}──────────────────────────────────────────{RESET}");
@@ -265,10 +266,39 @@ pub fn print_verify_verdict(out: &verify::VerifyOutcome) {
         .collect::<Vec<_>>()
         .join(&format!("{DIM}  →  {RESET}"));
     println!("{stages}");
+    if let Some(coverage) = &out.report.coverage {
+        println!("{}", coverage.summary());
+        for case in &coverage.unverified {
+            println!("  {}", case.summary());
+        }
+    }
     match (&out.blocked, out.report.failed) {
         // 详情（含服务日志）已在阶段输出中展示，结论只给一行
         (Some(why), _) => println!("{RED}{BOLD}✘ 无法完成验证{RESET}{RED}：{}{RESET}", why.lines().next().unwrap_or_default()),
         (None, 0) => println!("{GREEN}{BOLD}✔ 验证通过{RESET} {DIM}env={} · 报告 requestbaby history{RESET}", out.env),
         (None, n) => println!("{RED}{BOLD}✘ 验证未通过：{n} 个用例失败{RESET} {DIM}（--report json 查看断言详情与响应快照）{RESET}"),
+    }
+}
+
+pub fn print_verify_plan(plan: &verify::PlanReport) {
+    println!("验收计划（环境 {}，尚未执行）", plan.env);
+    for stage in &plan.stages {
+        println!("{} · {} 个用例实例", stage.label, stage.planned);
+        if let Some(why) = &stage.skip {
+            println!("  {why}");
+        }
+        for case in &stage.cases {
+            let role = if case.required { "必验" } else { "辅助" };
+            let action = if case.skipped { " · 跳过" } else if case.may_write { " · 可能有副作用" } else { "" };
+            let user = case.user.as_deref().map(|u| format!(" · 用户 {u}")).unwrap_or_default();
+            let retries = case.retries.map(|n| format!(" · 传输失败最多重试 {n} 次")).unwrap_or_default();
+            println!("  {} {} · {} · {}{user}{action}{retries}", case.method, case.name, case.file, role);
+        }
+    }
+    if let Some(why) = &plan.blocked {
+        println!("无法执行：{why}");
+    }
+    for issue in plan.issues.iter().filter(|i| i.level == "error") {
+        println!("  {} · {}", issue.file, issue.message);
     }
 }

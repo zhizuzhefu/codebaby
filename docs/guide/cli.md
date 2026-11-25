@@ -17,7 +17,7 @@
 |------|------|------|
 | 0 | 全部通过 | 完成 |
 | 1 | 用例失败（断言不成立 / 传输错误 / 脚本运行错误） | 读 `--report json` 的 `results[].tests[].detail` 与 `response` 快照 |
-| 2 | 无法执行（配置错误 / 路径不存在 / 环境不存在） | 读 `validate --report json` 的 `issues[]` |
+| 2 | 无法完成验证（配置或计划错误、必验用例未跑或没执行断言） | 读 `verify --report json` 的 `blocked`、`coverage.unverified[]` 和 `issues[]` |
 
 ## 校验
 
@@ -58,10 +58,18 @@ requestbaby send collections/orders/01-创建订单.json --suggest   # 单发：
 ## 完整验证（交付结论）
 
 ```bash
-requestbaby verify -e dev --report json
+requestbaby verify --workflow smoke -e test --plan --report json
+requestbaby verify --workflow smoke -e test --report json \
+  --require-case 'collections/report/01-list.json' \
+  --require-case 'collections/report/02-image.json'
 ```
 
-校验（有 error 即停）→ 全部用例 → 每个流程，一次给出结论。固定了其他环境的流程跳过（`notRun`）。报告的 `steps[]` 为各阶段，`blocked` 为无法完成的原因。
+- `--plan` 只读配置。每个条目指一个用例实例（数据驱动按行展开），列出文件、方法/协议、用户、是否必验、是否跳过及可能的副作用。会展示配置的 HTTP 重试次数。脚本、界面循环和网络重试的实际操作次数由运行决定。预览退出 `0` 表示计划可用，验收结果要运行后才有。
+- `--workflow` 只运行选中的流程及其依赖。省略时仍计划执行 `collections/` 和当前环境的流程；同一个可能有副作用的用例同时被独立集合和流程选中时，执行前报错。显式写入流程的重复步骤会按计划执行。
+- `--require-case` 可重复，按项目相对 JSON 路径固定约定的必验场景。同一文件的全部计划实例都要核对。必验文件缺失、被过滤或不属于所选流程时，执行前列出来。未指定时，计划中的全部用例实例均为必验。指定后，计划中的其余用例仍执行，失败仍计入结论，可用来登录、准备或清理数据。
+- 必验用例实际执行了 `expect`、`tests`，或满足了界面 `expect` / `waitFor` 条件，才有验收证据。图像入口可以用上一步捕获地址，断言下载返回成功及预期的图像内容类型。截图数量用业务约定的期望值检查，响应快照用于取证。
+- `coverage.required` / `coverage.checked` 是必验与已检查数量，`coverage.unverified[]` 给出文件、阶段、用户和原因。已执行但失败的断言也计入 `checked`，其失败记录在 `results[].tests[]`。通常 `0` 为通过、`1` 为用例失败、`2` 为验收不完整。`steps[]` 为各阶段，`blocked` 为阻断原因。原始执行计数仍在 `total`、`passed`、`failed`、`skipped`。
+- 全量验证时，固定了其他环境的流程显示为 `notRun`。如果这个环境没有可验收的用例，结论为验收不完整。
 
 ## 其他
 
@@ -87,4 +95,4 @@ requestbaby fmt                           # 字段排序、清理空字段、公
 requestbaby open                          # 在桌面端打开当前项目
 ```
 
-CI 门禁：`requestbaby verify -e ci --report json > verify.json`（被测服务由 CI 先启动）。
+CI 可先启动被测服务，再运行 `requestbaby verify --workflow smoke -e ci --report json > verify.json`。把项目约定的必验文件固定在 CI 命令的 `--require-case` 参数里。

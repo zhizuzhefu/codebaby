@@ -226,10 +226,19 @@ enum Cmd {
         #[command(subcommand)]
         action: CollectionCmd,
     },
-    /// 完整验证：校验 → 全部用例 → 全部流程。一个结论、一个退出码（0 通过 / 1 用例失败 / 2 无法完成验证）
+    /// 校验、执行并核对必验用例（0 通过 / 1 用例失败 / 2 验收不完整）
     Verify {
         #[arg(short, long)]
         env: Option<String>,
+        /// 只执行指定流程及其依赖，不另外扫描运行 collections/
+        #[arg(long)]
+        workflow: Option<String>,
+        /// 必验用例的项目相对 JSON 路径，可重复指定；省略时要求计划中的所有用例
+        #[arg(long = "require-case", value_name = "FILE")]
+        required_cases: Vec<String>,
+        /// 只查看计划，不发请求、不执行脚本、不写运行历史
+        #[arg(long, conflicts_with_all = ["json_stream", "output"])]
+        plan: bool,
         /// 报告格式：term（默认）/ json（合并报告：steps = 阶段，issues = 校验问题，blocked = 无法完成的原因）
         #[arg(long)]
         report: Option<String>,
@@ -809,8 +818,13 @@ fn main() -> ExitCode {
             json_stream,
             no_history,
         }),
-        Cmd::Verify { env, report, output, json_stream, no_history } => {
-            cmd_verify(env, report.as_deref(), output, json_stream, no_history)
+        Cmd::Verify { env, workflow, required_cases, plan, report, output, json_stream, no_history } => {
+            let selection = verify::Selection { workflow, required_cases };
+            if plan {
+                cmd_verify_plan(env.as_deref(), report.as_deref(), &selection)
+            } else {
+                cmd_verify(env, report.as_deref(), output, json_stream, no_history, selection)
+            }
         }
         Cmd::Watch { paths, env, tag, name } => cmd_watch(&paths, env.as_deref(), tag, name.as_deref()),
         Cmd::Run { paths, env, tag, name, failed, fail_fast, dry_run, verbose, output, parallel, report, json_stream, no_history, headed } => {
@@ -1703,7 +1717,31 @@ fn deleted_word(how: scaffold::Deleted) -> &'static str {
     }
 }
 
-fn cmd_verify(env: Option<String>, report: Option<&str>, output: Option<String>, json_stream: bool, no_history: bool) -> u8 {
+fn cmd_verify_plan(env: Option<&str>, report: Option<&str>, selection: &verify::Selection) -> u8 {
+    let root = match project_root_or_err() {
+        Ok(root) => root,
+        Err(code) => return code,
+    };
+    let fmt = report.unwrap_or("term");
+    if !matches!(fmt, "term" | "json") {
+        return fatal(format!("不支持的报告格式 {fmt}（verify 可选 term / json）"));
+    }
+    let plan = match verify::preview(&root, env, selection) {
+        Ok(plan) => plan,
+        Err(e) => return fatal(format!("{e:#}")),
+    };
+    if fmt == "json" {
+        match serde_json::to_string_pretty(&plan) {
+            Ok(json) => println!("{json}"),
+            Err(e) => return fatal(e),
+        }
+    } else {
+        term::print_verify_plan(&plan);
+    }
+    if plan.blocked.is_some() { 2 } else { 0 }
+}
+
+fn cmd_verify(env: Option<String>, report: Option<&str>, output: Option<String>, json_stream: bool, no_history: bool, selection: verify::Selection) -> u8 {
     let fmt = report.unwrap_or("term");
     if !matches!(fmt, "term" | "json") {
         return fatal(format!("不支持的报告格式 {fmt}（verify 可选 term / json）"));
@@ -1715,6 +1753,7 @@ fn cmd_verify(env: Option<String>, report: Option<&str>, output: Option<String>,
     let spec = verify::VerifySpec {
         root,
         env,
+        selection,
         output,
         send_mode: false,
         source: run_source().into(),
