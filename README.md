@@ -13,8 +13,9 @@ AI 交付的独立验收层，辅助人对 AI 交付的成果验收。
 ## 适合谁用
 
 - 让 AI 写后端或前端，想自己握有一套验收标准，不用逐行读代码的人
-- 想把接口检查、界面检查放进 CI 的团队
+- 想把接口检查、界面检查放进 CI 的团队（`--report junit` 直接进测试面板；CI 机器是 Linux 时目前要从源码构建，见「放进 CI」）
 - 需要给测试结果留证据的场合：请求响应记录、每一步的截图、可以直接转发的报告
+- 还有一种次要的用法：同一套界面步骤加上循环和通知，就能盯着某个页面、手机里的某个界面，发现变化时提醒你（见下面「步骤里有重复」一条）；主线仍是验收，监控只是它的延伸，不是另一个产品
 
 ## 能做什么
 
@@ -35,7 +36,7 @@ AI 交付的独立验收层，辅助人对 AI 交付的成果验收。
 - Mac 桌面应用：通过 [agent-desktop](https://github.com/vercel-labs/agent-desktop) 读取系统无障碍树来操作，默认不抢焦点、不动鼠标
 - 按人看到的样子找元素（名叫「登录」的按钮、标签是「手机号」的输入框），自动等元素就绪再操作，不用写 sleep
 - 界面结构里读不到文字的页面（微信小程序、自绘控件、远程桌面）：按屏幕上看到的文字定位、断言、取值——对截图做文字识别（OCR），在本机完成，不调用大模型；Android 还能接管设备当前停着的页面，不重启应用
-- 步骤里有重复（按次数 / 时长，满足条件提前结束）、条件分支、随机等待，还能运行你配置的本机命令做通知回调：拿来做定时轮询、盯号源、盯上线状态
+- 步骤里有重复（按次数 / 时长，满足条件提前结束）、条件分支、随机等待，发现目标或失败时发通知（本机通知、日志、webhook，不运行任何命令）：拿来做定时轮询、盯号源、盯上线状态
 - 每一步自动截图，并框出点了哪里、验证了哪个元素；失败时另存页面、控制台、网络请求（Android 是界面结构和 logcat，Mac 桌面是无障碍树）
 - HTML 报告是单个文件，截图已经嵌在里面，发给别人直接打开
 
@@ -124,8 +125,8 @@ make mac-app && make install-mac                            # macOS 桌面端，
 ## 快速上手
 
 ```bash
-requestbaby init myapi && cd myapi                          # 生成项目：dev / prod 环境、示例用例
-requestbaby vars set baseUrl http://localhost:8080 -e dev   # 告诉它被测服务在哪
+requestbaby init myapi --base-url http://localhost:8080     # 生成项目：dev / prod 环境、示例用例；被测服务地址写进 dev
+cd myapi                                                    # 地址以后要改：requestbaby vars set baseUrl <地址> -e dev
 requestbaby new case collections/orders 创建订单 -m post    # 新建一个用例
 requestbaby send collections/orders/01-创建订单.json --suggest   # 发一次，看真实响应，并给出断言建议
 requestbaby run                                             # 跑全部用例
@@ -189,6 +190,18 @@ requestbaby open                                            # 在桌面端打开
 ```
 
 被测服务需要由 CI 先启动。
+
+### 给 CI 的测试面板用：JUnit XML
+
+`--report junit` 把结果写成 JUnit XML 到标准输出（`run`、`workflow`、`verify` 都支持），GitLab、Jenkins、GitHub Actions 的测试面板直接读：断言不成立是 `failure`，连不上服务 / 界面步骤出错是 `error`，跳过是 `skipped`，一个目录一个 testsuite。
+
+```bash
+requestbaby run --report junit > junit.xml        # 退出码照常：0 通过 / 1 有用例失败 / 2 无法完成
+```
+
+### Linux 上用
+
+目前不提供 Linux 预编译包，Linux 上从源码构建：`cargo install --locked --path crates/requestbaby-cli`（需要 Rust 和 cmake；只构建命令行，不含桌面端）。已验证能为 `x86_64-unknown-linux-musl` 交叉编译并静态链接，但还没有在真实的 Linux 机器上运行过，遇到问题请到 [Issues](https://github.com/zhizuzhefu/requestbaby/issues) 反馈。Linux 上接口（HTTP / gRPC / WebSocket）、Web（本机 Chrome / Chromium）和 Android（adb）用例理论上都能跑，屏幕文字识别（`ocr`）和 Mac 桌面应用用例只在 macOS 上可用。
 
 ## 和 AI 配合
 

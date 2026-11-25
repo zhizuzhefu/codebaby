@@ -39,12 +39,21 @@ pub struct Project {
     /// 屏幕文字识别（OCR）：识别语言
     #[serde(default, skip_serializing_if = "is_default")]
     pub ocr: super::ui::OcrConfig,
-    /// 命名命令：`{"exec": "notify"}` 直接引用；长命令（通知、回调）只在这里写一次。值是命令字符串，或 `{"command", "env"}`
-    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
-    pub commands: BTreeMap<String, super::ui::Exec>,
+    /// 通知：全项目默认的 webhook，步骤里的 `notify` 不写 webhook 时发到这里
+    #[serde(default, skip_serializing_if = "is_default")]
+    pub notify: NotifyConfig,
     /// 代理：所有对外连接（HTTP / gRPC / WebSocket / 浏览器 / adb）经同一个代理；不配置则跟随系统（环境变量 → 系统代理设置）
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub proxy: Option<ProxyConfig>,
+}
+
+/// 通知设置（requestbaby.json 的 `notify`）
+#[derive(Debug, Clone, Default, PartialEq, Deserialize, Serialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct NotifyConfig {
+    /// 默认 webhook：通知内容以 `{"text": "…"}` POST 到这个地址（飞书 / 钉钉 / 企业微信 / Slack 的机器人地址换一下格式即可）；可写 {{变量}}（如密钥放环境变量）
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub webhook: Option<String>,
 }
 
 /// 代理设置（requestbaby.json 的 `proxy`）
@@ -152,7 +161,7 @@ impl Default for Project {
             android: Default::default(),
             desktop: Default::default(),
             ocr: Default::default(),
-            commands: BTreeMap::new(),
+            notify: NotifyConfig::default(),
             proxy: None,
         }
     }

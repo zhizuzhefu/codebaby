@@ -1,6 +1,6 @@
-# 循环、条件、随机等待与回调
+# 循环、条件、随机等待与通知
 
-> `requestbaby guide control` · Web / Android / Mac 桌面的界面步骤通用；桌面端在步骤编辑器的动作下拉里选「重复 / 如果 / 运行命令」，内容用 JSON 写
+> `requestbaby guide control` · Web / Android / Mac 桌面的界面步骤通用；桌面端在步骤编辑器的动作下拉里选「重复 / 如果 / 通知」，内容用 JSON 写
 
 把一次性的验收变成可以一直盯着的监控、轮询、联动。先看一个完整的例子：轮流点 4 个日期，出现「可预约」就截图、通知、结束；页面不对或任何一步出错也通知。
 
@@ -15,7 +15,7 @@
   "android": {
     "app": "com.tencent.mm",
     "attach": true,
-    "onFail": [{ "exec": { "command": "./notify.sh", "env": { "MSG": "监控中断：{{error}}" } } }],
+    "onFail": [{ "notify": "监控中断：{{error}}" }],
     "steps": [
       {
         "repeat": {
@@ -30,7 +30,7 @@
                 "when": { "ocr": "可预约", "region": "状态条" },
                 "then": [
                   { "screenshot": "可预约" },
-                  { "exec": { "command": "./notify.sh", "env": { "MSG": "{{date}} 有号" } } },
+                  { "notify": "{{date}} 有号" },
                   { "break": true }
                 ]
               }
@@ -52,8 +52,8 @@
 | `{"repeat": {…}}` | 重复一组步骤：按次数 / 时长 / 轮换取值，满足条件提前结束 |
 | `{"if": {"when": 条件, "then": […], "else": […]}}` | 条件分支：条件只判断一次，不等待 |
 | `{"break": true}` | 跳出最近的一层 `repeat`（写在 `if` 的 `then` 里：发现目标、通知完就结束） |
-| `{"exec": "命令"}` | 运行一条本机命令：通知、回调、联动其他系统 |
-| `"onFail": […]` | 用例失败时运行的命令（失败通知） |
+| `{"notify": "文字"}` | 发通知：弹本机通知、记日志、可选发 webhook |
+| `"onFail": […]` | 用例失败时发的通知 |
 | `"regions": {…}` | 给屏幕区域起名，步骤里写 `"region": "名字"` |
 
 ## 时长写人话
@@ -81,7 +81,7 @@
 
 - `times` / `for` / `cycle` **至少写一个**。只写 `cycle`（不写 `times` / `for`）= 每个值各来一轮就结束
 - 循环里的步骤出错就整个用例失败，和平常一样；`optional: true` 的步骤可以跳过
-- **证据不会越堆越多**：循环里的步骤只在失败时留截图，每开始新一轮就丢掉上一轮的步骤记录；结束时留一条汇总（共几次、为什么结束）和一张结束画面。`exec` 的记录一直保留
+- **证据不会越堆越多**：循环里的步骤只在失败时留截图，每开始新一轮就丢掉上一轮的步骤记录；结束时留一条汇总（共几次、为什么结束）和一张结束画面。`notify` 的记录一直保留
 - **看得到还在跑**：循环里的步骤不逐条显示，改为最外层循环每开始一轮提示一次——终端打印「↻ 第 12 轮，已运行 9 分 12 秒」，桌面端响应面板顶部显示同样的文字，`--json-stream` 是 `loopProgress` 事件
 - 提前结束有两种：`until`（每轮结束判断一次）和 `break`（写在 `if` 的 `then` 里，发现目标当场结束）。`break` 只能写在 `repeat` 里面
 
@@ -97,7 +97,7 @@
       {
         "if": {
           "when": { "ocr": "已约满", "state": "hidden", "region": { "x": 0.5, "y": 0.23, "w": 0.5, "h": 0.07 } },
-          "then": [{ "exec": { "command": "./notify.sh", "env": { "MSG": "{{date}} 放号了" } } }],
+          "then": [{ "notify": "{{date}} 放号了" }],
           "else": [{ "screenshot": "仍然约满" }]
         }
       }
@@ -110,49 +110,41 @@
 - `when` 写法同 `expect` / `waitFor`，**只判断一次**；加 `timeout` 就最多等这么久（缺省 0）
 - 分支里的步骤和普通步骤一样，可以嵌套 `repeat` / `if`
 
-## 回调：exec
+## 通知：notify
 
-`exec` 用 `sh -c` 运行一条命令（Windows 用 `cmd /C`），工作目录是项目根。
+监控发现目标、或者出了问题，要让人知道。`notify` 只做三件固定的事：
+
+1. **弹本机通知**（macOS 通知中心；Linux 有 `notify-send` 就用；没有界面的机器自动跳过）
+2. **追加一行到 `.requestbaby/alerts.log`**（带时间，随时 `tail -f`）
+3. **发到 webhook**（配了才发）：以 `{"text": "通知内容"}` POST，飞书 / 钉钉 / 企业微信 / Slack 的机器人地址直接可用
 
 ```json fragment
-"exec": "./notify.sh"
+"notify": "{{date}} 有号"
 ```
 
 ```json fragment
-"exec": { "command": "curl -s -X POST https://hooks.example.com/x -d \"$MSG\"", "env": { "MSG": "{{date}} 有号" } }, "timeout": "10s"
+"notify": { "message": "{{date}} 有号", "webhook": "https://hooks.example.com/x" }
 ```
 
-- **命令本身不做变量替换**：捕获到的文字（OCR、页面内容）不能被当成命令执行。要传值写进 `env`（值支持 `{{变量}}`），命令里用 `$MSG`
-- 自动带上环境变量：`REQUESTBABY_FILE`（用例文件）、`REQUESTBABY_ROOT`（项目根）、`REQUESTBABY_EVIDENCE`（本用例的证据目录，通知里要附截图时用它）
-- 退出码非 0 算这一步失败；通知失败不想中断监控就加 `"optional": true`（跳过并记下原因）
-- 命令的输出末尾记在这一步的说明里（secret 变量的值自动脱敏）；超时缺省 30 秒，`timeout` 调整，超时会结束命令
-- 命令是你写在用例里的，requestbaby 不会替你判断它安不安全：**只运行你信任的项目**，和运行别人仓库里的 Makefile 一样
-
-### 命名命令：长命令只写一次
-
-通知命令往往又长又带转义，每个用例、每个分支都写一遍很难读。在项目 `requestbaby.json` 里起个名字，用例里只写名字：
+全项目用同一个 webhook，在 `requestbaby.json` 写一次，步骤里只写文字：
 
 ```json project
 {
   "version": 1,
-  "commands": {
-    "notify": "echo \"$(date '+%F %T') $MSG\" >> .requestbaby/alerts.log; osascript -e 'on run argv' -e 'display notification (item 1 of argv) with title \"号源提醒\"' -e 'end run' \"$MSG\""
-  }
+  "notify": { "webhook": "https://hooks.example.com/x" }
 }
 ```
 
-用例里：`{"exec": "notify", "env": {"MSG": "{{date}} 有号"}}`。
-
-- `exec` 写的恰好是 `commands` 里的名字就用它；步骤里的 `env` 覆盖命名命令自带的 `env`；`timeout` 照常
-- 值是命令字符串，或 `{"command": "…", "env": {…}}`；命令同样不做变量替换
-- 重名时项目里的名字优先于同名的可执行文件；要运行同名程序，写路径（`./notify`）
+- 通知内容里 secret 变量的值自动脱敏；步骤写了 `webhook` 就用步骤的，没写用项目的，都没有就只弹通知和记日志
+- webhook 发不出去（连不上、HTTP 非 2xx）算这一步失败；不想因此中断监控就加 `"optional": true`（跳过并记下原因）
+- **不运行任何命令**：用例或项目里写的东西不会在你的机器上执行代码，打开别人的项目、点运行也一样安全。旧版本的 `exec` / `commands` 已经移除，`validate` 会指出来；要联动别的系统，用 webhook 接过去
 
 ### 失败通知：onFail
 
-监控最怕悄悄停了。在 `android` / `web` / `desktop` 里写 `onFail`，**用例失败时**运行这些命令（只能写 `exec`）：
+监控最怕悄悄停了。在 `android` / `web` / `desktop` 里写 `onFail`，**用例失败时**发这些通知（只能写 `notify`）：
 
 ```json fragment
-"onFail": [{ "exec": { "command": "notify", "env": { "MSG": "监控中断：{{error}}" } } }]
+"onFail": [{ "notify": "监控中断：{{error}}" }]
 ```
 
 - `{{error}}` 是失败原因，`{{failedStep}}` 是出错的那一步；连「打不开页面 / 接管失败」也会触发
@@ -171,13 +163,17 @@
 
 ## 长期监控
 
-一个用例就是一个常驻监控：`repeat` 写 `"for": "forever"`（或 `"8h"`），`until` / `if` + `break` 判断到了就 `exec` 通知，`onFail` 兜底失败。在桌面端打开项目、选中用例点运行，要停就点停止；命令行 `requestbaby run` 同理，Ctrl-C 停止。不需要任何外部脚本。
+一个用例就是一个常驻监控：`repeat` 写 `"for": "forever"`（或 `"8h"`），`until` / `if` + `break` 判断到了就 `notify`，`onFail` 兜底失败。在桌面端打开项目、选中用例点运行，要停就点停止；命令行 `requestbaby run` 同理，Ctrl-C 停止。不需要任何外部脚本。
 
-每几秒到几分钟一轮、想每轮重新接管页面时，也可以在外面套一层 shell 循环调用 `requestbaby run`，用退出码判断：
+每几秒到几分钟一轮、想每轮重新接管页面时，也可以在外面套一层 shell 循环调用 `requestbaby run`，用退出码判断（退出码含义见 `requestbaby guide cli`）：
 
 ```bash
 while true; do
-  requestbaby run collections/monitor --name 号源监控 || ./notify.sh "有变化"
+  requestbaby run collections/monitor --name 号源监控 || echo "$(date) 有变化" >> alerts.txt
   sleep $((RANDOM % 6 + 3))
 done
 ```
+
+### 常驻运行占多少空间
+
+循环里的步骤只在失败时留截图、每轮丢掉上一轮的记录，所以一次常驻运行只留汇总和结束画面，不会越跑越大；运行历史按条数自动裁剪，`requestbaby history clear --keep 20` / `--older-than 7d` 可以手动清。`alerts.log` 只追加不裁剪，每条一行，需要时自己截断。

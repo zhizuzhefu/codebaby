@@ -178,9 +178,27 @@ pub fn print_summary(results: &[CaseResult], compare: Option<&Comparison>) {
         let shots: usize = results.iter().filter_map(|r| r.response_snapshot.as_ref()?.evidence.as_ref()).map(|e| e.steps.iter().filter(|s| s.screenshot.is_some()).count()).sum();
         println!("{DIM}截图证据 {shots} 张：{}（-v 列出每一步；--report html 生成带截图的报告）{RESET}", dirs.join("  "));
     }
+    if let Some(target) = unreachable_service(results) {
+        println!("{YELLOW}所有失败的用例都连不上 {target}：被测服务没启动，或环境里的 baseUrl 不对。{RESET}");
+        println!("{DIM}改地址：requestbaby vars set baseUrl http://主机:端口 -e <环境名>　　确认环境和地址：requestbaby doctor{RESET}");
+    }
     if failed > 0 {
         println!("{DIM}只重跑失败的（含其依赖的前置用例）：requestbaby run --failed{RESET}");
     }
+}
+
+/// 失败的用例（至少两个）全都是「连不上同一个 主机:端口」→ 返回它。这时逐个看报错没有意义，一句话告诉怎么办
+fn unreachable_service(results: &[CaseResult]) -> Option<String> {
+    let mut targets = results.iter().filter(|r| !r.passed() && !r.skipped).map(|r| r.error.as_deref().and_then(|e| e.strip_prefix("连不上 ")).and_then(|e| e.split_once('：')).map(|(t, _)| t.to_string()));
+    let first = targets.next()??;
+    let mut n = 1;
+    for t in targets {
+        if t? != first {
+            return None;
+        }
+        n += 1;
+    }
+    (n >= 2).then_some(first)
 }
 
 /// 与历史对比：新失败 / 已修复 / 仍失败（每类最多列 8 个）

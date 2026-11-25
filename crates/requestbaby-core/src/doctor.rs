@@ -263,7 +263,7 @@ fn check_base_url(root: &Path, env: Option<&str>, proxy: &crate::engine::proxy::
     use crate::engine::Transport;
     let (level, message) = match crate::engine::CurlTransport::new().execute(&req) {
         Ok(r) if r.status > 0 => (CheckLevel::Ok, format!("baseUrl {base} 可达（环境 {env}，HTTP {}）", r.status)),
-        _ => (CheckLevel::Warn, format!("baseUrl {base} 不可达（环境 {env}）：被测服务没启动？")),
+        _ => (CheckLevel::Warn, format!("baseUrl {base} 不可达（环境 {env}）：被测服务没启动，或地址不对（改地址：requestbaby vars set baseUrl http://主机:端口 -e {env}）")),
     };
     checks.push(Check { level, message });
 }

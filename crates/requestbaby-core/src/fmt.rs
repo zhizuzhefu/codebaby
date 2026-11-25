@@ -84,7 +84,7 @@ pub fn canonical_case(d: &serde_json::Value) -> serde_json::Value {
 
 /// 界面步骤的字段顺序
 const UI_STEP: [&str; 25] = [
-    "goto", "click", "tap", "longPress", "hover", "fill", "select", "type", "press", "swipe", "back", "launch", "stop", "waitFor", "expect", "screenshot", "wait", "repeat", "if", "break", "exec",
+    "goto", "click", "tap", "longPress", "hover", "fill", "select", "type", "press", "swipe", "back", "launch", "stop", "waitFor", "expect", "screenshot", "wait", "repeat", "if", "break", "notify",
     "value", "clearData", "capture", "timeout",
 ];
 
@@ -479,7 +479,7 @@ mod ui_alias_tests {
             {"wait": "3s-8s"},
             {"repeat": {"steps": [{"click": {"text": "b"}, "wait": 500}], "cycle": {"d": ["a"]}, "forMs": 28800000, "times": 2}},
             {"if": {"else": [{"wait": 1000}], "then": [{"click": {"text": "c"}}], "when": {"text": "x"}}}
-        ], "onFail": [{"exec": "n", "timeoutMs": 10000}]}});
+        ], "onFail": [{"notify": "n", "timeoutMs": 10000}]}});
         let c = canonical_case(&d);
         let a = &c["android"];
         assert_eq!(a["timeout"], "15s");
@@ -497,7 +497,7 @@ mod ui_alias_tests {
         assert_eq!(b.keys().collect::<Vec<_>>(), ["when", "then", "else"]);
         assert_eq!(b["then"][0], json!({"tap": {"text": "c"}}));
         assert_eq!(b["else"][0], json!({"wait": "1s"}));
-        assert_eq!(a["onFail"][0], json!({"exec": "n", "timeout": "10s"}));
+        assert_eq!(a["onFail"][0], json!({"notify": "n", "timeout": "10s"}));
         // 规格内字段顺序：app → timeout → steps → onFail
         assert_eq!(a.as_object().unwrap().keys().collect::<Vec<_>>(), ["app", "timeout", "steps", "onFail"]);
         // 再格式化一遍不变（Git 零噪音）
@@ -537,8 +537,8 @@ mod ui_alias_tests {
         let d = json!({"name": "x", "regions": {"条": {"x": 0, "y": 0.1, "w": 1, "h": 0.1}}, "android": {"app": "a", "steps": [
             {"tap": {"ocr": "{{date}}", "region": "条"}, "optional": true},
             {"wait": "2s"},
-            {"repeat": {"for": "8h", "cycle": {"d": ["11-28", "11-29"]}, "steps": [{"wait": "1s"}, {"exec": {"command": "notify", "env": {"MSG": "{{d}} 有号"}}}]}}
-        ], "onFail": [{"exec": "notify"}]}});
+            {"repeat": {"for": "8h", "cycle": {"d": ["11-28", "11-29"]}, "steps": [{"wait": "1s"}, {"notify": "{{d}} 有号"}]}}
+        ], "onFail": [{"notify": "监控中断"}]}});
         let text = canonical_case_text(&d);
         let want = r#"{
   "name": "x",
@@ -556,12 +556,12 @@ mod ui_alias_tests {
           "cycle": { "d": ["11-28", "11-29"] },
           "steps": [
             { "wait": "1s" },
-            { "exec": { "command": "notify", "env": { "MSG": "{{d}} 有号" } } }
+            { "notify": "{{d}} 有号" }
           ]
         }
       }
     ],
-    "onFail": [{ "exec": "notify" }]
+    "onFail": [{ "notify": "监控中断" }]
   }
 }
 "#;

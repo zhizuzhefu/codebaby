@@ -20,7 +20,7 @@ pub struct WebSpec {
     pub url: String,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub steps: Vec<UiStep>,
-    /// 用例失败时运行的命令（只能写 `exec`）：失败通知。`{{error}}` 是失败原因，`{{failedStep}}` 是出错的那一步
+    /// 用例失败时发的通知（只能写 `notify`）。`{{error}}` 是失败原因，`{{failedStep}}` 是出错的那一步
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub on_fail: Vec<UiStep>,
     /// 视口尺寸（缺省 1280×800，或项目 web.viewport）
@@ -52,7 +52,7 @@ pub struct AndroidSpec {
     pub attach: Option<bool>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub steps: Vec<UiStep>,
-    /// 用例失败时运行的命令（只能写 `exec`）：失败通知。`{{error}}` 是失败原因，`{{failedStep}}` 是出错的那一步
+    /// 用例失败时发的通知（只能写 `notify`）。`{{error}}` 是失败原因，`{{failedStep}}` 是出错的那一步
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub on_fail: Vec<UiStep>,
     /// 每一步等待的默认超时毫秒（缺省 10000）
@@ -74,7 +74,7 @@ pub struct DesktopSpec {
     pub restart: Option<bool>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub steps: Vec<UiStep>,
-    /// 用例失败时运行的命令（只能写 `exec`）：失败通知。`{{error}}` 是失败原因，`{{failedStep}}` 是出错的那一步
+    /// 用例失败时发的通知（只能写 `notify`）。`{{error}}` 是失败原因，`{{failedStep}}` 是出错的那一步
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub on_fail: Vec<UiStep>,
     /// 每一步等待的默认超时毫秒（缺省 10000）
@@ -602,35 +602,35 @@ pub struct IfBlock {
     pub else_: Vec<UiStep>,
 }
 
-/// 本机命令：字符串 = 命令；对象可以再带 `env`（传给命令的环境变量，值支持 `{{变量}}`）
+/// 通知：字符串 = 通知内容；对象可以再带 `webhook`（把内容 POST 到这个地址）。
+/// 只做三件固定的事——弹本机通知、写 `.requestbaby/alerts.log`、POST 到 webhook——不运行任何命令
 #[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
 #[serde(untagged)]
-pub enum Exec {
-    Cmd(String),
-    Spec(ExecSpec),
+pub enum Notify {
+    Text(String),
+    Spec(NotifySpec),
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
-pub struct ExecSpec {
-    pub command: String,
-    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
-    pub env: BTreeMap<String, String>,
+pub struct NotifySpec {
+    pub message: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub webhook: Option<String>,
 }
 
-impl Exec {
-    /// 要运行的命令。**不做变量替换**：捕获到的文字（OCR、页面内容）不能被当成命令执行，要传值请用 `env`
-    pub fn command(&self) -> &str {
+impl Notify {
+    pub fn message(&self) -> &str {
         match self {
-            Exec::Cmd(c) => c,
-            Exec::Spec(s) => &s.command,
+            Notify::Text(c) => c,
+            Notify::Spec(s) => &s.message,
         }
     }
 
-    pub fn env(&self) -> Option<&BTreeMap<String, String>> {
+    pub fn webhook(&self) -> Option<&str> {
         match self {
-            Exec::Cmd(_) => None,
-            Exec::Spec(s) => Some(&s.env),
+            Notify::Text(_) => None,
+            Notify::Spec(s) => s.webhook.as_deref(),
         }
     }
 }
@@ -699,9 +699,9 @@ pub struct UiStep {
     /// 跳出最近的一层 `repeat`（通常写在 `if` 的 `then` 里：发现目标、通知完就结束监控）
     #[serde(default, rename = "break", skip_serializing_if = "Option::is_none")]
     pub break_: Option<bool>,
-    /// 运行一条本机 shell 命令（通知回调、联动其他系统）：写命令字符串，或 `{"command": "…", "env": {"MSG": "{{x}}"}}`
+    /// 发一条通知：弹本机通知、记到 `.requestbaby/alerts.log`，配了 webhook 就 POST 过去。写内容文字，或 `{"message": "…", "webhook": "https://…"}`
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub exec: Option<Exec>,
+    pub notify: Option<Notify>,
 
     /// fill / select 的值；支持 {{var}}
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -740,7 +740,7 @@ pub enum UiAction {
     Wait,
     Repeat,
     If,
-    Exec,
+    Notify,
     Break,
 }
 
@@ -760,7 +760,7 @@ impl UiAction {
         UiAction::Wait,
         UiAction::Repeat,
         UiAction::If,
-        UiAction::Exec,
+        UiAction::Notify,
         UiAction::Break,
     ];
     pub const DESKTOP: [UiAction; 16] = [
@@ -778,7 +778,7 @@ impl UiAction {
         UiAction::Wait,
         UiAction::Repeat,
         UiAction::If,
-        UiAction::Exec,
+        UiAction::Notify,
         UiAction::Break,
     ];
     pub const ANDROID: [UiAction; 17] = [
@@ -797,7 +797,7 @@ impl UiAction {
         UiAction::Wait,
         UiAction::Repeat,
         UiAction::If,
-        UiAction::Exec,
+        UiAction::Notify,
         UiAction::Break,
     ];
 
@@ -823,7 +823,7 @@ impl UiAction {
             UiAction::Wait => "wait",
             UiAction::Repeat => "repeat",
             UiAction::If => "if",
-            UiAction::Exec => "exec",
+            UiAction::Notify => "notify",
             UiAction::Break => "break",
         }
     }
@@ -848,7 +848,7 @@ impl UiAction {
             UiAction::Wait => "静候",
             UiAction::Repeat => "重复",
             UiAction::If => "如果",
-            UiAction::Exec => "运行命令",
+            UiAction::Notify => "通知",
             UiAction::Break => "跳出循环",
         }
     }
@@ -890,7 +890,7 @@ impl UiStep {
         add(self.wait.is_some(), UiAction::Wait);
         add(self.repeat.is_some(), UiAction::Repeat);
         add(self.if_.is_some(), UiAction::If);
-        add(self.exec.is_some(), UiAction::Exec);
+        add(self.notify.is_some(), UiAction::Notify);
         add(self.break_.is_some(), UiAction::Break);
         // click 与 tap 同时写算两个动作
         if self.click.is_some() && self.tap.is_some() {
@@ -932,8 +932,9 @@ impl UiStep {
             }
         }
         // 重复里的子步骤和 until 各自执行时再检查（轮次变量 {{i}} 只在循环里有值）；这里只看本层的环境变量
-        if let Some(e) = self.exec.as_ref().and_then(|e| e.env()) {
-            t.extend(e.values().cloned());
+        if let Some(n) = &self.notify {
+            t.push(n.message().to_string());
+            t.extend(n.webhook().map(str::to_string));
         }
         t
     }
@@ -1361,11 +1362,11 @@ mod tests {
     }
 
     #[test]
-    fn repeat_if_exec_parse_nest_and_flatten() {
+    fn repeat_if_notify_parse_nest_and_flatten() {
         let s: UiStep = serde_json::from_str(
             r#"{"repeat": {"forMs": 60000, "var": "n", "until": {"ocr": "有号"}, "steps": [
                 {"tap": {"ocr": "11-28"}},
-                {"if": {"when": {"ocr": "有号"}, "then": [{"exec": {"command": "./n.sh", "env": {"D": "{{n}}"}}}], "else": [{"wait": {"min": 1, "max": 2}}]}}
+                {"if": {"when": {"ocr": "有号"}, "then": [{"notify": {"message": "{{n}} 有号", "webhook": "https://hooks.example.com/x"}}], "else": [{"wait": {"min": 1, "max": 2}}]}}
             ]}}"#,
         )
         .unwrap();
@@ -1373,29 +1374,31 @@ mod tests {
         let r = s.repeat.as_ref().unwrap();
         assert_eq!((r.var_name(), r.times, r.for_ms), ("n", None, Some(60000)));
         assert_eq!(Repeat::default().var_name(), "i");
-        // 展平：repeat、tap、if、then 里的 exec、else 里的 wait
+        // 展平：repeat、tap、if、then 里的 notify、else 里的 wait
         let flat = flatten_steps(std::slice::from_ref(&s));
-        assert_eq!(flat.iter().filter_map(|x| x.action()).collect::<Vec<_>>(), [UiAction::Repeat, UiAction::Click, UiAction::If, UiAction::Exec, UiAction::Wait]);
+        assert_eq!(flat.iter().filter_map(|x| x.action()).collect::<Vec<_>>(), [UiAction::Repeat, UiAction::Click, UiAction::If, UiAction::Notify, UiAction::Wait]);
         // 扫描 ocr 要能看到 until、if.when 里的定位
         assert!(s.all_locators().iter().any(|l| l.is_ocr()));
         assert!(flat[2].locator().is_some_and(|l| l.is_ocr()));
         // 变量引用扫描只看本层：子步骤里的 {{n}} 在循环里才有值，执行到那一步再检查
         assert!(!s.texts().iter().any(|t| t.contains("{{n}}")));
-        let exec = flat[3];
-        assert_eq!(exec.exec.as_ref().unwrap().command(), "./n.sh");
-        assert!(exec.texts().contains(&"{{n}}".to_string()));
-        // exec 可以只写命令字符串；写了不认识的字段会被挡住
-        let e: UiStep = serde_json::from_str(r#"{"exec": "echo hi"}"#).unwrap();
-        assert_eq!((e.action(), e.exec.as_ref().unwrap().command(), e.exec.as_ref().unwrap().env().is_none()), (Some(UiAction::Exec), "echo hi", true));
-        assert!(serde_json::from_str::<UiStep>(r#"{"exec": {"command": "x", "shell": "zsh"}}"#).is_err());
+        let notify = flat[3];
+        assert_eq!(notify.notify.as_ref().unwrap().message(), "{{n}} 有号");
+        assert_eq!(notify.notify.as_ref().unwrap().webhook(), Some("https://hooks.example.com/x"));
+        assert!(notify.texts().contains(&"{{n}} 有号".to_string()));
+        // notify 可以只写文字；写了不认识的字段会被挡住；exec（运行本机命令）已经移除，不再被认识
+        let e: UiStep = serde_json::from_str(r#"{"notify": "有号了"}"#).unwrap();
+        assert_eq!((e.action(), e.notify.as_ref().unwrap().message(), e.notify.as_ref().unwrap().webhook()), (Some(UiAction::Notify), "有号了", None));
+        assert!(serde_json::from_str::<UiStep>(r#"{"notify": {"message": "x", "command": "rm -rf /"}}"#).is_err());
+        assert!(serde_json::from_str::<UiStep>(r#"{"exec": "echo hi"}"#).is_err());
         assert!(serde_json::from_str::<UiStep>(r#"{"repeat": {"times": 2, "step": []}}"#).is_err());
         assert!(serde_json::from_str::<UiStep>(r#"{"if": {"when": {"text": "a"}, "than": []}}"#).is_err());
         // 同一步写两个动作仍然只算多动作
-        let two: UiStep = serde_json::from_str(r#"{"exec": "x", "wait": 1}"#).unwrap();
+        let two: UiStep = serde_json::from_str(r#"{"notify": "x", "wait": 1}"#).unwrap();
         assert_eq!(two.action(), None);
         // 三端都能用
         for kind in [UiKind::Web, UiKind::Android, UiKind::Desktop] {
-            assert!([UiAction::Repeat, UiAction::If, UiAction::Exec].iter().all(|a| a.supported(kind)), "{kind:?}");
+            assert!([UiAction::Repeat, UiAction::If, UiAction::Notify].iter().all(|a| a.supported(kind)), "{kind:?}");
         }
         // 写回时字段名不变（if / else 是保留字，序列化要还原）
         let back = serde_json::to_value(&s).unwrap();

@@ -77,7 +77,7 @@
 | `{"launch": true, "clearData": true}` | （重新）启动应用 |
 | `{"stop": true}` | 关闭应用 |
 
-循环、条件、随机等待、运行本机命令（做监控、通知回调）与 Web 相同：`{"repeat": …}` / `{"if": …}` / `{"wait": "3s-8s"}` / `{"exec": "…"}`，见 `requestbaby guide control`。
+循环、条件、随机等待、通知（做监控、告警）与 Web 相同：`{"repeat": …}` / `{"if": …}` / `{"wait": "3s-8s"}` / `{"notify": "…"}`，见 `requestbaby guide control`。
 
 输入中文需要设备装 [ADBKeyBoard](https://github.com/senzhk/ADBKeyBoard) 输入法（装好即可，requestbaby 输入时临时切换，用完切回）。
 

@@ -471,6 +471,83 @@ fn artifact_texts(report: &RunReport, root: Option<&std::path::Path>) -> serde_j
     out
 }
 
+/// JUnit XML（`--report junit`）：GitLab / Jenkins / GitHub Actions 等 CI 的测试面板直接读。
+/// 一个目录 = 一个 testsuite，一个用例 = 一个 testcase；断言不成立是 `failure`，请求没发出去 / 界面步骤出错是 `error`，跳过是 `skipped`
+pub fn render_junit(report: &RunReport) -> String {
+    fn esc(s: &str) -> String {
+        s.chars()
+            .filter(|c| matches!(*c, '\t' | '\n' | '\r') || (*c >= ' ' && *c != '\u{FFFE}' && *c != '\u{FFFF}'))
+            .map(|c| match c {
+                '&' => "&amp;".to_string(),
+                '<' => "&lt;".to_string(),
+                '>' => "&gt;".to_string(),
+                '"' => "&quot;".to_string(),
+                '\'' => "&apos;".to_string(),
+                c => c.to_string(),
+            })
+            .collect()
+    }
+    let secs = |ms: u64| format!("{:.3}", ms as f64 / 1000.0);
+    let mut suites: Vec<(String, Vec<&CaseReport>)> = vec![];
+    for r in &report.results {
+        let dir = r.file.rsplit_once('/').map(|(d, _)| d.to_string()).unwrap_or_else(|| ".".into());
+        match suites.iter_mut().find(|(d, _)| *d == dir) {
+            Some((_, v)) => v.push(r),
+            None => suites.push((dir, vec![r])),
+        }
+    }
+    let mut out = String::from("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n");
+    let total_ms: u64 = report.results.iter().map(|r| r.duration_ms).sum();
+    let errors = report.results.iter().filter(|r| !r.skipped && !r.passed && r.tests.iter().all(|t| t.pass)).count();
+    out.push_str(&format!(
+        "<testsuites name=\"requestbaby\" tests=\"{}\" failures=\"{}\" errors=\"{errors}\" skipped=\"{}\" time=\"{}\">\n",
+        report.total,
+        report.failed.saturating_sub(errors),
+        report.skipped,
+        secs(total_ms)
+    ));
+    for (dir, cases) in &suites {
+        let ms: u64 = cases.iter().map(|c| c.duration_ms).sum();
+        let is_error = |c: &CaseReport| !c.skipped && !c.passed && c.tests.iter().all(|t| t.pass);
+        let errs = cases.iter().filter(|c| is_error(c)).count();
+        let fails = cases.iter().filter(|c| !c.skipped && !c.passed).count() - errs;
+        out.push_str(&format!(
+            "  <testsuite name=\"{}\" tests=\"{}\" failures=\"{fails}\" errors=\"{errs}\" skipped=\"{}\" time=\"{}\">\n",
+            esc(dir),
+            cases.len(),
+            cases.iter().filter(|c| c.skipped).count(),
+            secs(ms)
+        ));
+        for c in cases {
+            out.push_str(&format!("    <testcase classname=\"{}\" name=\"{}\" file=\"{}\" time=\"{}\"", esc(dir), esc(&c.name), esc(&c.file), secs(c.duration_ms)));
+            if c.skipped {
+                out.push_str(">\n      <skipped/>\n    </testcase>\n");
+            } else if c.passed {
+                out.push_str("/>\n");
+            } else {
+                let failed: Vec<&TestReport> = c.tests.iter().filter(|t| !t.pass).collect();
+                let (tag, kind, message) = match (failed.first(), &c.error) {
+                    (Some(t), _) => ("failure", "AssertionFailed", format!("{}{}", t.expr, t.detail.as_ref().map(|d| format!("：{d}")).unwrap_or_default())),
+                    (None, Some(e)) => ("error", "ExecutionError", e.clone()),
+                    (None, None) => ("error", "ExecutionError", "用例没有通过".to_string()),
+                };
+                let first_line = message.lines().next().unwrap_or("").chars().take(300).collect::<String>();
+                let mut body = String::new();
+                for t in &failed {
+                    body.push_str(&format!("{}{}\n", t.expr, t.detail.as_ref().map(|d| format!("：{d}")).unwrap_or_default()));
+                }
+                if let Some(e) = &c.error {
+                    body.push_str(&format!("{e}\n"));
+                }
+                out.push_str(&format!(">\n      <{tag} message=\"{}\" type=\"{kind}\">{}</{tag}>\n    </testcase>\n", esc(&first_line), esc(body.trim_end())));
+            }
+        }
+        out.push_str("  </testsuite>\n");
+    }
+    out.push_str("</testsuites>\n");
+    out
+}
+
 /// 协议 JSON（`--report json`、Desktop 导出、历史文件同一形态）
 pub fn render_json(report: &RunReport) -> String {
     serde_json::to_string_pretty(report).unwrap_or_default()
@@ -479,6 +556,43 @@ pub fn render_json(report: &RunReport) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn junit_reports_failures_errors_and_skips_with_xml_escaped() {
+        let mut ok = case("a", "http://x/a", true);
+        ok.file = "collections/api/01-a.json".into();
+        let mut bad = case("b<&>", "http://x/b", false);
+        bad.file = "collections/api/02-b.json".into();
+        bad.tests = vec![TestReport { expr: "body.code".into(), pass: false, detail: Some("期望 0，实际 \"4030001\"".into()) }];
+        let mut err = case("c", "http://x/c", false);
+        err.file = "collections/web/01-c.json".into();
+        err.tests = vec![];
+        err.error = Some("连不上 localhost:8080：服务没有启动".into());
+        let mut skip = case("d", "http://x/d", true);
+        skip.file = "collections/web/02-d.json".into();
+        skip.skipped = true;
+        let r = RunReport {
+            schema: String::new(),
+            meta: None,
+            total: 4,
+            passed: 1,
+            failed: 2,
+            skipped: 1,
+            steps: vec![],
+            issues: vec![],
+            blocked: None,
+            coverage: None,
+            results: vec![ok, bad, err, skip],
+            compare: None,
+        };
+        let x = render_junit(&r);
+        assert!(x.starts_with("<?xml") && x.contains("<testsuites name=\"requestbaby\" tests=\"4\" failures=\"1\" errors=\"1\" skipped=\"1\""), "{x}");
+        assert!(x.contains("<testsuite name=\"collections/api\" tests=\"2\" failures=\"1\" errors=\"0\"") && x.contains("<testsuite name=\"collections/web\" tests=\"2\" failures=\"0\" errors=\"1\" skipped=\"1\""), "{x}");
+        assert!(x.contains("name=\"b&lt;&amp;&gt;\"") && x.contains("<failure message=\"body.code：期望 0，实际 &quot;4030001&quot;\""), "{x}");
+        assert!(x.contains("<error message=\"连不上 localhost:8080：服务没有启动\"") && x.contains("<skipped/>"), "{x}");
+        // 合法 XML：成对、没有未转义的尖括号混进属性
+        assert_eq!(x.matches("<testcase").count(), 4);
+    }
 
     fn case(name: &str, url: &str, passed: bool) -> CaseReport {
         CaseReport {

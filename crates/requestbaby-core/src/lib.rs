@@ -14,6 +14,7 @@ pub mod engine;
 pub mod fmt;
 pub mod fsx;
 pub mod guide;
+pub mod hint;
 pub mod history;
 pub mod importer;
 pub mod inspect;

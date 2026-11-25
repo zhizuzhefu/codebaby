@@ -176,9 +176,9 @@ pub fn ui_targets_locator(a: UiAction) -> bool {
     a.targets_element() || matches!(a, UiAction::WaitFor | UiAction::Expect)
 }
 
-/// 动作带一行文字内容（repeat / if 是 JSON 对象文本，exec 是命令或 JSON 对象文本，wait 是毫秒数或 `{"min", "max"}`）
+/// 动作带一行文字内容（repeat / if 是 JSON 对象文本，notify 是通知文字或 JSON 对象文本，wait 是毫秒数或 `{"min", "max"}`）
 pub fn ui_has_text(a: UiAction) -> bool {
-    matches!(a, UiAction::Goto | UiAction::Type | UiAction::Press | UiAction::Swipe | UiAction::Screenshot | UiAction::Wait | UiAction::Repeat | UiAction::If | UiAction::Exec)
+    matches!(a, UiAction::Goto | UiAction::Type | UiAction::Press | UiAction::Swipe | UiAction::Screenshot | UiAction::Wait | UiAction::Repeat | UiAction::If | UiAction::Notify)
 }
 
 /// 目标是一整块 JSON 对象的动作：repeat / if
@@ -224,8 +224,8 @@ impl UiStepForm {
             o.get(key).or_else(|| o.get(if key == "tap" { "click" } else if key == "click" { "tap" } else { key })).map(compact).unwrap_or_default()
         } else {
             match action {
-                // 毫秒数或 {"min", "max"}；repeat / if 是整个对象；exec 是命令，带 env 时是对象
-                UiAction::Wait | UiAction::Repeat | UiAction::If | UiAction::Exec => match o.get(action.key(kind)) {
+                // 毫秒数或 {"min", "max"}；repeat / if 是整个对象；notify 是文字，带 webhook 时是对象
+                UiAction::Wait | UiAction::Repeat | UiAction::If | UiAction::Notify => match o.get(action.key(kind)) {
                     Some(Value::String(t)) => t.clone(),
                     Some(x) => compact(x),
                     None => String::new(),
@@ -286,16 +286,16 @@ impl UiStepForm {
             };
             ok.map_err(|e| format!("第 {n} 步（{}）写法不对：{e}", a.label()))?;
             o.insert(a.key(kind).into(), v);
-        } else if a == UiAction::Exec {
+        } else if a == UiAction::Notify {
             if t.is_empty() {
-                return Err(format!("第 {n} 步（运行命令）没有写命令"));
+                return Err(format!("第 {n} 步（通知）没有写内容"));
             }
             if t.starts_with('{') {
-                let v: Value = serde_json::from_str(t).map_err(|e| format!("第 {n} 步的命令不是合法 JSON：{e}（直接写命令，或 {{\"command\": \"…\", \"env\": {{…}}}}）"))?;
-                serde_json::from_value::<requestbaby_core::config::ExecSpec>(v.clone()).map_err(|e| format!("第 {n} 步的命令写法不对：{e}"))?;
-                o.insert("exec".into(), v);
+                let v: Value = serde_json::from_str(t).map_err(|e| format!("第 {n} 步的通知不是合法 JSON：{e}（直接写通知文字，或 {{\"message\": \"…\", \"webhook\": \"https://…\"}}）"))?;
+                serde_json::from_value::<requestbaby_core::config::NotifySpec>(v.clone()).map_err(|e| format!("第 {n} 步的通知写法不对：{e}"))?;
+                o.insert("notify".into(), v);
             } else {
-                o.insert("exec".into(), Value::String(t.into()));
+                o.insert("notify".into(), Value::String(t.into()));
             }
         } else if ui_has_text(a) {
             if t.is_empty() {
@@ -1108,20 +1108,20 @@ mod tests {
         assert!(t.to_value(2, UiKind::Android).unwrap_err().contains("第 2 步"));
     }
 
-    /// 循环 / 条件 / 随机等待 / 本机命令：读出来是文本、没改原样写回，改了按动作写；写错报第几步
+    /// 循环 / 条件 / 随机等待 / 通知：读出来是文本、没改原样写回，改了按动作写；写错报第几步
     #[test]
     fn ui_control_steps_round_trip_and_report_mistakes() {
         use requestbaby_core::config::UiKind;
         let steps = json!([
             {"repeat": {"times": 5, "until": {"ocr": "有号"}, "steps": [{"tap": {"ocr": "11-28"}}, {"wait": {"min": 3000, "max": 8000}}]}},
-            {"if": {"when": {"ocr": "有号"}, "then": [{"exec": "./notify.sh"}]}},
-            {"exec": {"command": "./notify.sh", "env": {"MSG": "{{date}}"}}, "optional": true},
+            {"if": {"when": {"ocr": "有号"}, "then": [{"notify": "有号了"}]}},
+            {"notify": {"message": "{{date}} 有号", "webhook": "https://hooks.example.com/x"}, "optional": true},
             {"wait": {"min": 1, "max": 2}},
             {"wait": 500}
         ]);
         let forms: Vec<UiStepForm> = steps.as_array().unwrap().iter().map(|v| UiStepForm::from_value(v, UiKind::Android)).collect();
-        assert_eq!(forms.iter().map(|f| f.action).collect::<Vec<_>>(), [UiAction::Repeat, UiAction::If, UiAction::Exec, UiAction::Wait, UiAction::Wait]);
-        // 文本：repeat / if 是整个对象，exec 带 env 时是对象、只有命令时是命令本身，wait 是毫秒数或区间对象
+        assert_eq!(forms.iter().map(|f| f.action).collect::<Vec<_>>(), [UiAction::Repeat, UiAction::If, UiAction::Notify, UiAction::Wait, UiAction::Wait]);
+        // 文本：repeat / if 是整个对象，notify 带 webhook 时是对象、只有文字时是文字本身，wait 是毫秒数或区间对象
         assert!(forms[0].target.starts_with('{') && forms[0].target.contains("\"times\":5"), "{}", forms[0].target);
         assert!(forms[2].target.starts_with('{') && forms[2].optional);
         let range: Value = serde_json::from_str(&forms[3].target).unwrap();
@@ -1134,12 +1134,12 @@ mod tests {
         let mut f = forms[0].clone();
         f.target = r#"{"times": 3, "steps": [{"wait": 1000}]}"#.into();
         assert_eq!(f.to_value(1, UiKind::Android).unwrap(), json!({"repeat": {"times": 3, "steps": [{"wait": 1000}]}}));
-        let mut e = UiStepForm::new(UiAction::Exec);
-        e.target = "./notify.sh".into();
-        assert_eq!(e.to_value(1, UiKind::Web).unwrap(), json!({"exec": "./notify.sh"}));
-        e.target = r#"{"command": "x", "env": {"A": "{{b}}"}}"#.into();
+        let mut e = UiStepForm::new(UiAction::Notify);
+        e.target = "有号了".into();
+        assert_eq!(e.to_value(1, UiKind::Web).unwrap(), json!({"notify": "有号了"}));
+        e.target = r#"{"message": "x", "webhook": "https://h.example/x"}"#.into();
         e.optional = true;
-        assert_eq!(e.to_value(1, UiKind::Web).unwrap(), json!({"exec": {"command": "x", "env": {"A": "{{b}}"}}, "optional": true}));
+        assert_eq!(e.to_value(1, UiKind::Web).unwrap(), json!({"notify": {"message": "x", "webhook": "https://h.example/x"}, "optional": true}));
         let mut w = UiStepForm::new(UiAction::Wait);
         w.target = r#"{"min": 3000, "max": 8000}"#.into();
         assert_eq!(w.to_value(1, UiKind::Web).unwrap(), json!({"wait": {"min": 3000, "max": 8000}}));
@@ -1157,8 +1157,8 @@ mod tests {
         assert!(bad(UiAction::Repeat, "{oops").contains("第 3 步"));
         assert!(bad(UiAction::Repeat, r#"{"times": 2, "step": []}"#).contains("写法不对"));
         assert!(bad(UiAction::If, r#"{"then": []}"#).contains("写法不对"));
-        assert!(bad(UiAction::Exec, "  ").contains("没有写命令"));
-        assert!(bad(UiAction::Exec, r#"{"cmd": "x"}"#).contains("写法不对"));
+        assert!(bad(UiAction::Notify, "  ").contains("没有写内容"));
+        assert!(bad(UiAction::Notify, r#"{"cmd": "x"}"#).contains("写法不对"));
         assert!(bad(UiAction::Wait, r#"{"min": 9, "max": 1}"#).contains("不能大于"));
         assert!(bad(UiAction::Wait, "abc").contains("看不懂时长"));
     }

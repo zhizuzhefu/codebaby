@@ -5,7 +5,7 @@
 //! 断言 / 等待通过时框出验证到的元素（绿框）；失败时另存现场（页面结构、控制台、网络 / logcat）。
 use super::{discover, leftover_error, CaseResult, Exchanged, RunEvent, RunOptions, Runner};
 use crate::config::ui::ScreenshotPolicy;
-use crate::config::{CaptureSource, Exec, ExecSpec, IfBlock, Locator, Protocol, Repeat, TestCase, UiAction, UiKind, UiState, UiStep};
+use crate::config::{CaptureSource, IfBlock, Locator, Protocol, Repeat, TestCase, UiAction, UiKind, UiState, UiStep};
 use crate::engine::cdp::{self, Browser};
 use crate::engine::ui::{self as eui, Actionable, Element, Mark, MarkKind, StepRecord, UiDriver, UiEvidence, UiStepStatus};
 use crate::script::{ReqData, RespData, TestOutcome};
@@ -156,9 +156,9 @@ pub fn describe_ui_step(s: &UiStep, kind: UiKind) -> String {
             let b = s.if_.clone().unwrap_or_default();
             format!("如果 {}（满足 {} 步 / 否则 {} 步）", b.when.describe_condition(), b.then.len(), b.else_.len())
         }
-        UiAction::Exec => {
-            let c = s.exec.as_ref().map(|e| e.command().to_string()).unwrap_or_default();
-            format!("运行命令 {}", clip(&c))
+        UiAction::Notify => {
+            let m = s.notify.as_ref().map(|n| n.message().to_string()).unwrap_or_default();
+            format!("通知 {}", clip(&m))
         }
         UiAction::Break => "跳出循环".into(),
     };
@@ -399,75 +399,17 @@ pub(crate) fn loop_progress_text(lp: &LoopState) -> String {
     t
 }
 
-/// 丢掉一轮循环留下的步骤记录、截图与断言结果。`exec`（通知回调）的记录保留：它们是「发生过什么」的证据
+/// 丢掉一轮循环留下的步骤记录、截图与断言结果。`notify`（通知）的记录保留：它们是「发生过什么」的证据
 fn trim_iteration(ev: &mut UiEvidence, outcomes: &mut Vec<TestOutcome>, dir: &Path, ev_mark: usize, out_mark: usize) {
     let dropped: Vec<StepRecord> = ev.steps.drain(ev_mark.min(ev.steps.len())..).collect();
     for r in dropped {
-        if r.action == "exec" {
+        if r.action == "notify" {
             ev.steps.push(r);
         } else if let Some(f) = &r.screenshot {
             let _ = std::fs::remove_file(dir.join(f));
         }
     }
     outcomes.truncate(out_mark);
-}
-
-/// 运行一条本机命令（`sh -c`；Windows 用 `cmd /C`）：输出写到临时文件，避免命令留下后台进程时一直等管道。
-/// 返回 (退出码, 输出末尾)；超时 / 取消会结束命令并返回错误
-fn run_command(cmd: &str, env: &[(String, String)], cwd: &Path, timeout: Duration, cancelled: &dyn Fn() -> bool) -> Result<(Option<i32>, String), String> {
-    use std::process::{Command, Stdio};
-    let out_path = std::env::temp_dir().join(format!("requestbaby-exec-{}-{}.log", std::process::id(), crate::history::now_ms()));
-    let out_file = std::fs::File::create(&out_path).map_err(|e| format!("无法创建命令输出文件：{e}"))?;
-    let err_file = out_file.try_clone().map_err(|e| format!("无法创建命令输出文件：{e}"))?;
-    #[cfg(unix)]
-    let mut c = {
-        let mut c = Command::new("sh");
-        c.arg("-c").arg(cmd);
-        c
-    };
-    #[cfg(windows)]
-    let mut c = {
-        let mut c = Command::new("cmd");
-        c.arg("/C").arg(cmd);
-        c
-    };
-    c.current_dir(cwd).envs(env.iter().map(|(k, v)| (k.as_str(), v.as_str()))).stdin(Stdio::null()).stdout(Stdio::from(out_file)).stderr(Stdio::from(err_file));
-    let read_tail = |path: &Path| {
-        let text = std::fs::read_to_string(path).unwrap_or_default();
-        let _ = std::fs::remove_file(path);
-        let t = text.trim();
-        let skip = t.chars().count().saturating_sub(400);
-        t.chars().skip(skip).collect::<String>()
-    };
-    let mut child = match c.spawn() {
-        Ok(ch) => ch,
-        Err(e) => {
-            let _ = std::fs::remove_file(&out_path);
-            return Err(format!("无法启动命令：{e}"));
-        }
-    };
-    let deadline = Instant::now() + timeout;
-    loop {
-        match child.try_wait() {
-            Ok(Some(status)) => return Ok((status.code(), read_tail(&out_path))),
-            Ok(None) => {
-                let timed_out = Instant::now() >= deadline;
-                if timed_out || cancelled() {
-                    let _ = child.kill();
-                    let _ = child.wait();
-                    let tail = read_tail(&out_path);
-                    let why = if timed_out { format!("命令超过 {} 秒还没结束，已终止", timeout.as_secs_f64()) } else { "已取消，命令已终止".to_string() };
-                    return Err(if tail.is_empty() { why } else { format!("{why}（输出：{tail}）") });
-                }
-                std::thread::sleep(Duration::from_millis(50));
-            }
-            Err(e) => {
-                let _ = child.kill();
-                let _ = std::fs::remove_file(&out_path);
-                return Err(format!("等待命令结束失败：{e}"));
-            }
-        }
-    }
 }
 
 impl Runner {
@@ -1025,9 +967,10 @@ impl Runner {
                         let detail = matches!(w, crate::config::Wait::Range(_)).then(|| format!("本次等了 {ms} ms"));
                         Ok(Done { marks: None, shot: None, detail, skipped: false, asserted: false, title: None })
                     }
-                    UiAction::Exec => {
-                        let e = step.exec.as_ref().expect("exec");
-                        match self.exec_once(e, step.timeout_ms, &dc.rel, &project_root, dir, &cancelled) {
+                    UiAction::Notify => {
+                        let n = step.notify.as_ref().expect("notify");
+                        let hook = n.webhook().map(str::to_string).or_else(|| self.ctx.project.notify.webhook.as_ref().map(|h| v.render(h)));
+                        match self.notify_once(n.message(), hook.as_deref(), &project_root) {
                             Ok(detail) => Ok(Done { marks: Some(vec![]), shot: None, detail: Some(detail), skipped: false, asserted: false, title: None }),
                             Err(why) if optional => Ok(Done { marks: Some(vec![]), shot: None, detail: Some(format!("跳过：{why}")), skipped: true, asserted: false, title: None }),
                             Err(why) => Err(Failed::new(why)),
@@ -1207,7 +1150,7 @@ impl Runner {
             self.emit(RunEvent::Log { file: rel.clone(), line: self.redact_str(&format!("{mark} #{n} {title}  {duration}ms")) });
             let rec = StepRecord { index: n, action: key.to_string(), title, status, at_ms: at, duration_ms: duration, screenshot: shot, detail };
             // 循环里的步骤只写日志：实时面板每轮都追加会越跑越长；通知命令和失败照常推送
-            if !in_loop || rec.action == "exec" || rec.status == UiStepStatus::Failed {
+            if !in_loop || rec.action == "notify" || rec.status == UiStepStatus::Failed {
                 self.emit_ui_step(&rel, &ev.dir, &rec);
             }
             ev.steps.push(rec);
@@ -1280,16 +1223,19 @@ impl Runner {
                 k += 1;
                 let st = render_step(st, &v);
                 let t0 = Instant::now();
-                let (status, detail) = match st.exec.as_ref() {
-                    Some(e) => match self.exec_once(e, st.timeout_ms, &rel, &project_root, dir, &cancelled) {
-                        Ok(d) => (UiStepStatus::Passed, Some(d)),
-                        Err(w) => (UiStepStatus::Failed, Some(w)),
-                    },
-                    None => (UiStepStatus::Failed, Some("失败回调里只能写 exec".to_string())),
+                let (status, detail) = match st.notify.as_ref() {
+                    Some(n) => {
+                        let hook = n.webhook().map(str::to_string).or_else(|| self.ctx.project.notify.webhook.as_ref().map(|h| v.render(h)));
+                        match self.notify_once(n.message(), hook.as_deref(), &project_root) {
+                            Ok(d) => (UiStepStatus::Passed, Some(d)),
+                            Err(w) => (UiStepStatus::Failed, Some(w)),
+                        }
+                    }
+                    None => (UiStepStatus::Failed, Some("失败回调里只能写 notify".to_string())),
                 };
                 let title = format!("失败回调：{}", describe_ui_step(&st, kind));
                 self.emit(RunEvent::Log { file: rel.clone(), line: self.redact_str(&format!("{} #{k} {title}", if status == UiStepStatus::Passed { "✔" } else { "✘" })) });
-                let rec = StepRecord { index: k, action: "exec".into(), title, status, at_ms: started.elapsed().as_millis() as u64, duration_ms: t0.elapsed().as_millis() as u64, screenshot: None, detail };
+                let rec = StepRecord { index: k, action: "notify".into(), title, status, at_ms: started.elapsed().as_millis() as u64, duration_ms: t0.elapsed().as_millis() as u64, screenshot: None, detail };
                 self.emit_ui_step(&rel, &ev.dir, &rec);
                 ev.steps.push(rec);
             }
@@ -1297,29 +1243,13 @@ impl Runner {
         (outcomes, ev)
     }
 
-    /// 项目里命名的命令：`exec` 写的恰好是 `requestbaby.json` 的 `commands` 里的名字就用它（步骤的 `env` 覆盖命名命令自带的）
-    fn resolve_exec(&self, e: &Exec) -> Exec {
-        let Some(def) = self.ctx.project.commands.get(e.command().trim()) else { return e.clone() };
-        let mut env = def.env().cloned().unwrap_or_default();
-        env.extend(e.env().into_iter().flatten().map(|(k, v)| (k.clone(), v.clone())));
-        Exec::Spec(ExecSpec { command: def.command().to_string(), env })
-    }
-
-    /// 运行一条命令：退出码 0 返回说明，否则返回原因。路径给绝对路径，通知脚本要附截图、读文件时不依赖当前目录
-    fn exec_once(&self, e: &Exec, timeout_ms: Option<u64>, rel: &str, project_root: &Path, dir: &Path, cancelled: &dyn Fn() -> bool) -> Result<String, String> {
-        let e = self.resolve_exec(e);
-        let cmd = e.command();
-        if cmd.trim().is_empty() {
-            return Err("exec 要写命令".into());
-        }
-        let abs = |p: &Path| std::fs::canonicalize(p).unwrap_or_else(|_| p.to_path_buf()).display().to_string();
-        let mut env: Vec<(String, String)> = vec![("REQUESTBABY_FILE".into(), rel.to_string()), ("REQUESTBABY_ROOT".into(), abs(project_root)), ("REQUESTBABY_EVIDENCE".into(), abs(dir))];
-        env.extend(e.env().into_iter().flatten().map(|(k, val)| (k.clone(), val.clone())));
-        let limit = Duration::from_millis(timeout_ms.unwrap_or(30_000).max(1));
-        match run_command(cmd, &env, project_root, limit, cancelled) {
-            Ok((Some(0), out)) => Ok(if out.is_empty() { "命令退出码 0".to_string() } else { format!("命令退出码 0；输出：{}", self.redact_str(&out)) }),
-            Ok((code, out)) => Err(format!("命令退出码 {}{}", code.map(|c| c.to_string()).unwrap_or_else(|| "（被信号终止）".into()), if out.is_empty() { String::new() } else { format!("；输出：{}", self.redact_str(&out)) })),
-            Err(why) => Err(why),
+    /// 发一条通知：弹本机通知、记日志、有 webhook 就 POST。内容里 secret 变量的值先脱敏
+    fn notify_once(&self, message: &str, webhook: Option<&str>, project_root: &Path) -> Result<String, String> {
+        let r = super::notify::send(&self.redact_str(message), webhook, project_root, &self.ctx.proxy);
+        match r.error {
+            Some(e) if r.done.is_empty() => Err(e),
+            Some(e) => Err(format!("{e}（已完成：{}）", r.done.join("、"))),
+            None => Ok(format!("已通知：{}", r.done.join("、"))),
         }
     }
 
@@ -1383,10 +1313,9 @@ fn render_step(s: &UiStep, v: &Vars) -> UiStep {
         expect: rl(&s.expect),
         screenshot: r(&s.screenshot),
         value: r(&s.value),
-        // 命令本身不替换变量（捕获到的文字不能被当成命令执行），只替换传给它的环境变量
-        exec: s.exec.as_ref().map(|e| match e {
-            Exec::Cmd(c) => Exec::Cmd(c.clone()),
-            Exec::Spec(sp) => Exec::Spec(ExecSpec { command: sp.command.clone(), env: sp.env.iter().map(|(k, val)| (k.clone(), v.render(val))).collect() }),
+        notify: s.notify.as_ref().map(|n| match n {
+            crate::config::Notify::Text(t) => crate::config::Notify::Text(v.render(t)),
+            crate::config::Notify::Spec(sp) => crate::config::Notify::Spec(crate::config::NotifySpec { message: v.render(&sp.message), webhook: sp.webhook.as_ref().map(|w| v.render(w)) }),
         }),
         if_: s.if_.as_ref().map(|b| IfBlock { when: render_locator(&b.when, v), then: b.then.clone(), else_: b.else_.clone() }),
         capture: s
@@ -1450,33 +1379,6 @@ mod tests {
     }
 
     #[test]
-    fn command_reports_exit_code_output_and_env() {
-        let cwd = std::env::temp_dir();
-        let never = || false;
-        let env = vec![("RB_TEST_MSG".to_string(), "你好 && $(echo 不执行)".to_string())];
-        // 值走环境变量，不会被当成命令展开
-        let (code, out) = run_command("printf '%s' \"$RB_TEST_MSG\"", &env, &cwd, Duration::from_secs(10), &never).unwrap();
-        assert_eq!((code, out.as_str()), (Some(0), "你好 && $(echo 不执行)"));
-        let (code, out) = run_command("echo 出错了 >&2; exit 7", &[], &cwd, Duration::from_secs(10), &never).unwrap();
-        assert_eq!((code, out.as_str()), (Some(7), "出错了"));
-        // 工作目录
-        let (_, out) = run_command("pwd", &[], &cwd, Duration::from_secs(10), &never).unwrap();
-        assert_eq!(std::fs::canonicalize(out).unwrap(), std::fs::canonicalize(&cwd).unwrap());
-        // 超时：结束命令并说明
-        let started = Instant::now();
-        let e = run_command("sleep 30", &[], &cwd, Duration::from_millis(300), &never).unwrap_err();
-        assert!(e.contains("还没结束") && started.elapsed() < Duration::from_secs(10), "{e}");
-        // 取消
-        let e = run_command("sleep 30", &[], &cwd, Duration::from_secs(30), &|| true).unwrap_err();
-        assert!(e.contains("已取消"), "{e}");
-        // 命令留下后台进程也不会一直等
-        let started = Instant::now();
-        let (code, _) = run_command("(sleep 5 >/dev/null 2>&1 &) ; echo done", &[], &cwd, Duration::from_secs(10), &never).unwrap();
-        assert_eq!(code, Some(0));
-        assert!(started.elapsed() < Duration::from_secs(4));
-    }
-
-    #[test]
     fn loop_progress_and_duration_read_naturally() {
         assert_eq!(human_duration(35_000), "35 秒");
         assert_eq!(human_duration(552_000), "9 分 12 秒");
@@ -1487,13 +1389,13 @@ mod tests {
     }
 
     #[test]
-    fn trimming_an_iteration_drops_records_and_shots_but_keeps_exec() {
+    fn trimming_an_iteration_drops_records_and_shots_but_keeps_notify() {
         let dir = tempfile::tempdir().unwrap();
         for f in ["02-tap.jpg", "03-final.jpg", "01-keep.jpg"] {
             std::fs::write(dir.path().join(f), b"x").unwrap();
         }
         let mut ev = UiEvidence {
-            steps: vec![rec(0, "open", None), rec(1, "tap", Some("01-keep.jpg")), rec(2, "tap", Some("02-tap.jpg")), rec(3, "exec", None), rec(4, "expect", Some("03-final.jpg"))],
+            steps: vec![rec(0, "open", None), rec(1, "tap", Some("01-keep.jpg")), rec(2, "tap", Some("02-tap.jpg")), rec(3, "notify", None), rec(4, "expect", Some("03-final.jpg"))],
             ..Default::default()
         };
         let mut outcomes = vec![
@@ -1502,7 +1404,7 @@ mod tests {
         ];
         // 本轮从第 2 条记录、第 1 条断言开始
         trim_iteration(&mut ev, &mut outcomes, dir.path(), 2, 1);
-        assert_eq!(ev.steps.iter().map(|s| s.index).collect::<Vec<_>>(), [0, 1, 3], "只丢本轮的，exec 保留");
+        assert_eq!(ev.steps.iter().map(|s| s.index).collect::<Vec<_>>(), [0, 1, 3], "只丢本轮的，notify 保留");
         assert_eq!(outcomes.len(), 1);
         assert!(dir.path().join("01-keep.jpg").exists() && !dir.path().join("02-tap.jpg").exists() && !dir.path().join("03-final.jpg").exists());
     }

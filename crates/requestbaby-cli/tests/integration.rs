@@ -827,14 +827,14 @@ fn verify_without_any_execution_is_incomplete() {
         std::fs::create_dir(&root).unwrap();
         write_gate_project(&root, 9, workflows.clone());
         if workflows.get("onlyLocal").is_some() {
-            gate_case(&root, "fixtures/only.json", serde_json::json!({"request":{"method":"GET","url":"{{baseUrl}}/ok"},"expect":{"status":200}}));
+            gate_case(&root, "fixtures/only.json", serde_json::json!({"request":{"method":"GET","url":"{{baseUrl}}/login"},"expect":{"status":200}}));
         }
         let (code, report) = gate_result(&root, &[]);
         assert_eq!((code, report["total"].as_u64(), report["coverage"]["checked"].as_u64()), (2, Some(0), Some(0)), "{report}");
     }
     let root = dir.path().join("empty");
     gate_case(&root, "collections/collection.json", serde_json::json!({"setup":"throw new Error('skipped collection must not be set up')"}));
-    gate_case(&root, "collections/skipped.json", serde_json::json!({"skip":true,"request":{"method":"GET","url":"{{baseUrl}}/ok"},"expect":{"status":200}}));
+    gate_case(&root, "collections/skipped.json", serde_json::json!({"skip":true,"request":{"method":"GET","url":"{{baseUrl}}/login"},"expect":{"status":200}}));
     let (code, report) = gate_result(&root, &[]);
     assert_eq!(code, 2, "{report}");
     assert_eq!(report["coverage"]["checked"], 0);
@@ -863,7 +863,7 @@ fn verify_reports_three_of_five_required_cases_checked() {
     write_gate_project(root, spawn_echo(), serde_json::json!({"smoke":{"steps":[{"run":"collections"}]}}));
     let files: Vec<_> = (1..=5).map(|n| format!("collections/{n}.json")).collect();
     for (index, file) in files.iter().enumerate() {
-        gate_case(root, file, serde_json::json!({"skip":index >= 3,"request":{"method":"GET","url":"{{baseUrl}}/ok"},"expect":{"status":200}}));
+        gate_case(root, file, serde_json::json!({"skip":index >= 3,"request":{"method":"GET","url":"{{baseUrl}}/login"},"expect":{"status":200}}));
     }
     let mut args = vec!["--workflow", "smoke"];
     for file in &files {
@@ -1770,10 +1770,10 @@ fn web_case_runs_in_real_browser_with_step_screenshots() {
     assert_eq!(steps.len(), final_steps);
 }
 
-/// 循环 / 条件 / 随机等待 / 本机命令回调：真实浏览器里点计数按钮，repeat 点到 until 满足就停，if 走 then 分支用 exec 写文件；
-/// 循环里只保留最后一轮的步骤记录，exec 命令失败算失败（optional 则跳过）
+/// 循环 / 条件 / 随机等待 / 通知：真实浏览器里点计数按钮，repeat 点到 until 满足就停，if 走 then 分支发通知（写进 alerts.log）；
+/// 循环里只保留最后一轮的步骤记录，webhook 发不出去算失败（optional 则跳过）
 #[test]
-fn web_repeat_if_wait_range_and_exec_callbacks() {
+fn web_repeat_if_wait_range_and_notifications() {
     if requestbaby_core::engine::cdp::find_browser(None).is_err() {
         eprintln!("跳过：本机没有 Chrome / Edge / Chromium");
         return;
@@ -1801,9 +1801,9 @@ fn web_repeat_if_wait_range_and_exec_callbacks() {
             ]}},
             {"expect":{"text":"到了"}},
             {"if":{"when":{"text":"到了"},
-                "then":[{"exec":{"command":"echo \"$MSG\" > \"$REQUESTBABY_ROOT/hit.txt\"; echo \"$REQUESTBABY_EVIDENCE\" > \"$REQUESTBABY_ROOT/evidence.txt\"","env":{"MSG":"第{{k}}轮命中"}}}],
-                "else":[{"exec":"exit 1"}]}},
-            {"if":{"when":{"text":"不存在的文字"},"then":[{"exec":"exit 1"}],"else":[{"wait":1}]}}
+                "then":[{"notify":"第{{k}}轮命中"}],
+                "else":[{"notify":"走错了分支"}]}},
+            {"if":{"when":{"text":"不存在的文字"},"then":[{"notify":"走错了分支"}],"else":[{"wait":1}]}}
         ]}}"#,
     )
     .unwrap();
@@ -1816,13 +1816,13 @@ fn web_repeat_if_wait_range_and_exec_callbacks() {
     )
     .unwrap();
     std::fs::write(
-        d.join("collections/web/03-命令失败.json"),
-        r#"{"name":"命令失败","web":{"url":"{{site}}/count.html","steps":[{"exec":"echo boom; exit 3"}]}}"#,
+        d.join("collections/web/03-通知失败.json"),
+        r#"{"name":"通知失败","web":{"url":"{{site}}/count.html","steps":[{"notify":{"message":"x","webhook":"http://127.0.0.1:1/hook"}}]}}"#,
     )
     .unwrap();
     std::fs::write(
-        d.join("collections/web/04-命令失败可跳过.json"),
-        r#"{"name":"命令失败可跳过","web":{"url":"{{site}}/count.html","steps":[{"exec":"exit 3","optional":true},{"expect":{"text":"0"}}]}}"#,
+        d.join("collections/web/04-通知失败可跳过.json"),
+        r#"{"name":"通知失败可跳过","web":{"url":"{{site}}/count.html","steps":[{"notify":{"message":"x","webhook":"http://127.0.0.1:1/hook"},"optional":true},{"expect":{"text":"0"}}]}}"#,
     )
     .unwrap();
     std::fs::write(
@@ -1840,14 +1840,12 @@ fn web_repeat_if_wait_range_and_exec_callbacks() {
     let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap_or_else(|_| panic!("{}{}", String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr)));
     let by = |name: &str| v["results"].as_array().unwrap().iter().find(|r| r["name"] == name).unwrap_or_else(|| panic!("没有 {name}")).clone();
 
-    // 循环：until 在第 3 轮满足；then 分支的命令拿到了轮次变量
+    // 循环：until 在第 3 轮满足；then 分支的通知拿到了轮次变量，记进了 alerts.log，没走错的分支
     let c = by("循环");
     assert_eq!(c["passed"], true, "{c:#}");
-    assert_eq!(std::fs::read_to_string(d.join("hit.txt")).unwrap().trim(), "第3轮命中");
-    // 证据目录是绝对路径，且就是本用例的证据目录（通知里要附截图时用）
-    let evidence = std::fs::read_to_string(d.join("evidence.txt")).unwrap();
-    let evidence = Path::new(evidence.trim());
-    assert!(evidence.is_absolute() && evidence.is_dir() && evidence.join("00-open.jpg").is_file(), "{}", evidence.display());
+    let log = std::fs::read_to_string(d.join(".requestbaby/alerts.log")).unwrap();
+    assert_eq!(log.lines().filter(|l| l.ends_with("第3轮命中")).count(), 1, "{log}");
+    assert!(!log.contains("走错了分支"), "{log}");
     let steps = c["response"]["evidence"]["steps"].as_array().unwrap().clone();
     let summary = steps.iter().find(|s| s["action"] == "repeat").expect("循环汇总");
     assert!(summary["title"].as_str().unwrap().contains("共 3 次") && summary["title"].as_str().unwrap().contains("until"), "{summary:#}");
@@ -1855,7 +1853,7 @@ fn web_repeat_if_wait_range_and_exec_callbacks() {
     assert_eq!(steps.iter().filter(|s| s["action"] == "click").count(), 1, "{steps:#?}");
     let wait = steps.iter().find(|s| s["action"] == "wait").unwrap();
     assert!(wait["detail"].as_str().unwrap().contains("本次等了"), "{wait:#}");
-    assert!(steps.iter().any(|s| s["action"] == "exec" && s["detail"].as_str().is_some_and(|d| d.contains("命令退出码 0"))), "{steps:#?}");
+    assert!(steps.iter().any(|s| s["action"] == "notify" && s["detail"].as_str().is_some_and(|d| d.contains("已通知") && d.contains("alerts.log"))), "{steps:#?}");
     assert!(steps.iter().any(|s| s["action"] == "if" && s["detail"].as_str().is_some_and(|d| d.contains("条件不满足"))), "{steps:#?}");
     // 步骤序号不重复（截图文件名由它生成）
     let idx: Vec<u64> = steps.iter().map(|s| s["index"].as_u64().unwrap()).collect();
@@ -1876,12 +1874,12 @@ fn web_repeat_if_wait_range_and_exec_callbacks() {
     let steps = c["response"]["evidence"]["steps"].as_array().unwrap();
     assert!(steps.iter().any(|s| s["title"].as_str().is_some_and(|t| t.contains("共 3 次") && t.contains("break"))), "{steps:#?}");
 
-    // 命令失败：用例失败，原因里有退出码和输出；optional 则跳过
-    let c = by("命令失败");
+    // webhook 发不出去：用例失败，原因里点明 webhook（日志已经写了）；optional 则跳过
+    let c = by("通知失败");
     assert_eq!(c["passed"], false);
     let why = c["tests"][0]["detail"].as_str().unwrap();
-    assert!(why.contains("命令退出码 3") && why.contains("boom"), "{c:#}");
-    let c = by("命令失败可跳过");
+    assert!(why.contains("webhook") && why.contains("已完成"), "{c:#}");
+    let c = by("通知失败可跳过");
     assert_eq!(c["passed"], true, "{c:#}");
     assert!(c["response"]["evidence"]["steps"].as_array().unwrap().iter().any(|s| s["status"] == "skipped"), "{c:#}");
 
@@ -1891,14 +1889,14 @@ fn web_repeat_if_wait_range_and_exec_callbacks() {
     let progress: Vec<&serde_json::Value> = events.iter().filter(|e| e["event"] == "loopProgress").collect();
     assert_eq!(progress.iter().map(|e| e["round"].as_u64().unwrap()).collect::<Vec<_>>(), vec![1, 2, 3], "{events:#?}");
     assert!(progress[2]["text"].as_str().unwrap().contains("第 3/10 轮") && progress[2]["file"] == "collections/web/01-循环.json", "{:#}", progress[2]);
-    // 循环里的点击没有逐条推送（只有 exec / 失败 / 循环外的步骤）
+    // 循环里的点击没有逐条推送（只有 notify / 失败 / 循环外的步骤）
     let clicks = events.iter().filter(|e| e["event"] == "uiStep" && e["step"]["action"] == "click").count();
     assert_eq!(clicks, 0, "{events:#?}");
 }
 
-/// 写法有误的循环 / 命令：validate 报错，不会跑起来无限循环
+/// 写法有误的循环 / 通知：validate 报错，不会跑起来无限循环
 #[test]
-fn repeat_if_exec_authoring_mistakes_are_caught_by_validate() {
+fn repeat_if_notify_authoring_mistakes_are_caught_by_validate() {
     let dir = TempDir::new().unwrap();
     let d = dir.path();
     std::fs::write(d.join("requestbaby.json"), r#"{"version":1,"defaultEnv":"dev"}"#).unwrap();
@@ -1910,9 +1908,9 @@ fn repeat_if_exec_authoring_mistakes_are_caught_by_validate() {
         r#"{"name":"错","web":{"url":"https://example.com","steps":[
             {"repeat":{"steps":[{"click":{"text":"a"}}]}},
             {"wait":{"min":9,"max":1}},
-            {"exec":"echo {{x}}"},
+            {"notify":"  "},
             {"if":{"when":{"text":"a"}}},
-            {"repeat":{"times":2,"steps":[{"exec":""}]}},
+            {"repeat":{"times":2,"steps":[{"notify":{"message":"x","webhook":"ftp://a"}}]}},
             {"break":true}
         ]}}"#,
     )
@@ -1920,26 +1918,30 @@ fn repeat_if_exec_authoring_mistakes_are_caught_by_validate() {
     let out = run_cli(&["validate", "--report", "json"], d);
     assert_eq!(out.status.code(), Some(2), "{}", String::from_utf8_lossy(&out.stdout));
     let text = String::from_utf8_lossy(&out.stdout).to_string();
-    for want in ["之一", "min（9）不能大于 max（1）", "不做变量替换", "if 没有要执行的步骤", "exec 要写命令", "repeat 里的第 1 步", "break 只能写在 repeat 里面"] {
+    for want in ["之一", "min（9）不能大于 max（1）", "notify 要写通知内容", "if 没有要执行的步骤", "要写 http:// 或 https://", "repeat 里的第 1 步", "break 只能写在 repeat 里面"] {
         assert!(text.contains(want), "缺少「{want}」：{text}");
     }
+    // 旧版的 exec（运行本机命令）已经移除：明确说明原因和替代写法，不是只说「不认识」
+    std::fs::write(d.join("collections/web/01-错.json"), r#"{"name":"旧","web":{"url":"https://example.com","steps":[{"exec":"echo hi"}]}}"#).unwrap();
+    let out = run_cli(&["validate", "--report", "json"], d);
+    let text = String::from_utf8_lossy(&out.stdout).to_string();
+    assert!(text.contains("已移除") && text.contains("notify"), "{text}");
+    // 跑的时候同样被挡在门外，命令不会被执行
+    let out = run_cli(&["run", "--report", "json"], d);
+    let text = String::from_utf8_lossy(&out.stdout).to_string() + &String::from_utf8_lossy(&out.stderr);
+    assert!(text.contains("已移除"), "{text}");
 }
 
-/// 简化写法：`cycle` 轮换取值、`"3s-8s"` / `"2s"` 这样的人话时长、项目里命名的命令、用例失败时的 `onFail` 通知
+/// 简化写法：`cycle` 轮换取值、`"3s-8s"` / `"2s"` 这样的人话时长、用例失败时的 `onFail` 通知
 #[test]
-fn web_cycle_human_durations_named_commands_and_on_fail() {
+fn web_cycle_human_durations_and_on_fail_notifications() {
     if requestbaby_core::engine::cdp::find_browser(None).is_err() {
         eprintln!("跳过：本机没有 Chrome / Edge / Chromium");
         return;
     }
     let dir = TempDir::new().unwrap();
     let d = dir.path();
-    // 命名命令只在项目里写一次，用例里 {"exec": "note"} 引用，值走 env
-    std::fs::write(
-        d.join("requestbaby.json"),
-        serde_json::json!({ "version": 1, "defaultEnv": "dev", "commands": { "note": "echo \"$MSG\" >> \"$REQUESTBABY_ROOT/notes.txt\"" } }).to_string(),
-    )
-    .unwrap();
+    std::fs::write(d.join("requestbaby.json"), r#"{"version":1,"defaultEnv":"dev"}"#).unwrap();
     std::fs::create_dir_all(d.join("site")).unwrap();
     std::fs::create_dir_all(d.join("collections/web")).unwrap();
     std::fs::create_dir_all(d.join("envs")).unwrap();
@@ -1956,7 +1958,7 @@ fn web_cycle_human_durations_named_commands_and_on_fail() {
         r#"{"name":"轮换","web":{"url":"{{site}}/count.html","steps":[
             {"repeat":{"cycle":{"who":["甲","乙","丙"]},"steps":[
                 {"click":{"role":"button","name":"加一"}},
-                {"exec":{"command":"note","env":{"MSG":"轮到{{who}}"}}},
+                {"notify":"轮到{{who}}"},
                 {"wait":"10ms-30ms"}
             ]}},
             {"expect":{"text":"到了"}}
@@ -1977,14 +1979,14 @@ fn web_cycle_human_durations_named_commands_and_on_fail() {
     std::fs::write(
         d.join("collections/web/03-失败通知.json"),
         r#"{"name":"失败通知","web":{"url":"{{site}}/count.html",
-            "onFail":[{"exec":{"command":"note","env":{"MSG":"失败：{{error}}"}}}],
+            "onFail":[{"notify":"失败：{{error}}"}],
             "steps":[{"expect":{"text":"这段文字不存在"},"timeout":"300ms"}]}}"#,
     )
     .unwrap();
     std::fs::write(
         d.join("collections/web/04-成功不通知.json"),
         r#"{"name":"成功不通知","web":{"url":"{{site}}/count.html",
-            "onFail":[{"exec":{"command":"note","env":{"MSG":"不该出现"}}}],
+            "onFail":[{"notify":"不该出现"}],
             "steps":[{"expect":{"text":"加一"}}]}}"#,
     )
     .unwrap();
@@ -1992,7 +1994,7 @@ fn web_cycle_human_durations_named_commands_and_on_fail() {
     let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap_or_else(|_| panic!("{}{}", String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr)));
     let by = |name: &str| v["results"].as_array().unwrap().iter().find(|r| r["name"] == name).unwrap_or_else(|| panic!("没有 {name}")).clone();
 
-    // cycle：每个值各一轮（共 3 轮），命名命令拿到了 {{who}}
+    // cycle：每个值各一轮（共 3 轮），通知拿到了 {{who}}
     let c = by("轮换");
     assert_eq!(c["passed"], true, "{c:#}");
     let steps = c["response"]["evidence"]["steps"].as_array().unwrap();
@@ -2007,8 +2009,9 @@ fn web_cycle_human_durations_named_commands_and_on_fail() {
     assert!(steps.iter().any(|s| s["title"].as_str().is_some_and(|t| t.starts_with("失败回调：")) && s["status"] == "passed"), "{steps:#?}");
     assert_eq!(by("成功不通知")["passed"], true);
 
-    let notes = std::fs::read_to_string(d.join("notes.txt")).unwrap();
-    let lines: Vec<&str> = notes.lines().collect();
+    let notes = std::fs::read_to_string(d.join(".requestbaby/alerts.log")).unwrap();
+    // 每行是「时间 内容」
+    let lines: Vec<&str> = notes.lines().map(|l| l.split_once(' ').and_then(|(_, r)| r.split_once(' ')).map(|(_, m)| m).unwrap_or(l)).collect();
     assert_eq!(&lines[..3], ["轮到甲", "轮到乙", "轮到丙"], "{notes}");
     assert!(lines.iter().any(|l| l.starts_with("失败：") && l.contains("这段文字不存在")), "{notes}");
     assert!(!notes.contains("不该出现"), "{notes}");
@@ -2019,7 +2022,7 @@ fn web_cycle_human_durations_named_commands_and_on_fail() {
 fn new_authoring_shortcuts_report_mistakes_in_validate() {
     let dir = TempDir::new().unwrap();
     let d = dir.path();
-    std::fs::write(d.join("requestbaby.json"), r#"{"version":1,"defaultEnv":"dev","commands":{"note":"echo hi"}}"#).unwrap();
+    std::fs::write(d.join("requestbaby.json"), r#"{"version":1,"defaultEnv":"dev","notify":{"webhook":"ftp://x"}}"#).unwrap();
     std::fs::create_dir_all(d.join("collections/a")).unwrap();
     std::fs::create_dir_all(d.join("envs")).unwrap();
     std::fs::write(d.join("envs/dev.json"), r#"{"vars":{}}"#).unwrap();
@@ -2038,7 +2041,7 @@ fn new_authoring_shortcuts_report_mistakes_in_validate() {
     let out = run_cli(&["validate", "--report", "json"], d);
     assert_eq!(out.status.code(), Some(2), "{}", String::from_utf8_lossy(&out.stdout));
     let text = String::from_utf8_lossy(&out.stdout).to_string();
-    for want in ["没起过的名字", "没有定义", "已定义：条", "失败回调里只能写 exec", "cycle「d」没有值"] {
+    for want in ["没起过的名字", "没有定义", "已定义：条", "失败回调里只能写 notify", "notify.webhook：要写 http", "cycle「d」没有值"] {
         assert!(text.contains(want), "缺少「{want}」：{text}");
     }
     assert!(!text.contains("region「条」"), "已定义的区域名不该报错：{text}");
@@ -2401,4 +2404,53 @@ fn proxy_setting_round_trips_and_is_validated() {
     std::fs::write(d.join("requestbaby.json"), r#"{"version":1,"proxy":{"enabled":true}}"#).unwrap();
     let out = run_cli(&["validate"], d);
     assert!(String::from_utf8_lossy(&out.stdout).contains("proxy 已启用但没写 url"), "{}", String::from_utf8_lossy(&out.stdout));
+}
+
+/// 新用户第一次：init 可以直接写好被测服务地址；服务连不上时只说一次怎么办，不是每个用例都红一遍
+#[test]
+fn init_takes_the_service_address_and_unreachable_service_gets_one_hint() {
+    let dir = TempDir::new().unwrap();
+    let d = dir.path();
+    // 空闲端口：绑定后释放，保证连不上
+    let port = std::net::TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port();
+    let out = run_cli(&["init", "app", "--base-url", &format!("http://127.0.0.1:{port}/")], d);
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let env: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(d.join("app/envs/dev.json")).unwrap()).unwrap();
+    assert_eq!(env["vars"]["baseUrl"], format!("http://127.0.0.1:{port}"), "末尾的 / 去掉，避免拼出 //");
+    assert!(String::from_utf8_lossy(&out.stdout).contains("被测服务要先启动"));
+
+    let out = run_cli(&["run"], &d.join("app"));
+    let text = String::from_utf8_lossy(&out.stdout).to_string();
+    assert_eq!(out.status.code(), Some(1), "{text}");
+    assert!(text.contains(&format!("所有失败的用例都连不上 127.0.0.1:{port}")) && text.contains("vars set baseUrl"), "{text}");
+
+    // 地址写错直接拒绝；不带地址时，下一步写明怎么改
+    let bad = run_cli(&["init", "bad", "--base-url", "localhost:8080"], d);
+    assert!(!bad.status.success() && String::from_utf8_lossy(&bad.stderr).contains("http://"), "{}", String::from_utf8_lossy(&bad.stderr));
+    let out = run_cli(&["init", "plain"], d);
+    assert!(String::from_utf8_lossy(&out.stdout).contains("vars set baseUrl"), "{}", String::from_utf8_lossy(&out.stdout));
+}
+
+/// CI 的测试面板读 JUnit XML：标准输出只有 XML；断言不成立是 failure，连不上服务是 error，退出码与其他格式一致
+#[test]
+fn junit_report_is_pure_xml_with_failures_and_errors() {
+    let dir = TempDir::new().unwrap();
+    let d = dir.path();
+    let url = format!("http://127.0.0.1:{}", spawn_json_api());
+    std::fs::write(d.join("requestbaby.json"), r#"{"version":1,"defaultEnv":"dev"}"#).unwrap();
+    std::fs::create_dir_all(d.join("collections/api")).unwrap();
+    std::fs::create_dir_all(d.join("envs")).unwrap();
+    let dead = std::net::TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port();
+    std::fs::write(d.join("envs/dev.json"), serde_json::json!({ "vars": { "baseUrl": url, "dead": format!("http://127.0.0.1:{dead}") } }).to_string()).unwrap();
+    std::fs::write(d.join("collections/api/01-好.json"), r#"{"name":"好","request":{"method":"GET","url":"{{baseUrl}}/login"},"expect":{"status":200}}"#).unwrap();
+    std::fs::write(d.join("collections/api/02-断言失败.json"), r#"{"name":"断言失败","request":{"method":"GET","url":"{{baseUrl}}/login"},"expect":{"status":404}}"#).unwrap();
+    std::fs::write(d.join("collections/api/03-连不上.json"), r#"{"name":"连不上","request":{"method":"GET","url":"{{dead}}/x"},"expect":{"status":200}}"#).unwrap();
+    let out = run_cli(&["run", "--report", "junit"], d);
+    assert_eq!(out.status.code(), Some(1));
+    let xml = String::from_utf8_lossy(&out.stdout).to_string();
+    assert!(xml.starts_with("<?xml"), "标准输出只能是 XML：{xml}");
+    assert!(xml.contains("tests=\"3\" failures=\"1\" errors=\"1\""), "{xml}");
+    assert!(xml.contains("<failure ") && xml.contains("<error ") && xml.contains("classname=\"collections/api\""), "{xml}");
+    let bad = run_cli(&["run", "--report", "xml"], d);
+    assert!(String::from_utf8_lossy(&bad.stderr).contains("junit"), "{}", String::from_utf8_lossy(&bad.stderr));
 }

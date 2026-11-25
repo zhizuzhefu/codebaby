@@ -56,6 +56,12 @@ pub fn ai_prompt(issues: &[ValidationIssue], env: &str) -> String {
     }
 }
 
+/// webhook 地址的问题：必须是 http(s) 开头（`{{变量}}` 开头的运行时才知道，不判断）
+fn webhook_problem(url: &str, at: &str) -> Option<String> {
+    let u = url.trim();
+    (u.is_empty() || !(u.starts_with("http://") || u.starts_with("https://") || u.starts_with("{{"))).then(|| format!("{at}：要写 http:// 或 https:// 开头的地址"))
+}
+
 pub const CASE_SCHEMA: &str = include_str!("../../../docs/schema/case.schema.json");
 pub const COLLECTION_SCHEMA: &str = include_str!("../../../docs/schema/collection.schema.json");
 pub const ENV_SCHEMA: &str = include_str!("../../../docs/schema/env.schema.json");
@@ -82,14 +88,17 @@ fn schema_check(schema_json: &str, doc_path: &Path, doc_name: &str, issues: &mut
     let schema: serde_json::Value = serde_json::from_str(schema_json).expect("内置 schema 合法");
     let compiled = jsonschema::JSONSchema::compile(&schema).expect("内置 schema 可编译");
     if let Err(errors) = compiled.validate(&doc) {
+        let known = crate::hint::schema_keys(&schema);
         for e in errors {
-            issues.push(ValidationIssue {
-                fixable: false,
-                file: doc_path.display().to_string(),
-                level: "error",
-                rule: "schema",
-                message: format!("[{doc_name}] {}", e),
-            });
+            let text = e.to_string();
+            let message = match crate::hint::from_schema_message(&text, &known) {
+                Some(hint) => {
+                    let at = e.instance_path.to_string();
+                    format!("[{doc_name}] {hint}{}", if at.is_empty() { String::new() } else { format!("（位置 {at}）") })
+                }
+                None => format!("[{doc_name}] {text}"),
+            };
+            issues.push(ValidationIssue { fixable: false, file: doc_path.display().to_string(), level: "error", rule: "schema", message });
         }
         return false;
     }
@@ -128,19 +137,10 @@ pub(crate) fn validate_selected(paths: &[std::path::PathBuf], env_name: &str, wo
                             issues.push(ValidationIssue { fixable: false, file: pf.display().to_string(), level: "error", rule: "proxy-url", message });
                         }
                     }
-                    // 命名命令：名字、命令不能为空；命令本身不做变量替换（值走 env）
-                    for (name, cmd) in &p.commands {
-                        let problem = if name.is_empty() || !name.chars().all(|c| c.is_alphanumeric() || matches!(c, '_' | '-' | '.')) {
-                            Some(format!("commands.{name}：名字只能是字母、数字、下划线、短横线、点"))
-                        } else if cmd.command().trim().is_empty() {
-                            Some(format!("commands.{name}：命令是空的"))
-                        } else if cmd.command().contains("{{") {
-                            Some(format!("commands.{name}：命令本身不做变量替换（捕获到的文字不能被当成命令执行），要传值写 env，命令里用 $变量（requestbaby guide control）"))
-                        } else {
-                            None
-                        };
-                        if let Some(message) = problem {
-                            issues.push(ValidationIssue { fixable: false, file: pf.display().to_string(), level: "error", rule: "command", message });
+                    // 通知：默认 webhook 必须是 http(s) 地址（可以带 {{变量}}）
+                    if let Some(w) = p.notify.webhook.as_deref() {
+                        if let Some(message) = webhook_problem(w, "notify.webhook") {
+                            issues.push(ValidationIssue { fixable: false, file: pf.display().to_string(), level: "error", rule: "notify", message });
                         }
                     }
                     // 写法建议：多个流程各自重复同一个开头（如登录）→ 抽成被依赖的流程
@@ -699,10 +699,10 @@ fn check_ui(case: &TestCase, push: &mut dyn FnMut(&'static str, String)) {
     }
     let mut flat = vec![];
     collect(&format!("{key}.steps "), steps, 0, false, &mut flat);
-    // 失败回调：只能写 exec（此时界面可能已经不可用），写法检查同普通步骤
+    // 失败回调：只能写 notify（此时界面可能已经不可用），写法检查同普通步骤
     for (i, st) in on_fail.iter().enumerate() {
-        if st.action() != Some(crate::config::UiAction::Exec) {
-            push("ui-step", format!("{key}.onFail 第 {} 步：失败回调里只能写 exec（运行命令）", i + 1));
+        if st.action() != Some(crate::config::UiAction::Notify) {
+            push("ui-step", format!("{key}.onFail 第 {} 步：失败回调里只能写 notify（通知）", i + 1));
         }
     }
     collect(&format!("{key}.onFail "), on_fail, 0, false, &mut flat);
@@ -771,20 +771,15 @@ fn check_ui(case: &TestCase, push: &mut dyn FnMut(&'static str, String)) {
         if step.break_.is_some() && !in_loop {
             push("ui-step", format!("{at}：break 只能写在 repeat 里面（用来提前结束循环）"));
         }
-        if let Some(e) = &step.exec {
-            if e.command().trim().is_empty() {
-                push("ui-step", format!("{at}：exec 要写命令，如 \"curl -s https://…\" 或 \"./notify.sh\""));
+        if let Some(n) = &step.notify {
+            if n.message().trim().is_empty() {
+                push("ui-step", format!("{at}：notify 要写通知内容，如 {{\"notify\": \"{{{{date}}}} 有号\"}}"));
             }
-            if e.command().contains("{{") {
-                push("ui-step", format!("{at}：exec 的命令不做变量替换（捕获到的文字不能被当成命令执行）；要传值写成 {{\"command\": \"…\", \"env\": {{\"MSG\": \"{{{{变量}}}}\"}}}}，命令里用 $MSG（requestbaby guide control）"));
-            }
-            for k in e.env().into_iter().flatten().map(|(k, _)| k) {
-                if k.is_empty() || k.contains('=') || k.contains(char::is_whitespace) {
-                    push("ui-step", format!("{at}：exec.env 的名称「{k}」不合法（不能为空，不能含 = 和空白）"));
-                }
+            if let Some(message) = n.webhook().and_then(|w| webhook_problem(w, &format!("{at}：notify.webhook"))) {
+                push("ui-step", message);
             }
         }
-        if !step.capture.is_empty() && matches!(a, UiAction::Repeat | UiAction::If | UiAction::Exec | UiAction::Break) {
+        if !step.capture.is_empty() && matches!(a, UiAction::Repeat | UiAction::If | UiAction::Notify | UiAction::Break) {
             push("ui-step", format!("{at}：capture 不能写在 {} 上，写在循环 / 分支里面的步骤上", a.key(kind)));
         }
         match (a, &step.value) {

@@ -19,6 +19,18 @@
 | 1 | 用例失败（断言不成立 / 传输错误 / 脚本运行错误） | 读 `--report json` 的 `results[].tests[].detail` 与 `response` 快照 |
 | 2 | 无法完成验证（配置或计划错误、必验用例未跑或没执行断言） | 读 `verify --report json` 的 `blocked`、`coverage.unverified[]` 和 `issues[]` |
 
+2 也是「用法或路径错误」（路径不存在、参数不对、配置文件读不了）的退出码：没有开始验证，所以不是 1。CI 里 1 = 被测系统有问题，2 = 先修配置 / 命令再来。
+
+## 报告格式
+
+`--report term`（缺省，给人看）/ `json`（给 AI 和脚本）/ `html`（带截图的单文件）/ `junit`（JUnit XML 到标准输出，给 CI 的测试面板）。`run`、`workflow` 支持全部四种，`verify` 支持 term / json / junit。
+
+```bash
+requestbaby verify --workflow smoke -e ci --report junit > junit.xml
+```
+
+junit 里：断言不成立 = `failure`，请求没发出去 / 界面步骤出错 = `error`，跳过 = `skipped`；一个目录一个 `testsuite`，用例名是 `testcase` 的 `name`，文件路径在 `file`。
+
 ## 校验
 
 ```bash

@@ -102,7 +102,9 @@ impl Updater {
                         let known_bad = !manual && prefs.failed_version.as_deref() == Some(rel.version.as_str());
                         let already = this.ready.as_ref().is_some_and(|p| p.version == rel.version);
                         this.update = Some(rel.clone());
-                        if !already && !known_bad && (prefs.auto || manual) {
+                        // 自动更新等新版本发布满一天再下载（连发几个补丁版只装最后一个）；手动检查立即生效
+                        let settled = rel.settled(requestbaby_core::history::now_ms() / 1000);
+                        if !already && !known_bad && (manual || (prefs.auto && settled)) {
                             this.stage_update(rel, manual, window, cx);
                         } else if manual && already {
                             this.prompt_install(rel.version.clone(), window, cx);

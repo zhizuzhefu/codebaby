@@ -579,7 +579,7 @@
             },
             "until": { "$ref": "#/definitions/locator", "description": "每轮结束后判断一次的条件（写法同 expect，不等待）：满足就提前结束" },
             "var": { "type": "string", "description": "轮次变量名（第几轮，从 1 开始），步骤里写 {{i}} 引用；缺省 i" },
-            "steps": { "type": "array", "items": { "$ref": "#/definitions/uiStep" }, "description": "每一轮执行的步骤（可以再嵌套 repeat / if / wait / exec，最多 4 层）" }
+            "steps": { "type": "array", "items": { "$ref": "#/definitions/uiStep" }, "description": "每一轮执行的步骤（可以再嵌套 repeat / if / wait / notify，最多 4 层）" }
           }
         },
         "if": {
@@ -594,17 +594,17 @@
           }
         },
         "break": { "const": true, "description": "跳出最近的一层 repeat（通常写在 if 的 then 里：发现目标、通知完就结束监控）" },
-        "exec": {
-          "description": "运行一条本机 shell 命令（通知回调、联动其他系统）：命令字符串，或 {\"command\": \"…\", \"env\": {…}}。命令不做变量替换，要传值用 env；命令里可用 REQUESTBABY_FILE / REQUESTBABY_ROOT / REQUESTBABY_EVIDENCE（证据目录）；退出码非 0 算失败（optional: true 则跳过），timeoutMs 缺省 30000",
+        "notify": {
+          "description": "发一条通知（监控发现目标、失败时告警）：弹本机通知、追加到 .requestbaby/alerts.log，配了 webhook 就以 {\"text\": \"…\"} POST 过去。写通知文字，或 {\"message\": \"…\", \"webhook\": \"https://…\"}；不写 webhook 用 requestbaby.json 的 notify.webhook。不运行任何命令；optional: true 则发送失败时跳过",
           "oneOf": [
             { "type": "string" },
             {
               "type": "object",
               "additionalProperties": false,
-              "required": ["command"],
+              "required": ["message"],
               "properties": {
-                "command": { "type": "string", "description": "要运行的 shell 命令（sh -c）" },
-                "env": { "type": "object", "additionalProperties": { "type": "string" }, "description": "传给命令的环境变量：名称 → 值，值支持 {{变量}}" }
+                "message": { "type": "string", "description": "通知内容，支持 {{变量}}" },
+                "webhook": { "type": "string", "description": "webhook 地址（http / https），支持 {{变量}}；缺省用项目的 notify.webhook" }
               }
             }
           ]
@@ -657,7 +657,7 @@
         "onFail": {
           "type": "array",
           "items": { "$ref": "#/definitions/uiStep" },
-          "description": "用例失败时运行的命令（只能写 exec）：失败通知。{{error}} 是失败原因，{{failedStep}} 是出错的那一步；通知失败不改变用例的结论"
+          "description": "用例失败时发的通知（只能写 notify）。{{error}} 是失败原因，{{failedStep}} 是出错的那一步；通知失败不改变用例的结论"
         }
       }
     },
@@ -679,7 +679,7 @@
         "onFail": {
           "type": "array",
           "items": { "$ref": "#/definitions/uiStep" },
-          "description": "用例失败时运行的命令（只能写 exec）：失败通知。{{error}} 是失败原因，{{failedStep}} 是出错的那一步；通知失败不改变用例的结论"
+          "description": "用例失败时发的通知（只能写 notify）。{{error}} 是失败原因，{{failedStep}} 是出错的那一步；通知失败不改变用例的结论"
         }
       }
     },
@@ -706,7 +706,7 @@
         "onFail": {
           "type": "array",
           "items": { "$ref": "#/definitions/uiStep" },
-          "description": "用例失败时运行的命令（只能写 exec）：失败通知。{{error}} 是失败原因，{{failedStep}} 是出错的那一步；通知失败不改变用例的结论"
+          "description": "用例失败时发的通知（只能写 notify）。{{error}} 是失败原因，{{failedStep}} 是出错的那一步；通知失败不改变用例的结论"
         }
       }
     }

@@ -76,9 +76,23 @@ pub fn ensure_local_env_ignored(root: &Path) -> Result<()> {
 
 /// 初始化项目脚手架（已存在的文件跳过，不覆盖）
 pub fn init_project(dir: &Path) -> Result<Vec<ScaffoldEntry>> {
+    init_project_with(dir, None)
+}
+
+/// 初始化项目；`base_url` 给定就写成 dev 环境的被测服务地址（缺省 http://localhost:8080）
+pub fn init_project_with(dir: &Path, base_url: Option<&str>) -> Result<Vec<ScaffoldEntry>> {
+    let env_dev = match base_url.map(str::trim).filter(|u| !u.is_empty()) {
+        Some(u) => {
+            if !(u.starts_with("http://") || u.starts_with("https://")) {
+                anyhow::bail!("--base-url 要以 http:// 或 https:// 开头：{u}");
+            }
+            serde_json::to_string_pretty(&serde_json::json!({ "vars": { "baseUrl": u.trim_end_matches('/') } }))? + "\n"
+        }
+        None => ENV_DEV.to_string(),
+    };
     let files: [(&str, &str); 7] = [
         ("requestbaby.json", PROJECT),
-        ("envs/dev.json", ENV_DEV),
+        ("envs/dev.json", &env_dev),
         ("envs/prod.json", ENV_PROD),
         ("collections/demo/collection.json", DEMO_COLLECTION),
         ("collections/demo/01-health.json", DEMO_HEALTH),

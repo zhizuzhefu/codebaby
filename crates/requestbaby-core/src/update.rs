@@ -38,9 +38,19 @@ pub struct Release {
     /// 发布页地址
     pub page: String,
     pub assets: Vec<Asset>,
+    /// 发布时刻（Unix 秒）；接口没给时为 None
+    pub published_at: Option<u64>,
 }
 
+/// 自动更新等一个版本「沉淀」多久再下载：连发几个补丁版时，用户只收到最后那个，而不是每个都装一遍。手动检查不受影响
+pub const AUTO_COOLDOWN_SECS: u64 = 24 * 3600;
+
 impl Release {
+    /// 自动更新可以下载了吗：发布满 [`AUTO_COOLDOWN_SECS`]（不知道发布时间就不等）
+    pub fn settled(&self, now_secs: u64) -> bool {
+        self.published_at.is_none_or(|t| now_secs >= t + AUTO_COOLDOWN_SECS)
+    }
+
     pub fn is_newer(&self) -> bool {
         is_newer(&self.version, CURRENT)
     }
@@ -109,7 +119,25 @@ pub fn parse_release(json: &str) -> Result<Release> {
         notes: v["body"].as_str().unwrap_or_default().trim().to_string(),
         page: v["html_url"].as_str().unwrap_or_default().to_string(),
         assets,
+        published_at: v["published_at"].as_str().and_then(parse_utc_secs),
     })
+}
+
+/// `2026-11-25T14:53:49Z` → Unix 秒（只认 GitHub 给的 UTC 写法）
+fn parse_utc_secs(s: &str) -> Option<u64> {
+    let (date, time) = s.trim_end_matches('Z').split_once('T')?;
+    let mut d = date.split('-').map(|p| p.parse::<i64>().ok());
+    let (y, m, day) = (d.next()??, d.next()??, d.next()??);
+    let mut t = time.split(':').map(|p| p.parse::<i64>().ok());
+    let (hh, mm, ss) = (t.next()??, t.next()??, t.next()??);
+    // 公历日期 → 自 1970-01-01 的天数
+    let y = if m <= 2 { y - 1 } else { y };
+    let era = y.div_euclid(400);
+    let yoe = y - era * 400;
+    let doy = (153 * (if m > 2 { m - 3 } else { m + 9 }) + 2) / 5 + day - 1;
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    let days = era * 146097 + doe - 719468;
+    u64::try_from(days * 86400 + hh * 3600 + mm * 60 + ss).ok()
 }
 
 fn get(url: &str, accept: &str, timeout_ms: u64, proxy: &ProxyPolicy) -> Result<crate::engine::Response> {
@@ -234,6 +262,19 @@ mod tests {
         assert!(is_newer("0.4.0", "0.4.0-rc.1"), "正式版高于同号预发布");
         assert!(!is_newer("0.4.0-rc.1", "0.4.0"));
         assert!(!is_newer("nightly", "0.3.0"));
+    }
+
+    #[test]
+    fn new_releases_settle_for_a_day_before_auto_update_picks_them_up() {
+        assert_eq!(parse_utc_secs("1970-01-02T00:00:00Z"), Some(86400));
+        assert_eq!(parse_utc_secs("2026-11-25T14:53:49Z"), Some(1_795_618_429));
+        assert_eq!(parse_utc_secs("昨天"), None);
+        let mk = |t: Option<u64>| Release { tag: "v1".into(), version: "1".into(), notes: String::new(), page: String::new(), assets: vec![], published_at: t };
+        assert!(!mk(Some(1000)).settled(1000 + AUTO_COOLDOWN_SECS - 1));
+        assert!(mk(Some(1000)).settled(1000 + AUTO_COOLDOWN_SECS));
+        assert!(mk(None).settled(0), "不知道发布时间就不等，避免永远更新不了");
+        let r = parse_release(r#"{"tag_name":"v0.4.0","published_at":"2026-11-25T14:53:49Z","assets":[]}"#).unwrap();
+        assert_eq!(r.published_at, Some(1_795_618_429));
     }
 
     #[test]

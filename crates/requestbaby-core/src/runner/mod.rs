@@ -1,5 +1,6 @@
 pub mod discover;
 mod event;
+mod notify;
 pub mod ui;
 
 pub use event::{CancelToken, EventHook, RunEvent};
