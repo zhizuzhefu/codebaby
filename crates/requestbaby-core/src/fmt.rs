@@ -195,9 +195,78 @@ fn reorder(v: &serde_json::Value, fields: &[&str]) -> serde_json::Value {
     serde_json::Value::Object(out)
 }
 
-/// 规范化后的文件文本（2 空格缩进 + 末尾换行）
+/// 规范化后的文件文本（2 空格缩进 + 末尾换行）。
+/// 界面用例（web / android / desktop）与 `regions` 里放得下的小对象 / 数组保持一行：一步一行才读得动，
+/// 不然每个定位、每个 env 都被拆成好几行，几十行的监控用例会膨胀成几百行。接口 / gRPC / WebSocket 用例与标准美化输出一致
 pub fn canonical_case_text(d: &serde_json::Value) -> String {
-    serde_json::to_string_pretty(&canonical_case(d)).unwrap_or_default() + "\n"
+    render_case_text(&canonical_case(d))
+}
+
+/// 一行放不下就换行的宽度（含缩进）
+const INLINE_WIDTH: usize = 100;
+
+/// 把已规范化的用例写成文本：见 [`canonical_case_text`]
+pub fn render_case_text(canon: &serde_json::Value) -> String {
+    let mut out = String::new();
+    write_node(canon, 0, false, 0, &mut out);
+    out.push('\n');
+    out
+}
+
+fn quoted(s: &str) -> String {
+    serde_json::to_string(s).unwrap_or_default()
+}
+
+/// 单行写法：`{ "k": v, "k2": v2 }` / `[a, b]`
+fn inline_text(v: &serde_json::Value) -> String {
+    use serde_json::Value;
+    match v {
+        Value::Object(m) if m.is_empty() => "{}".into(),
+        Value::Object(m) => format!("{{ {} }}", m.iter().map(|(k, x)| format!("{}: {}", quoted(k), inline_text(x))).collect::<Vec<_>>().join(", ")),
+        Value::Array(a) if a.is_empty() => "[]".into(),
+        Value::Array(a) => format!("[{}]", a.iter().map(inline_text).collect::<Vec<_>>().join(", ")),
+        other => serde_json::to_string(other).unwrap_or_default(),
+    }
+}
+
+/// zone：在界面用例 / regions 里（小对象可以一行）；prefix：本行前面「"键": 」已占的宽度
+fn write_node(v: &serde_json::Value, indent: usize, zone: bool, prefix: usize, out: &mut String) {
+    use serde_json::Value;
+    let pad = "  ".repeat(indent);
+    let fits = |v: &Value| zone && indent >= 2 && inline_text(v).chars().count() + indent * 2 + prefix < INLINE_WIDTH;
+    match v {
+        Value::Object(m) if !m.is_empty() => {
+            if fits(v) {
+                out.push_str(&inline_text(v));
+                return;
+            }
+            out.push_str("{\n");
+            for (i, (k, x)) in m.iter().enumerate() {
+                let key = quoted(k);
+                out.push_str(&format!("{pad}  {key}: "));
+                let child_zone = zone || (indent == 0 && matches!(k.as_str(), "web" | "android" | "desktop" | "regions"));
+                write_node(x, indent + 1, child_zone, key.chars().count() + 2, out);
+                out.push_str(if i + 1 < m.len() { ",\n" } else { "\n" });
+            }
+            out.push_str(&format!("{pad}}}"));
+        }
+        Value::Array(a) if !a.is_empty() => {
+            // 两个以上的对象（步骤）一步一行，不挤在一起
+            let stacked = a.len() >= 2 && a.iter().any(|x| x.is_object() || x.is_array());
+            if !stacked && fits(v) {
+                out.push_str(&inline_text(v));
+                return;
+            }
+            out.push_str("[\n");
+            for (i, x) in a.iter().enumerate() {
+                out.push_str(&format!("{pad}  "));
+                write_node(x, indent + 1, zone, 0, out);
+                out.push_str(if i + 1 < a.len() { ",\n" } else { "\n" });
+            }
+            out.push_str(&format!("{pad}]"));
+        }
+        other => out.push_str(&inline_text(other)),
+    }
 }
 
 /// 项目级格式化结果
@@ -319,7 +388,7 @@ pub fn format_paths(paths: &[std::path::PathBuf], check: bool, fix: bool) -> any
             let after = serde_json::to_string_pretty(&ordered).unwrap_or_default();
             if before != after {
                 if !check {
-                    crate::fsx::write(&f, after + "\n")?;
+                    crate::fsx::write(&f, render_case_text(&ordered))?;
                 }
                 report.changes.push(if applied.is_empty() { FmtChange::Case(f.clone()) } else { FmtChange::Upgraded(f.clone(), applied) });
             }
@@ -461,6 +530,56 @@ mod ui_alias_tests {
         let c = canonical_case(&d);
         assert_eq!(c["request"]["timeoutMs"], 800);
         assert_eq!((&c["ws"]["timeoutMs"], &c["ws"]["steps"][0]["wait"], &c["ws"]["steps"][0]["timeoutMs"]), (&json!(500), &json!(300), &json!(100)));
+    }
+
+    #[test]
+    fn ui_cases_keep_small_objects_on_one_line_and_other_protocols_are_unchanged() {
+        let d = json!({"name": "x", "regions": {"条": {"x": 0, "y": 0.1, "w": 1, "h": 0.1}}, "android": {"app": "a", "steps": [
+            {"tap": {"ocr": "{{date}}", "region": "条"}, "optional": true},
+            {"wait": "2s"},
+            {"repeat": {"for": "8h", "cycle": {"d": ["11-28", "11-29"]}, "steps": [{"wait": "1s"}, {"exec": {"command": "notify", "env": {"MSG": "{{d}} 有号"}}}]}}
+        ], "onFail": [{"exec": "notify"}]}});
+        let text = canonical_case_text(&d);
+        let want = r#"{
+  "name": "x",
+  "regions": {
+    "条": { "x": 0, "y": 0.1, "w": 1, "h": 0.1 }
+  },
+  "android": {
+    "app": "a",
+    "steps": [
+      { "tap": { "ocr": "{{date}}", "region": "条" }, "optional": true },
+      { "wait": "2s" },
+      {
+        "repeat": {
+          "for": "8h",
+          "cycle": { "d": ["11-28", "11-29"] },
+          "steps": [
+            { "wait": "1s" },
+            { "exec": { "command": "notify", "env": { "MSG": "{{d}} 有号" } } }
+          ]
+        }
+      }
+    ],
+    "onFail": [{ "exec": "notify" }]
+  }
+}
+"#;
+        assert_eq!(text, want);
+        // 文本读回来就是规范化后的内容，再渲染一遍不变（Git 零噪音）
+        let back: serde_json::Value = serde_json::from_str(&text).unwrap();
+        assert_eq!(back, canonical_case(&d));
+        assert_eq!(canonical_case_text(&back), text);
+        // 一行放不下的步骤换行，不会拉出超长的行
+        let long = json!({"name": "x", "web": {"url": "u", "steps": [{"fill": {"label": "这是一个很长很长很长很长的标签名字用来撑满一整行的宽度"}, "value": "{{一个同样很长很长很长的变量名字}}", "timeout": "15s"}]}});
+        let text = canonical_case_text(&long);
+        assert!(text.lines().all(|l| l.chars().count() <= INLINE_WIDTH + 12), "{text}");
+        assert_eq!(serde_json::from_str::<serde_json::Value>(&text).unwrap(), canonical_case(&long));
+        // 接口 / WebSocket 用例：与标准美化输出完全一致
+        let api = json!({"name": "x", "request": {"method": "GET", "url": "{{baseUrl}}/a", "headers": {"A": "b"}}, "expect": {"status": 200}, "tags": ["a", "b"]});
+        assert_eq!(canonical_case_text(&api), serde_json::to_string_pretty(&canonical_case(&api)).unwrap() + "\n");
+        let ws = json!({"name": "x", "ws": {"url": "ws://x", "steps": [{"send": {"a": 1}}, {"receive": {}}]}});
+        assert_eq!(canonical_case_text(&ws), serde_json::to_string_pretty(&canonical_case(&ws)).unwrap() + "\n");
     }
 
     #[test]
