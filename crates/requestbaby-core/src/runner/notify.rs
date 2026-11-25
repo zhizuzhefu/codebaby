@@ -67,7 +67,7 @@ fn desktop_notification(msg: &str) -> bool {
     use std::process::{Command, Stdio};
     let mut c = if cfg!(target_os = "macos") {
         let mut c = Command::new("osascript");
-        c.args(["-e", "on run argv", "-e", "display notification (item 1 of argv) with title \"requestbaby\"", "-e", "end run", msg]);
+        c.args(["-e", "on run argv", "-e", "display notification (item 1 of argv) with title \"requestbaby\" sound name \"Glass\"", "-e", "end run", msg]);
         c
     } else if cfg!(target_os = "linux") {
         let mut c = Command::new("notify-send");

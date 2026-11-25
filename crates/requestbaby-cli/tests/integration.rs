@@ -2454,3 +2454,29 @@ fn junit_report_is_pure_xml_with_failures_and_errors() {
     let bad = run_cli(&["run", "--report", "xml"], d);
     assert!(String::from_utf8_lossy(&bad.stderr).contains("junit"), "{}", String::from_utf8_lossy(&bad.stderr));
 }
+
+/// 界面用例内容没变、只是版式不同（逐行缩进）：fmt 改回「小对象一行」；接口用例不受影响
+#[test]
+fn fmt_restores_the_compact_layout_of_ui_cases_without_touching_api_cases() {
+    let dir = TempDir::new().unwrap();
+    let d = dir.path();
+    std::fs::write(d.join("requestbaby.json"), r#"{"version":1,"defaultEnv":"dev"}"#).unwrap();
+    std::fs::create_dir_all(d.join("collections/a")).unwrap();
+    std::fs::create_dir_all(d.join("envs")).unwrap();
+    std::fs::write(d.join("envs/dev.json"), r#"{"vars":{}}"#).unwrap();
+    let spread = serde_json::to_string_pretty(&serde_json::json!({"name":"界面","web":{"url":"https://example.com","steps":[{"click":{"role":"button","name":"登录"}},{"wait":"2s"}]}})).unwrap();
+    std::fs::write(d.join("collections/a/01-界面.json"), &spread).unwrap();
+    let api = serde_json::to_string_pretty(&serde_json::json!({"name":"接口","request":{"method":"GET","url":"{{baseUrl}}/x"},"expect":{"status":200}})).unwrap() + "\n";
+    std::fs::write(d.join("collections/a/02-接口.json"), &api).unwrap();
+    let out = run_cli(&["fmt", "--check"], d);
+    assert_eq!(out.status.code(), Some(1), "{}", String::from_utf8_lossy(&out.stdout));
+    let out = run_cli(&["fmt"], d);
+    assert!(out.status.success());
+    let ui = std::fs::read_to_string(d.join("collections/a/01-界面.json")).unwrap();
+    assert!(ui.contains(r#"{ "click": { "role": "button", "name": "登录" } },"#), "{ui}");
+    assert_eq!(ui.lines().count(), 10, "{ui}");
+    // 再格式化一次不变；接口用例的内容与版式都不动
+    let again = run_cli(&["fmt", "--check"], d);
+    assert!(again.status.success(), "{}", String::from_utf8_lossy(&again.stdout));
+    assert_eq!(std::fs::read_to_string(d.join("collections/a/02-接口.json")).unwrap().replace(" ", ""), api.replace(" ", ""));
+}

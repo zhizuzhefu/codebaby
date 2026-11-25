@@ -386,7 +386,9 @@ pub fn format_paths(paths: &[std::path::PathBuf], check: bool, fix: bool) -> any
             }
             let ordered = canonical_case(d);
             let after = serde_json::to_string_pretty(&ordered).unwrap_or_default();
-            if before != after {
+            // 界面用例的版式也是规范的一部分（小对象一行）：内容没变、只是排版不同（如别的工具写成逐行缩进）也改回来
+            let layout_only = before == after && ["web", "android", "desktop"].iter().any(|k| ordered.get(*k).is_some()) && std::fs::read_to_string(&f).is_ok_and(|t| t != render_case_text(&ordered));
+            if before != after || layout_only {
                 if !check {
                     crate::fsx::write(&f, render_case_text(&ordered))?;
                 }
