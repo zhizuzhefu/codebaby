@@ -218,20 +218,44 @@ pub enum AgentEntryStatus {
     Missing,
     /// 与已安装版本一致
     Current,
-    /// 旧版 requestbaby 生成的入口（标题相同、内容不同）：可用 `guide --init --update` 更新
+    /// 旧版 requestbaby 生成、没人改过的入口（内容恰好等于历史上某个版本）：可用 `guide --init --update` 放心更新
     Outdated,
-    /// 用户自己维护的文件：不检查、不覆盖
+    /// 用户自己维护 / 改过的文件：不检查、不覆盖
     Custom,
 }
 
-const AGENTS_TITLE: &str = "# requestbaby 接口测试项目";
+/// 历史上 requestbaby 生成过的 AGENTS.md 模板（SHA-256）。内容恰好等于其中之一 = 没人改过的旧版；
+/// 其余（标题相同但被改过）视为用户自己维护的，不提示、不覆盖。
+/// 改模板时：把改动前的哈希追加到这里，并更新测试里的 `CURRENT_AGENTS_SHA256`（`agents_template_history_is_maintained` 会提醒）
+const PAST_AGENTS_SHA256: &[&str] = &[
+    "e38915adec85ef3769d11e2940e2cb8d3c27023e69868464d0fe98edd3b1606f",
+    "dd81c4d5da51c9ef2ad82a7089ec99a6a4deb23a193e8c1f1d2e57afd9cad95d",
+    "a5cb96e8dfd8525f6e7b76389259b42af2c1da9c96aadf72d4c8d3bd8c267484",
+];
+
+fn sha256_hex(text: &str) -> String {
+    use sha2::{Digest, Sha256};
+    format!("{:x}", Sha256::digest(text.as_bytes()))
+}
+
+fn classify_agents(text: &str, current: &str, past: &[&str]) -> AgentEntryStatus {
+    if text == current {
+        AgentEntryStatus::Current
+    } else if past.contains(&sha256_hex(text).as_str()) {
+        AgentEntryStatus::Outdated
+    } else {
+        AgentEntryStatus::Custom
+    }
+}
 
 pub fn agent_entry_status(root: &Path) -> AgentEntryStatus {
+    agent_entry_status_in(root, PAST_AGENTS_SHA256)
+}
+
+fn agent_entry_status_in(root: &Path, past: &[&str]) -> AgentEntryStatus {
     match std::fs::read_to_string(root.join("AGENTS.md")) {
         Err(_) => AgentEntryStatus::Missing,
-        Ok(t) if t == AGENTS_MD => AgentEntryStatus::Current,
-        Ok(t) if t.starts_with(AGENTS_TITLE) => AgentEntryStatus::Outdated,
-        Ok(_) => AgentEntryStatus::Custom,
+        Ok(t) => classify_agents(&t, AGENTS_MD, past),
     }
 }
 
@@ -242,10 +266,14 @@ pub fn write_agent_entry(root: &Path) -> Result<Vec<ScaffoldEntry>> {
 
 /// update = true：旧版 requestbaby 生成的 AGENTS.md 更新为当前版本（用户自己写的文件仍不覆盖）
 pub fn write_agent_entry_with(root: &Path, update: bool) -> Result<Vec<ScaffoldEntry>> {
+    write_agent_entry_in(root, update, PAST_AGENTS_SHA256)
+}
+
+fn write_agent_entry_in(root: &Path, update: bool, past: &[&str]) -> Result<Vec<ScaffoldEntry>> {
     let mut out = vec![];
     for (name, content) in [("AGENTS.md", AGENTS_MD), ("CLAUDE.md", CLAUDE_MD)] {
         let path = root.join(name);
-        let stale = update && name == "AGENTS.md" && agent_entry_status(root) == AgentEntryStatus::Outdated;
+        let stale = update && name == "AGENTS.md" && agent_entry_status_in(root, past) == AgentEntryStatus::Outdated;
         let created = !path.exists() || stale;
         if created {
             crate::fsx::write(&path, content).with_context(|| format!("写入失败: {}", path.display()))?;
@@ -258,6 +286,34 @@ pub fn write_agent_entry_with(root: &Path, update: bool) -> Result<Vec<ScaffoldE
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// 模板改了就必须把旧哈希记进历史：否则老项目里没人改过的 AGENTS.md 会被当成「自己维护的」，永远不会被提示更新
+    #[test]
+    fn agents_template_history_is_maintained() {
+        /// 当前模板 [`AGENTS_MD`] 的 SHA-256
+        const CURRENT_AGENTS_SHA256: &str = "b3331d48d6ca199e45ea88a5ab6bdb1d69d33530d3623de3b560344ff4adb084";
+        assert_eq!(
+            sha256_hex(AGENTS_MD),
+            CURRENT_AGENTS_SHA256,
+            "AGENTS_MD 改了：把改动前的哈希追加到 PAST_AGENTS_SHA256，并把 CURRENT_AGENTS_SHA256 改成 {}",
+            sha256_hex(AGENTS_MD)
+        );
+        assert!(!PAST_AGENTS_SHA256.contains(&CURRENT_AGENTS_SHA256), "当前模板不该出现在历史列表里");
+    }
+
+    #[test]
+    fn edited_agents_md_is_never_called_outdated_or_overwritten() {
+        let past_text = "# requestbaby 接口测试项目\n旧版模板\n";
+        let past = [sha256_hex(past_text)];
+        let past: Vec<&str> = past.iter().map(String::as_str).collect();
+        assert_eq!(classify_agents(AGENTS_MD, AGENTS_MD, &past), AgentEntryStatus::Current);
+        // 恰好是历史版本 = 没人改过：可以更新
+        assert_eq!(classify_agents(past_text, AGENTS_MD, &past), AgentEntryStatus::Outdated);
+        // 标题相同但被用户改过 / 追加过：当作自己维护的
+        assert_eq!(classify_agents(&format!("{past_text}我们团队的约定：…\n"), AGENTS_MD, &past), AgentEntryStatus::Custom);
+        assert_eq!(classify_agents(&format!("{AGENTS_MD}\n- 自己加的一条\n"), AGENTS_MD, &past), AgentEntryStatus::Custom);
+        assert_eq!(classify_agents("# 我自己的说明\n", AGENTS_MD, &past), AgentEntryStatus::Custom);
+    }
 
     #[test]
     fn quickstart_is_small_and_topics_resolve() {
@@ -312,20 +368,25 @@ mod tests {
     fn outdated_agent_entry_is_detected_and_updated_only_on_request() {
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path();
-        assert_eq!(agent_entry_status(root), AgentEntryStatus::Missing);
-        write_agent_entry(root).unwrap();
-        assert_eq!(agent_entry_status(root), AgentEntryStatus::Current);
-        std::fs::write(root.join("AGENTS.md"), format!("{AGENTS_TITLE}\n\n旧版内容\n")).unwrap();
-        assert_eq!(agent_entry_status(root), AgentEntryStatus::Outdated);
-        write_agent_entry(root).unwrap();
-        assert_eq!(agent_entry_status(root), AgentEntryStatus::Outdated, "不带 update 不覆盖");
-        let e = write_agent_entry_with(root, true).unwrap();
+        let old = "# requestbaby 接口测试项目\n\n旧版内容\n";
+        let past = [sha256_hex(old)];
+        let past: Vec<&str> = past.iter().map(String::as_str).collect();
+        assert_eq!(agent_entry_status_in(root, &past), AgentEntryStatus::Missing);
+        write_agent_entry_in(root, false, &past).unwrap();
+        assert_eq!(agent_entry_status_in(root, &past), AgentEntryStatus::Current);
+        std::fs::write(root.join("AGENTS.md"), old).unwrap();
+        assert_eq!(agent_entry_status_in(root, &past), AgentEntryStatus::Outdated);
+        write_agent_entry_in(root, false, &past).unwrap();
+        assert_eq!(agent_entry_status_in(root, &past), AgentEntryStatus::Outdated, "不带 update 不覆盖");
+        let e = write_agent_entry_in(root, true, &past).unwrap();
         assert!(e[0].created && !e[1].created);
-        assert_eq!(agent_entry_status(root), AgentEntryStatus::Current);
-        std::fs::write(root.join("AGENTS.md"), "# 我们团队的约定\n").unwrap();
-        assert_eq!(agent_entry_status(root), AgentEntryStatus::Custom);
-        write_agent_entry_with(root, true).unwrap();
-        assert_eq!(std::fs::read_to_string(root.join("AGENTS.md")).unwrap(), "# 我们团队的约定\n", "用户自己的文件永不覆盖");
+        assert_eq!(agent_entry_status_in(root, &past), AgentEntryStatus::Current);
+        // 旧版基础上用户改过：不再提示，更新也不覆盖
+        let edited = format!("{old}我们团队的约定：…\n");
+        std::fs::write(root.join("AGENTS.md"), &edited).unwrap();
+        assert_eq!(agent_entry_status_in(root, &past), AgentEntryStatus::Custom);
+        write_agent_entry_in(root, true, &past).unwrap();
+        assert_eq!(std::fs::read_to_string(root.join("AGENTS.md")).unwrap(), edited, "用户改过的文件永不覆盖");
     }
 
     #[test]
