@@ -201,7 +201,7 @@ requestbaby run --report junit > junit.xml        # 退出码照常：0 通过 /
 
 ### Linux 上用
 
-目前不提供 Linux 预编译包，Linux 上从源码构建：`cargo install --locked --path crates/requestbaby-cli`（需要 Rust 和 cmake；只构建命令行，不含桌面端）。已验证能为 `x86_64-unknown-linux-musl` 交叉编译并静态链接，但还没有在真实的 Linux 机器上运行过，遇到问题请到 [Issues](https://github.com/zhizuzhefu/requestbaby/issues) 反馈。Linux 上接口（HTTP / gRPC / WebSocket）、Web（本机 Chrome / Chromium）和 Android（adb）用例理论上都能跑，屏幕文字识别（`ocr`）和 Mac 桌面应用用例只在 macOS 上可用。
+目前不提供 Linux 预编译包，Linux 上从源码构建：`cargo install --locked --path crates/requestbaby-cli`（需要 Rust 和 cmake；只构建命令行，不含桌面端）。源码层面支持 Linux，但还没有在真实的 Linux 机器上验证过，遇到问题请到 [Issues](https://github.com/zhizuzhefu/requestbaby/issues) 反馈。Linux 上接口（HTTP / gRPC / WebSocket）、Web（本机 Chrome / Chromium）和 Android（adb）用例理论上都能跑，屏幕文字识别（`ocr`）和 Mac 桌面应用用例只在 macOS 上可用。
 
 ## 和 AI 配合
 

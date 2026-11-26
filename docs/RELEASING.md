@@ -22,17 +22,9 @@
 
 发布全程在本机完成，仓库不使用 CI（GitHub Actions；账号付款失败时 Actions 无法运行，曾因此取消 CI）；测试与 clippy 由发布脚本在发布前跑。只发布 macOS 版（桌面端与命令行）。
 
-### Linux 命令行包（尚未发布）
+### Linux
 
-在 Mac 上用 zig 当链接器可以交叉编译静态 musl 版，已验证 `x86_64-unknown-linux-musl` 能编译并链接成功（`file` 显示 statically linked ELF），但**没有在真实 Linux 上运行验证过**，所以没有放进发布。要发布时先在一台 Linux 上跑过 `--version`、`doctor`、一个接口用例和 `run --report junit`：
-
-```bash
-rustup target add x86_64-unknown-linux-musl        # aarch64 同理（aarch64 还没有试过构建）
-cargo install cargo-zigbuild --locked          # 另需 zig（ziglang.org 下载，校验 sha256 后放进 PATH）
-cargo zigbuild --release --locked -p requestbaby --target x86_64-unknown-linux-musl
-```
-
-通过后在 `scripts/release.sh` 的 `CLI_TARGETS` 加上两个 musl 目标并把 `core::update::target()` 补上 Linux 的映射，`requestbaby upgrade` 才能在 Linux 上升级。
+不在本机或 mini 上编译、生成 Linux 包。源码本身支持 Linux（`cargo install --locked --path crates/requestbaby-cli`），有用户需求时再单独评估：需要一台真实的 Linux 机器验证，并补上 `scripts/release.sh` 的目标和 `core::update::target()` 的 Linux 映射。
 
 版本号不复用：哪怕只想换一个安装包，也发新的补丁版本。
 
