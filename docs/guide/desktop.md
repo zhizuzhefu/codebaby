@@ -1,13 +1,13 @@
 # Mac 桌面应用验收
 
-> `requestbaby guide desktop` · 桌面端：「新建用例」选 Mac 桌面，步骤写法与 Web / Android 相同，响应面板「步骤」页按顺序列出每一步的截图
+> `codebaby guide desktop` · 桌面端：「新建用例」选 Mac 桌面，步骤写法与 Web / Android 相同，响应面板「步骤」页按顺序列出每一步的截图
 
 用 [agent-desktop](https://github.com/vercel-labs/agent-desktop) 通过 macOS 无障碍树启动 / 接管 Mac 应用，点击、输入、选择、按快捷键，**每一步自动截图**，留下「这个版本的应用在这台 Mac 上真的能用」的证据。
 
 - 需要安装 agent-desktop（`npm install -g agent-desktop`），被测应用里不用装任何东西；运行和判定不调用任何大模型、不消耗 token
-- 需要在「系统设置 → 隐私与安全性」给**运行 requestbaby 的程序**（终端 / requestbaby.app）开启「辅助功能」，截图还需要「屏幕录制」；`requestbaby doctor` 会检查（`agent-desktop permissions --guide` 带你操作）
+- 需要在「系统设置 → 隐私与安全性」给**运行 codebaby 的程序**（终端 / codebaby.app）开启「辅助功能」，截图还需要「屏幕录制」；`codebaby doctor` 会检查（`agent-desktop permissions --guide` 带你操作）
 - 默认只走无障碍语义调用，**不抢焦点、不动你的鼠标**；没有语义动作的元素会明确报错，不会悄悄改用真实鼠标
-- 步骤、定位、条件、捕获、证据的写法与 Web / Android 用例一致（`requestbaby guide web`），下面只列不同之处
+- 步骤、定位、条件、捕获、证据的写法与 Web / Android 用例一致（`codebaby guide web`），下面只列不同之处
 
 ## 一个完整的用例
 
@@ -52,9 +52,9 @@
 | `{"launch": true}` | 重新启动应用（先正常退出再启动） |
 | `{"stop": true}` | 正常退出应用 |
 
-循环、条件、随机等待、通知：`repeat` / `if` / `wait: "3s-8s"` / `notify`，与 Web 相同（`requestbaby guide control`）。
+循环、条件、随机等待、通知：`repeat` / `if` / `wait: "3s-8s"` / `notify`，与 Web 相同（`codebaby guide control`）。
 
-不支持：`hover` / `longPress` / `back` / `goto`。悬停、双击、拖拽需要真实鼠标，requestbaby 不会为了通过用例去动你的鼠标。
+不支持：`hover` / `longPress` / `back` / `goto`。悬停、双击、拖拽需要真实鼠标，codebaby 不会为了通过用例去动你的鼠标。
 
 ## 定位
 
@@ -69,7 +69,7 @@
 | `{"id": "NewDocumentButton"}` | AXIdentifier（开发者给的稳定标识，有就优先用） |
 | `{"desc": "关闭"}` | 无障碍描述 |
 
-`role` 也认 `textbox` / `radio` / `img` / `text` 这些通用写法。`{"text": …}` 点到的静态文字会落在它所在的行 / 按钮上。匹配到多个时加 `nth`（从 0 开始）或 `exact`。不知道怎么写？先打开应用，再 `requestbaby desktop snapshot TextEdit` 列出窗口里的元素与推荐定位，并截一张图；`requestbaby desktop apps` 列出正在运行的应用名称。
+`role` 也认 `textbox` / `radio` / `img` / `text` 这些通用写法。`{"text": …}` 点到的静态文字会落在它所在的行 / 按钮上。匹配到多个时加 `nth`（从 0 开始）或 `exact`。不知道怎么写？先打开应用，再 `codebaby desktop snapshot TextEdit` 列出窗口里的元素与推荐定位，并截一张图；`codebaby desktop apps` 列出正在运行的应用名称。
 
 不在窗口可见范围里的元素（`offscreen`）找不到：先用 `swipe` 滚动到它。
 
@@ -86,10 +86,10 @@
 - 同一时间只能操作一个应用的界面：Mac 桌面用例按顺序执行，也不要同时手动操作被测应用
 - 界面特别大的应用（Electron、Xcode）读取无障碍树可能超出 8 秒预算，会提示「没读完」，此时靠后的元素可能找不到
 - 登录态保存在应用里，流程的 `as`（切换用户）对它没有作用
-- agent-desktop 缺省从 PATH 与常见安装位置（Homebrew / nvm / npm 全局目录）找，也可以写 `requestbaby.json` 的 `desktop.agentDesktop`，或设置环境变量 `REQUESTBABY_AGENT_DESKTOP`
+- agent-desktop 缺省从 PATH 与常见安装位置（Homebrew / nvm / npm 全局目录）找，也可以写 `codebaby.json` 的 `desktop.agentDesktop`，或设置环境变量 `CODEBABY_AGENT_DESKTOP`
 
 ## 命令
 
-- `requestbaby new case collections/mac 保存文档 --desktop TextEdit` 新建
-- `requestbaby desktop apps` 列出正在运行的应用
-- `requestbaby desktop snapshot TextEdit [--window 标题]` 列出窗口里的元素与推荐定位，并截一张图
+- `codebaby new case collections/mac 保存文档 --desktop TextEdit` 新建
+- `codebaby desktop apps` 列出正在运行的应用
+- `codebaby desktop snapshot TextEdit [--window 标题]` 列出窗口里的元素与推荐定位，并截一张图

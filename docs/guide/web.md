@@ -1,12 +1,12 @@
 # Web 界面验收
 
-> `requestbaby guide web` · 桌面端：「新建用例」选 Web，用例编辑器的「步骤」页一行一步，响应面板「步骤」页按顺序列出每一步的截图
+> `codebaby guide web` · 桌面端：「新建用例」选 Web，用例编辑器的「步骤」页一行一步，响应面板「步骤」页按顺序列出每一步的截图
 
 AI 改完前端，「接口都通过」不等于「用户能用」。Web 用例用本机的 Chrome / Edge 真的打开页面、点按钮、填表单，**每一步自动截图**，人看截图就能确认 AI 交付的界面是不是真的能用。
 
 - 不需要 Playwright / Node / WebDriver：直接驱动本机浏览器（Chrome DevTools 协议），缺省无界面运行
 - 运行和判定不调用任何大模型、不消耗 token：同样的用例每次得到同样的结论
-- 每个用例一个全新的浏览器环境；同一次运行里，前面用例留下的登录态（Cookie、localStorage / sessionStorage）会带给后面的 Web 用例，登录一次即可（见 `requestbaby guide flow` 的「依赖与登录态」）；要换账号用流程步骤的 `as`
+- 每个用例一个全新的浏览器环境；同一次运行里，前面用例留下的登录态（Cookie、localStorage / sessionStorage）会带给后面的 Web 用例，登录一次即可（见 `codebaby guide flow` 的「依赖与登录态」）；要换账号用流程步骤的 `as`
 
 ## 一个完整的用例
 
@@ -45,7 +45,7 @@ AI 改完前端，「接口都通过」不等于「用户能用」。Web 用例�
 | `{"expect": 条件}` | 断言：超时内满足即通过，计入断言结果 |
 | `{"screenshot": "名字"}` | 额外截一张图并命名（每一步本来就会截图） |
 | `{"wait": "500ms"}` | 静候（尽量用 `waitFor`）；`{"wait": "3s-8s"}` 随机静候 |
-| `{"repeat": {…}}` / `{"if": {…}}` / `{"notify": "…"}` | 重复一组步骤 / 条件分支 / 发通知（告警）：`requestbaby guide control` |
+| `{"repeat": {…}}` / `{"if": {…}}` / `{"notify": "…"}` | 重复一组步骤 / 条件分支 / 发通知（告警）：`codebaby guide control` |
 
 每一步都可以加：`timeout`（本步等待上限，如 `"15s"`，缺省 10s）、`optional: true`（找不到目标就跳过，用于可能出现的弹窗）、`capture`（本步完成后取值存为变量）。
 
@@ -66,7 +66,7 @@ AI 改完前端，「接口都通过」不等于「用户能用」。Web 用例�
 - 名称 / 文字缺省**包含即可、忽略大小写**；要完全相等加 `"exact": true`
 - 匹配到多个时直接报错（避免点错），并在失败截图上框出所有匹配：加 `"nth": 0`（第 1 个）或把名称写完整
 - `"hasText": "订单 123"` 在多个匹配里只要文字包含它的（如表格里某一行）
-- 不知道怎么写？`requestbaby web snapshot <地址>` 列出页面上全部按钮 / 链接 / 输入框和可直接粘贴的定位
+- 不知道怎么写？`codebaby web snapshot <地址>` 列出页面上全部按钮 / 链接 / 输入框和可直接粘贴的定位
 
 ## 条件（waitFor / expect）
 
@@ -114,11 +114,11 @@ AI 改完前端，「接口都通过」不等于「用户能用」。Web 用例�
 - 失败：橙框标出相关元素，另存现场——页面 HTML、无障碍树、控制台日志、网络请求
 - 最后一张是结束画面；还记录浏览器版本、视口、无界面 / 有界面
 
-证据放在 `.requestbaby/runs/<运行 ID>/<用例>/`（`send` 放在 `.requestbaby/scratch/`），运行记录里写着代码版本（提交、分支、有无未提交改动）。最近 30 次运行的证据全部保留，更早的只保留有失败的。
+证据放在 `.codebaby/runs/<运行 ID>/<用例>/`（`send` 放在 `.codebaby/scratch/`），运行记录里写着代码版本（提交、分支、有无未提交改动）。最近 30 次运行的证据全部保留，更早的只保留有失败的。
 
-- `requestbaby run` 汇总里给出证据目录；失败用例列出失败截图路径（AI 可以直接打开图片看）
-- `requestbaby run --report html` 生成带截图时间线的单文件报告，发给别人也能看
-- `requestbaby send <用例>` 在终端列出每一步、截图文件与运行环境
+- `codebaby run` 汇总里给出证据目录；失败用例列出失败截图路径（AI 可以直接打开图片看）
+- `codebaby run --report html` 生成带截图时间线的单文件报告，发给别人也能看
+- `codebaby send <用例>` 在终端列出每一步、截图文件与运行环境
 - 同一提交上时过时不过的用例标为「不稳定」：结论不可信，需要人看
 - 运行中就能看：终端里每完成一步打印一行；桌面端响应面板的「步骤」页跟随进度，每一步的截图一出现就能点开；`run --json-stream` 每步一条 `uiStep` 事件（带证据目录与截图文件名），AI / CI 可以边跑边读，不必等用例结束；`repeat` 里的步骤不逐条推送，最外层循环每开始一轮发一条 `loopProgress`（第几轮、已运行多久），长时间监控靠它看出还在跑
 
@@ -132,9 +132,9 @@ AI 改完前端，「接口都通过」不等于「用户能用」。Web 用例�
 }
 ```
 
-- `web.browser`：浏览器路径（缺省自动找 Chrome / Edge / Chromium；环境变量 `REQUESTBABY_BROWSER` 优先）
+- `web.browser`：浏览器路径（缺省自动找 Chrome / Edge / Chromium；环境变量 `CODEBABY_BROWSER` 优先）
 - `web.endpoint`：连接远程浏览器，见下一节
-- `web.headed: true` / `--headed` / `REQUESTBABY_HEADED=1`：显示浏览器窗口，看着它跑
+- `web.headed: true` / `--headed` / `CODEBABY_HEADED=1`：显示浏览器窗口，看着它跑
 - `web.screenshots: "failure"`：只截失败、结束画面和 `screenshot` 步骤（用例很多时省空间）
 - 用例里 `web.viewport` 覆盖视口，`web.timeout` 覆盖每一步的缺省超时
 - 之前 HTTP 用例登录拿到的 Cookie 自动带进浏览器；浏览器里登录得到的 Cookie 后面的 HTTP 用例也能用
@@ -151,18 +151,18 @@ AI 改完前端，「接口都通过」不等于「用户能用」。Web 用例�
 }
 ```
 
-- `web.endpoint`（或环境变量 `REQUESTBABY_BROWSER_URL`，优先）写 `http://主机:端口`，或云浏览器给的 `ws://…` / `wss://…`（令牌写在地址里，记录和报告里会隐去）
+- `web.endpoint`（或环境变量 `CODEBABY_BROWSER_URL`，优先）写 `http://主机:端口`，或云浏览器给的 `ws://…` / `wss://…`（令牌写在地址里，记录和报告里会隐去）
 - 配了就不启动本机浏览器；运行结束只断开连接，不关闭远程浏览器。每个用例照样是全新的浏览器环境
 - 步骤、截图、证据与本机完全相同，运行环境里「模式」记为「远程（地址）」
 - 远程浏览器里的 `localhost` 是**远程那台机器**：被测页面写它能访问到的地址（本机 Docker 里用 `host.docker.internal`），`file://` 本机文件也打不开
-- `requestbaby doctor` 检查远程浏览器能否连上
-- 配了代理时（`requestbaby guide proxy`），调试连接也经代理；本机浏览器的页面流量同样经代理
+- `codebaby doctor` 检查远程浏览器能否连上
+- 配了代理时（`codebaby guide proxy`），调试连接也经代理；本机浏览器的页面流量同样经代理
 
 Docker 起一个：`docker run -d -p 9222:9222 chromedp/headless-shell`，`web.endpoint` 写 `http://localhost:9222`（这时页面地址里的 localhost 指容器自己）。
 
 ## 命令
 
-- `requestbaby new case collections/web 登录 --web "{{webBase}}/login"` 新建
-- `requestbaby web snapshot "{{webBase}}/login"` 列出元素与推荐定位，并截一张图
-- `requestbaby run --dry-run` 列出每个用例的步骤（不打开浏览器）
-- `requestbaby doctor` 检查本机浏览器 / 远程浏览器
+- `codebaby new case collections/web 登录 --web "{{webBase}}/login"` 新建
+- `codebaby web snapshot "{{webBase}}/login"` 列出元素与推荐定位，并截一张图
+- `codebaby run --dry-run` 列出每个用例的步骤（不打开浏览器）
+- `codebaby doctor` 检查本机浏览器 / 远程浏览器

@@ -1,11 +1,11 @@
 # 屏幕文字识别（OCR）
 
-> `requestbaby guide ocr` · 桌面端：步骤编辑器地址栏旁的「识别文字」按钮读出屏幕上的文字并给出可直接选用的定位
+> `codebaby guide ocr` · 桌面端：步骤编辑器地址栏旁的「识别文字」按钮读出屏幕上的文字并给出可直接选用的定位
 
 界面结构里读不到文字的页面（微信小程序、自绘控件、Canvas、游戏、远程桌面里的窗口），`role` / `id` / `text` 都找不到东西。`ocr` 换一种办法：**对截图做文字识别，按屏幕上看到的字定位**——和人看屏幕一样。
 
 - Web、Android、Mac 桌面三种用例通用，步骤、等待、断言、捕获的写法不变，只是把定位换成 `ocr`
-- 识别在运行 requestbaby 的这台机器上完成：不联网、不调用大模型、不消耗 token；同一张图每次识别结果一致
+- 识别在运行 codebaby 的这台机器上完成：不联网、不调用大模型、不消耗 token；同一张图每次识别结果一致
 - 目前支持 macOS（系统自带的 Vision 框架，不用装任何软件；识别中文需要 macOS 13 及以上）
 - **有界面结构时优先用结构定位**（`role` / `id` / `text`）：更快更稳。`ocr` 用在结构读不到的地方
 
@@ -57,9 +57,9 @@
 ## 先看识别到了什么
 
 ```
-requestbaby android snapshot --ocr          # 手机当前界面
-requestbaby web snapshot <地址> --ocr       # 网页
-requestbaby desktop snapshot <应用> --ocr   # Mac 应用窗口
+codebaby android snapshot --ocr          # 手机当前界面
+codebaby web snapshot <地址> --ocr       # 网页
+codebaby desktop snapshot <应用> --ocr   # Mac 应用窗口
 ```
 
 列出屏幕上每一行文字和可直接粘贴的 `ocr` 定位（同样的文字出现多次时自动带上 `nth`），并把识别到的每一行用绿框标在截图上。桌面端点「识别文字」是同一个功能。
@@ -77,7 +77,7 @@ requestbaby desktop snapshot <应用> --ocr   # Mac 应用窗口
 
 - **Android**：截图走 `adb screencap`（远程 adb、无线调试、云手机一样），识别在本机完成；点击是屏幕坐标点按
 - **Web**：对页面视口截图识别，点击是真实的鼠标事件
-- **Mac 桌面**：识别、断言、捕获只需要截图（和普通截图一样要「屏幕录制」权限），不动你的鼠标。**点击、悬停、填写**屏幕上的文字没有无障碍引用，只能用真实鼠标——需要在 `requestbaby.json` 里写：
+- **Mac 桌面**：识别、断言、捕获只需要截图（和普通截图一样要「屏幕录制」权限），不动你的鼠标。**点击、悬停、填写**屏幕上的文字没有无障碍引用，只能用真实鼠标——需要在 `codebaby.json` 里写：
 
 ```json project
 {
@@ -90,7 +90,7 @@ requestbaby desktop snapshot <应用> --ocr   # Mac 应用窗口
 
 ## 识别语言
 
-缺省识别简体中文和英文。要识别别的语言，在 `requestbaby.json` 里写：
+缺省识别简体中文和英文。要识别别的语言，在 `codebaby.json` 里写：
 
 ```json project
 {
@@ -99,4 +99,4 @@ requestbaby desktop snapshot <应用> --ocr   # Mac 应用窗口
 }
 ```
 
-`requestbaby doctor` 会检查用到 `ocr` 的用例所需的语言本机是否支持，并列出支持的语言。
+`codebaby doctor` 会检查用到 `ocr` 的用例所需的语言本机是否支持，并列出支持的语言。

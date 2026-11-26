@@ -1,6 +1,6 @@
 # 捕获 capture
 
-> `requestbaby guide capture` · 桌面端：「断言」页底部「捕获为变量」表；响应面板「字段」页点「捕获…」
+> `codebaby guide capture` · 桌面端：「断言」页底部「捕获为变量」表；响应面板「字段」页点「捕获…」
 
 ```json fragment
 "capture": {
@@ -35,7 +35,7 @@
 ```
 
 - 用 `NN-` 文件名前缀保证先后（`01-创建订单.json`、`02-查询….json`）
-- `requestbaby run --failed` 只重跑失败的用例时，会自动带上捕获它所需变量的前置用例
+- `codebaby run --failed` 只重跑失败的用例时，会自动带上捕获它所需变量的前置用例
 - 捕获的变量在一次运行内有效；流程里跨步骤传递
 - 请求体里的数字字段：`"orderId": "{{orderId:number}}"`
 
@@ -52,4 +52,4 @@
 }
 ```
 
-`post` 里 `vars.x = data.a.b` 这种直接取值，`requestbaby fmt --fix` 会改写成 capture。
+`post` 里 `vars.x = data.a.b` 这种直接取值，`codebaby fmt --fix` 会改写成 capture。

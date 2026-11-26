@@ -1,19 +1,19 @@
 #!/usr/bin/env bash
-# 把签名的 requestbaby.app 安装到 /Applications（替换旧版本前先校验签名与身份）。
+# 把签名的 codebaby.app 安装到 /Applications（替换旧版本前先校验签名与身份）。
 #
 # 用法：
-#   scripts/install-mac.sh                       # 安装 build/mac/requestbaby.app
-#   scripts/install-mac.sh path/to/requestbaby-x.y.z.dmg   # 从 DMG 安装
+#   scripts/install-mac.sh                       # 安装 build/mac/codebaby.app
+#   scripts/install-mac.sh path/to/codebaby-x.y.z.dmg   # 从 DMG 安装
 
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-SOURCE="${1:-$REPO_ROOT/build/mac/requestbaby.app}"
-BUNDLE_ID="${REQUESTBABY_BUNDLE_ID:-com.zhizuzhefu.app.requestbaby}"
-INSTALL_PATH="/Applications/requestbaby.app"
-EXECUTABLE="Contents/MacOS/requestbaby-desktop"
+SOURCE="${1:-$REPO_ROOT/build/mac/codebaby.app}"
+BUNDLE_ID="${CODEBABY_BUNDLE_ID:-com.zhizuzhefu.app.codebaby}"
+INSTALL_PATH="/Applications/codebaby.app"
+EXECUTABLE="Contents/MacOS/codebaby-desktop"
 
-TMP="$(mktemp -d /tmp/requestbaby-install.XXXXXX)"
+TMP="$(mktemp -d /tmp/codebaby-install.XXXXXX)"
 MOUNTED=""
 cleanup() {
   [[ -n "$MOUNTED" ]] && hdiutil detach "$MOUNTED" >/dev/null 2>&1 || true
@@ -26,7 +26,7 @@ case "$SOURCE" in
     MOUNTED="$TMP/mount"
     mkdir -p "$MOUNTED"
     hdiutil attach -readonly -nobrowse -mountpoint "$MOUNTED" "$SOURCE" >/dev/null
-    APP="$MOUNTED/requestbaby.app"
+    APP="$MOUNTED/codebaby.app"
     ;;
   *.app) APP="$SOURCE" ;;
   *) echo "✘ 需要 .app 或 .dmg：$SOURCE" >&2; exit 2 ;;
@@ -58,7 +58,7 @@ if [[ -d "$INSTALL_PATH" ]]; then
 fi
 
 # 先完整复制到同卷临时位置再原子替换，避免中途失败留下半个 app
-STAGING="/Applications/.requestbaby.app.installing"
+STAGING="/Applications/.codebaby.app.installing"
 rm -rf "$STAGING"
 ditto "$APP" "$STAGING"
 codesign --verify --strict "$STAGING"
@@ -67,18 +67,18 @@ mv "$STAGING" "$INSTALL_PATH"
 
 VERSION=$(defaults read "$INSTALL_PATH/Contents/Info" CFBundleShortVersionString)
 BUILD=$(defaults read "$INSTALL_PATH/Contents/Info" CFBundleVersion)
-echo "✓ 已安装 requestbaby $VERSION ($BUILD) → $INSTALL_PATH · $GATEKEEPER"
-# 内置 CLI：/usr/local/bin/requestbaby 链接到它（链接已存在则随 App 一起更新，无需重复操作）
-CLI_IN_APP="$INSTALL_PATH/Contents/MacOS/requestbaby"
+echo "✓ 已安装 codebaby $VERSION ($BUILD) → $INSTALL_PATH · $GATEKEEPER"
+# 内置 CLI：/usr/local/bin/codebaby 链接到它（链接已存在则随 App 一起更新，无需重复操作）
+CLI_IN_APP="$INSTALL_PATH/Contents/MacOS/codebaby"
 if [[ -x "$CLI_IN_APP" ]]; then
-  if [[ "$(readlink /usr/local/bin/requestbaby 2>/dev/null || true)" == "$CLI_IN_APP" ]]; then
-    echo "  命令行工具：/usr/local/bin/requestbaby → App 内置（已随 App 更新）"
+  if [[ "$(readlink /usr/local/bin/codebaby 2>/dev/null || true)" == "$CLI_IN_APP" ]]; then
+    echo "  命令行工具：/usr/local/bin/codebaby → App 内置（已随 App 更新）"
   else
-    echo "  命令行工具：App 菜单 requestbaby → 安装命令行工具…（或 ln -sf \"$CLI_IN_APP\" /usr/local/bin/requestbaby）"
+    echo "  命令行工具：App 菜单 codebaby → 安装命令行工具…（或 ln -sf \"$CLI_IN_APP\" /usr/local/bin/codebaby）"
   fi
-  RESOLVED=$(command -v requestbaby 2>/dev/null || true)
-  if [[ -n "$RESOLVED" && "$RESOLVED" != "/usr/local/bin/requestbaby" ]]; then
-    echo "  ⚠ 当前终端的 requestbaby 是 ${RESOLVED}（$("$RESOLVED" --version 2>/dev/null || echo 未知版本)），会遮蔽 App 内置版本"
+  RESOLVED=$(command -v codebaby 2>/dev/null || true)
+  if [[ -n "$RESOLVED" && "$RESOLVED" != "/usr/local/bin/codebaby" ]]; then
+    echo "  ⚠ 当前终端的 codebaby 是 ${RESOLVED}（$("$RESOLVED" --version 2>/dev/null || echo 未知版本)），会遮蔽 App 内置版本"
   fi
 fi
-echo "  命令行打开项目：requestbaby open"
+echo "  命令行打开项目：codebaby open"

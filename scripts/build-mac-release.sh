@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# 构建可安装到 /Applications 的 requestbaby.app：
+# 构建可安装到 /Applications 的 codebaby.app：
 #   Rust release 构建（默认 universal：arm64 + x86_64）→ 组装 .app → Developer ID 签名
 #   （hardened runtime + 时间戳）→ 公证 + staple → DMG（签名 + 公证 + staple）
 #
@@ -12,26 +12,26 @@
 #
 # 凭证（全部来自钥匙串，脚本不读写任何密钥文件）：
 #   签名：钥匙串中的 "Developer ID Application" 身份；有多个时用 DEVELOPER_ID_IDENTITY 指定
-#   公证：notarytool 钥匙串 profile，REQUESTBABY_NOTARY_PROFILE（缺省 zhizuzhefu-notary）
+#   公证：notarytool 钥匙串 profile，CODEBABY_NOTARY_PROFILE（缺省 zhizuzhefu-notary）
 #         与其他 Mac 产品共用 iCloud 钥匙串里的 zhizuzhefu-notary
 #
 # 产物：
-#   build/mac/requestbaby.app
-#   build/mac/requestbaby-<version>.dmg
+#   build/mac/codebaby.app
+#   build/mac/codebaby-<version>.dmg
 
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$REPO_ROOT"
 
-APP_NAME="requestbaby"
-EXECUTABLE="requestbaby-desktop"
+APP_NAME="codebaby"
+EXECUTABLE="codebaby-desktop"
 # 内置命令行工具：与 App 同版本同构建，App 菜单「安装命令行工具」把它链接到 /usr/local/bin
-CLI="requestbaby"
-BUNDLE_ID="${REQUESTBABY_BUNDLE_ID:-com.zhizuzhefu.app.requestbaby}"
+CLI="codebaby"
+BUNDLE_ID="${CODEBABY_BUNDLE_ID:-com.zhizuzhefu.app.codebaby}"
 MIN_MACOS="12.0"
 ARCH="${MAC_ARCH:-universal}"
-NOTARY_PROFILE="${REQUESTBABY_NOTARY_PROFILE:-zhizuzhefu-notary}"
+NOTARY_PROFILE="${CODEBABY_NOTARY_PROFILE:-zhizuzhefu-notary}"
 
 VERSION=$(awk -F'"' '/^\[workspace.package\]/{s=1} s && /^version/{print $2; exit}' Cargo.toml)
 BUILD_NUMBER=$(git rev-list --count HEAD)
@@ -66,12 +66,12 @@ if [[ "${SKIP_NOTARIZE:-0}" != "1" ]] && \
    ! xcrun notarytool history --keychain-profile "$NOTARY_PROFILE" >/dev/null 2>&1; then
   echo "✘ 找不到公证凭证 profile '$NOTARY_PROFILE'。" >&2
   echo "  一次性创建：xcrun notarytool store-credentials $NOTARY_PROFILE" >&2
-  echo "  或复用已有 profile：REQUESTBABY_NOTARY_PROFILE=<名称> $0" >&2
+  echo "  或复用已有 profile：CODEBABY_NOTARY_PROFILE=<名称> $0" >&2
   echo "  或先只签名不公证：SKIP_NOTARIZE=1 $0" >&2
   exit 1
 fi
 
-echo "==> requestbaby $VERSION (build $BUILD_NUMBER) · $ARCH"
+echo "==> codebaby $VERSION (build $BUILD_NUMBER) · $ARCH"
 echo "    bundle:   $BUNDLE_ID"
 echo "    identity: $DEVELOPER_ID_IDENTITY"
 
@@ -92,7 +92,7 @@ BINARIES=()
 CLI_BINARIES=()
 for t in "${TARGETS[@]}"; do
   echo "==> cargo build --release ($t)"
-  cargo build --release --locked -p requestbaby-desktop -p requestbaby --target "$t"
+  nice -n 10 cargo build --release --locked -p codebaby-desktop -p codebaby --target "$t"
   BINARIES+=("$TARGET_DIR/$t/release/$EXECUTABLE")
   CLI_BINARIES+=("$TARGET_DIR/$t/release/$CLI")
 done
@@ -178,7 +178,7 @@ codesign --verify --strict --verbose=2 "$APP_PATH/Contents/MacOS/$CLI"
 notarize() {
   local target="$1" upload="$1" tmp=""
   if [[ "$target" == *.app ]]; then
-    tmp="$(mktemp -d /tmp/requestbaby-notary.XXXXXX)"
+    tmp="$(mktemp -d /tmp/codebaby-notary.XXXXXX)"
     upload="$tmp/$APP_NAME.zip"
     ditto -c -k --keepParent "$target" "$upload"
   fi

@@ -1,17 +1,17 @@
 [workspace]
 resolver = "2"
-members = ["crates/requestbaby-core", "crates/requestbaby-cli", "crates/requestbaby-desktop"]
+members = ["crates/codebaby-core", "crates/codebaby-cli", "crates/codebaby-desktop"]
 # 默认只构建无界面的 core + cli：CI / 服务器 / AI 沙箱无需 GPU 与窗口系统
-default-members = ["crates/requestbaby-core", "crates/requestbaby-cli"]
+default-members = ["crates/codebaby-core", "crates/codebaby-cli"]
 
 [workspace.package]
 version = "0.3.18"
 edition = "2021"
 license = "MIT"
-repository = "https://github.com/zhizuzhefu/requestbaby"
+repository = "https://github.com/zhizuzhefu/codebaby"
 
 [workspace.dependencies]
-requestbaby-core = { path = "crates/requestbaby-core" }
+codebaby-core = { path = "crates/codebaby-core" }
 anyhow = "1"
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["preserve_order"] }

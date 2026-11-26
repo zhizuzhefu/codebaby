@@ -1,6 +1,6 @@
 # 断言 expect
 
-> `requestbaby guide expect` · 桌面端：用例编辑器「断言」页（状态码 / 响应体 / 响应头三张表，一行对应文件里一条）
+> `codebaby guide expect` · 桌面端：用例编辑器「断言」页（状态码 / 响应体 / 响应头三张表，一行对应文件里一条）
 
 ## 结构
 
@@ -103,7 +103,7 @@ status = 200                           → 实际 500
 ## 照真实响应写
 
 ```bash
-requestbaby send collections/orders/02-详情.json --suggest
+codebaby send collections/orders/02-详情.json --suggest
 ```
 
 输出每个字段的「等于当前值」与「类型」两种写法，以及可直接粘贴的 `capture`。值每次会变的字段（id、时间、token）用类型断言。桌面端响应面板「字段」页同一实现，点一下写进用例。
@@ -122,4 +122,4 @@ expect 表达不了的才写 JS：跨字段计算、遍历比较、拼接后比�
 ```
 
 `tests` 里 `data` 是整个响应体（所以这里是 `data.data.items`）。能逐字段写的检查放 expect：失败时才看得出是哪个字段。
-已有的 JS 断言可以 `requestbaby fmt --fix` 自动改写成 expect（只改语义完全一致的）。
+已有的 JS 断言可以 `codebaby fmt --fix` 自动改写成 expect（只改语义完全一致的）。

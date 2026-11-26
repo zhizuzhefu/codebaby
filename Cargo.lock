@@ -5867,20 +5867,20 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "19b30a45b0cd0bcca8037f3d0dc3421eaf95327a17cad11964fb8179b4fc4832"
 
 [[package]]
-name = "requestbaby"
+name = "codebaby"
 version = "0.3.18"
 dependencies = [
  "anyhow",
  "clap",
  "notify 6.1.1",
- "requestbaby-core",
+ "codebaby-core",
  "serde",
  "serde_json",
  "tempfile",
 ]
 
 [[package]]
-name = "requestbaby-core"
+name = "codebaby-core"
 version = "0.3.18"
 dependencies = [
  "anyhow",
@@ -5926,14 +5926,14 @@ dependencies = [
 ]
 
 [[package]]
-name = "requestbaby-desktop"
+name = "codebaby-desktop"
 version = "0.3.18"
 dependencies = [
  "anyhow",
  "futures",
  "gpui-kit",
  "notify 6.1.1",
- "requestbaby-core",
+ "codebaby-core",
  "serde",
  "serde_json",
  "walkdir",

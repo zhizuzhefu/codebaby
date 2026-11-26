@@ -1,6 +1,6 @@
-# requestbaby 速查卡
+# codebaby 速查卡
 
-> 按场景深入：`requestbaby guide <主题>`，主题见文末。
+> 按场景深入：`codebaby guide <主题>`，主题见文末。
 
 ## 5 个概念
 
@@ -10,7 +10,7 @@
 | 集合 | 一个目录；公共请求头、标签 | 目录里的 `collection.json`（可选） |
 | 环境 | 一组变量：`baseUrl`、账号 | `envs/<环境>.json`；`baseUrl` 只写到端口，`/api/…` 写在用例 URL |
 | 断言 | 响应应该是什么样 | 用例的 `expect` |
-| 流程 | 按顺序跑几个集合 / 用例；API / Web / Android / Mac 可混在一个流程 | `requestbaby.json` 的 `workflows` |
+| 流程 | 按顺序跑几个集合 / 用例；API / Web / Android / Mac 可混在一个流程 | `codebaby.json` 的 `workflows` |
 
 ## 一个完整的用例
 
@@ -69,7 +69,7 @@ token 这类每个用例都要带的请求头，在目录的 `collection.json` �
 
 ## 变量：日常只需要两层
 
-- **环境变量**：`envs/<环境>.json`，用 `requestbaby vars set baseUrl http://localhost:8080 -e dev` 写入；密钥加 `--secret`，只在本机的值加 `--local dev`
+- **环境变量**：`envs/<环境>.json`，用 `codebaby vars set baseUrl http://localhost:8080 -e dev` 写入；密钥加 `--secret`，只在本机的值加 `--local dev`
 - **捕获变量**：上面的 `capture`（流程里跨步骤也传）
 
 用法：`{{name}}`，URL 里直接写。JSON 请求体里的数字字段写 `"id": "{{id:number}}"`（输出裸数字）。断言里与数字比较不用转换（环境里的 `"42"` 等于 42）。
@@ -83,25 +83,25 @@ token 这类每个用例都要带的请求头，在目录的 `collection.json` �
 `-e <环境>` 选环境，缺省用项目配置。
 
 ```bash
-requestbaby new case collections/orders 创建订单 -m post
-requestbaby new case collections/orders --curl "curl …"
-requestbaby send collections/orders/01-创建订单.json --suggest   # 查看响应字段与断言写法
-requestbaby validate --report json   # 检查配置
-requestbaby run --report json        # 读 results[].tests[].detail
-requestbaby run --failed             # 重跑失败项及其前置用例
-requestbaby verify -e dev --plan     # 先看计划，不发请求
-requestbaby verify -e dev            # 0 必验通过 / 1 用例失败 / 2 验收不完整
+codebaby new case collections/orders 创建订单 -m post
+codebaby new case collections/orders --curl "curl …"
+codebaby send collections/orders/01-创建订单.json --suggest   # 查看响应字段与断言写法
+codebaby validate --report json   # 检查配置
+codebaby run --report json        # 读 results[].tests[].detail
+codebaby run --failed             # 重跑失败项及其前置用例
+codebaby verify -e dev --plan     # 先看计划，不发请求
+codebaby verify -e dev            # 0 必验通过 / 1 用例失败 / 2 验收不完整
 ```
 
-## 规矩（写偏了 validate 会提示；多数 `requestbaby fmt --fix` 能自动改写）
+## 规矩（写偏了 validate 会提示；多数 `codebaby fmt --fix` 能自动改写）
 
 1. 断言写 `expect`；只有跨字段计算、遍历比较才用进阶的 `tests`（JS）
 2. 取值写 `capture`，不写 `post` 脚本
 3. URL 写 `{{baseUrl}}/路径`，域名只放在环境里
 4. 有先后依赖的用 `NN-` 排序，靠 capture 传值
-5. 只能在某个环境跑的，用流程固定环境（`requestbaby workflow env <流程> <环境>`），不写环境守卫脚本
+5. 只能在某个环境跑的，用流程固定环境（`codebaby workflow env <流程> <环境>`），不写环境守卫脚本
 6. 期望来自需求或契约。用 `--workflow` 选流程，`--require-case` 固定必验文件，结论看 `coverage` 和退出码（`guide cli`）
 
-## 主题（`requestbaby guide <主题>`）
+## 主题（`codebaby guide <主题>`）
 
 `expect` 断言 · `capture` 捕获与串联 · `vars` 变量进阶 · `flow` 流程 · `auth` 鉴权登录 · `e2e` 多步 · `mixed` 多端混合 · `data` 数据驱动 · `setup` 造数清数 · `env` 环境 · `grpc` gRPC · `ws` WebSocket · `web` 网页 · `android` 安卓 · `desktop` Mac 桌面 · `ocr` 文字识别 · `control` 循环通知 · `proxy` 代理 · `scripts` 脚本 · `cli` 命令 · `ref` 全部字段 · `all` 全部

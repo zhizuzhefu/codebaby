@@ -1,6 +1,6 @@
 # WebSocket
 
-> `requestbaby guide ws` · 桌面端：「新建用例」时选 WebSocket（或在用例编辑器左上角把协议切成 WebSocket），用例编辑器的「对话」页一行一步，响应面板「对话」页按时间列出收发的每条消息
+> `codebaby guide ws` · 桌面端：「新建用例」时选 WebSocket（或在用例编辑器左上角把协议切成 WebSocket），用例编辑器的「对话」页一行一步，响应面板「对话」页按时间列出收发的每条消息
 
 和 HTTP 用例只差一处：请求部分写 `ws`。连接后按 `steps` 一步步收发，每一步的断言与捕获立刻生效，后面的步骤就能用。
 
@@ -81,6 +81,6 @@
 
 - 地址写 `ws://` / `wss://`（`http(s)://` 也接受）；`query` 写查询参数、`subprotocols` 写子协议、自签证书写 `"insecure": true`
 - 集合 `collection.json` 的 `headers` 会一起带上；同一主机之前 HTTP 用例拿到的 Cookie 自动带上
-- `requestbaby send <用例>` 在终端按时间列出整段对话（→ 发出，← 收到）
-- `requestbaby run --dry-run -v` 显示等价的 websocat 命令
-- `requestbaby new case collections/chat 连接测试 --ws "{{wsBase}}/chat"` 新建
+- `codebaby send <用例>` 在终端按时间列出整段对话（→ 发出，← 收到）
+- `codebaby run --dry-run -v` 显示等价的 websocat 命令
+- `codebaby new case collections/chat 连接测试 --ws "{{wsBase}}/chat"` 新建

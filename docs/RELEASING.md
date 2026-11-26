@@ -22,9 +22,11 @@
 
 发布全程在本机完成，仓库不使用 CI（GitHub Actions；账号付款失败时 Actions 无法运行，曾因此取消 CI）；测试与 clippy 由发布脚本在发布前跑。只发布 macOS 版（桌面端与命令行）。
 
+Cargo 默认一次只运行一个编译任务，`make test`、`make lint` 和打包脚本以较低的 CPU 调度优先级运行。`make mac-app` 默认只构建 Apple 芯片版本供本机使用，正式发布按顺序构建两个架构。本机资源充足时可以用例如 `CARGO_BUILD_JOBS=2 make mac-app` 提高并行度。
+
 ### Linux
 
-不在本机或 mini 上编译、生成 Linux 包。源码本身支持 Linux（`cargo install --locked --path crates/requestbaby-cli`），有用户需求时再单独评估：需要一台真实的 Linux 机器验证，并补上 `scripts/release.sh` 的目标和 `core::update::target()` 的 Linux 映射。
+不在本机或 mini 上编译、生成 Linux 包。源码本身支持 Linux（`cargo install --locked --path crates/codebaby-cli`），有用户需求时再单独评估：需要一台真实的 Linux 机器验证，并补上 `scripts/release.sh` 的目标和 `core::update::target()` 的 Linux 映射。
 
 版本号不复用：哪怕只想换一个安装包，也发新的补丁版本。
 
@@ -34,12 +36,19 @@ Apple 证书和公证凭据只存在维护者的钥匙串里，不放进 GitHub 
 
 ## 用户怎么获得更新
 
-- 命令行：`requestbaby upgrade`（`--check` 只检查，有新版本时 exit 1）。下载对应平台的包，校验 SHA256 后替换自身；在 `requestbaby.app` 里的命令行走与桌面端相同的自动更新（下载 → 校验 → 退出后原子替换），随 App 一起更新
-- 桌面端：启动时与运行期间每 6 小时后台检查；发现新版本自动下载 DMG，并在暂存副本上校验（SHA256、版本、签名、与当前 App 同一团队、公证、能运行），状态栏出现「安装并更新 x.y.z」；用户退出时由独立的更新程序原子替换（手动「检查更新」下载完成后弹出只有「安装并更新」一个选项的对话框，状态栏的按钮点一下也直接装，装完自动重新打开）。替换失败会换回旧版本并在下次启动时提示，日志在 `~/Library/Logs/requestbaby-update.log`，该版本不再自动重试。不能自动更新时（没有 /Applications 写权限、从 DMG 或下载目录里直接运行、开发构建）退回状态栏「新版本」手动下载 DMG。菜单栏 requestbaby →「检查更新…」在欢迎页也能用（更新状态不依赖打开的项目）；右上角「⋯」菜单有「检查更新…」与自动更新开关（环境变量 `REQUESTBABY_NO_UPDATE_CHECK=1` 也可关闭）
+- 命令行：`codebaby upgrade`（`--check` 只检查，有新版本时 exit 1）。下载对应平台的包，校验 SHA256 后替换自身；在 `codebaby.app` 里的命令行走与桌面端相同的自动更新（下载 → 校验 → 退出后原子替换），随 App 一起更新
+- 桌面端：启动时与运行期间每 6 小时后台检查；发现新版本自动下载 DMG，并在暂存副本上校验（SHA256、版本、签名、与当前 App 同一团队、公证、能运行），状态栏出现「安装并更新 x.y.z」；用户退出时由独立的更新程序原子替换（手动「检查更新」下载完成后弹出只有「安装并更新」一个选项的对话框，状态栏的按钮点一下也直接装，装完自动重新打开）。替换失败会换回旧版本并在下次启动时提示，日志在 `~/Library/Logs/codebaby-update.log`，该版本不再自动重试。不能自动更新时（没有 /Applications 写权限、从 DMG 或下载目录里直接运行、开发构建）退回状态栏「新版本」手动下载 DMG。菜单栏 codebaby →「检查更新…」在欢迎页也能用（更新状态不依赖打开的项目）；右上角「⋯」菜单有「检查更新…」与自动更新开关（环境变量 `CODEBABY_NO_UPDATE_CHECK=1` 也可关闭）
 - 首次启用：自动更新是 0.3.3 起才有的能力，更旧的版本需要手动安装一次 0.3.3 或更高版本，之后就全自动
 - 检查与下载只访问 `api.github.com` 和 Release 附件，不上传任何本机信息，走与用例相同的代理规则
 - 下载的附件必须有同名 `.sha256`，校验不通过不安装。这能发现下载损坏，但不能防范 Release 本身被篡改——Release 的写权限就是信任根
 
 ## 仓库迁移
 
-发布仓库写在 `crates/requestbaby-core/src/update.rs` 的 `REPO` 常量里（环境变量 `REQUESTBABY_UPDATE_REPO=owner/name` 可临时指向别处）。迁移仓库时改这一处。检查更新用的是 GitHub 公开接口：仓库是私有时查不到版本，会显示「还没有发布版本」。
+自动更新的默认仓库写在 `crates/codebaby-core/src/update.rs` 的 `REPO` 常量里（环境变量 `CODEBABY_UPDATE_REPO=owner/name` 可临时指向别处）。检查更新用的是 GitHub 公开接口：仓库是私有时查不到版本，会显示「还没有发布版本」。
+
+## 从更名前的版本迁移
+
+- 首次请手动安装 `codebaby.app` 或 `codebaby` 命令行。App 的包标识已经改为 `com.zhizuzhefu.app.codebaby`，运行 Mac 桌面用例时请给新 App 授予「辅助功能」及「屏幕录制」权限。把脚本和 CI 中的命令改为 `codebaby`。
+- 将已有项目的根配置文件改名为 `codebaby.json`。用 `codebaby guide --init --update` 更新未修改过的 AI 入口，自定义的 `AGENTS.md` 可手动更新。
+- 将运行历史目录改名为 `.codebaby/`，同步用新目录名更新运行记录中的截图路径和项目 `.gitignore`。
+- 将工具自身的环境变量统一改为 `CODEBABY_` 前缀。

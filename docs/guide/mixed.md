@@ -1,6 +1,6 @@
 # 配方：多端混合（API + Web + 手机）
 
-> `requestbaby guide mixed`
+> `codebaby guide mixed`
 
 目标：买家用接口下单 → 运营在网页后台审核通过 → 在手机 App 里确认订单已通过 → 再用接口复核状态。四个端的用例放进**同一个流程**，一次跑完，得到一个结论、一份报告。
 
@@ -105,8 +105,8 @@ collections/
 ```
 
 ```bash
-requestbaby workflow order-review
-requestbaby export -f text      # 结论 + 按真实先后排列的时间线 + 失败详情，可直接贴给人或 AI
+codebaby workflow order-review
+codebaby export -f text      # 结论 + 按真实先后排列的时间线 + 失败详情，可直接贴给人或 AI
 ```
 
 ## 几个要点
@@ -120,7 +120,7 @@ requestbaby export -f text      # 结论 + 按真实先后排列的时间线 + �
 
 ## 怎么写才不容易错（给 AI 的顺序）
 
-1. 先分别摸清每一端有什么：`requestbaby web snapshot <网页地址>`、`requestbaby android snapshot`（小程序等读不到结构的加 `--ocr`），拿到可以直接粘贴的定位；接口先看响应：`requestbaby send <用例> --suggest`
-2. 每个用例**单独**写好、单独 `validate`、单独跑通。依赖前面 `capture` 的变量，调试时先用 `requestbaby vars set` 临时填上（`guide vars`）
-3. 再串成流程，`requestbaby verify` 看覆盖是否完整
+1. 先分别摸清每一端有什么：`codebaby web snapshot <网页地址>`、`codebaby android snapshot`（小程序等读不到结构的加 `--ocr`），拿到可以直接粘贴的定位；接口先看响应：`codebaby send <用例> --suggest`
+2. 每个用例**单独**写好、单独 `validate`、单独跑通。依赖前面 `capture` 的变量，调试时先用 `codebaby vars set` 临时填上（`guide vars`）
+3. 再串成流程，`codebaby verify` 看覆盖是否完整
 4. 每一端的写法、定位、证据细节见 `guide web` / `guide android` / `guide desktop` / `guide ocr`

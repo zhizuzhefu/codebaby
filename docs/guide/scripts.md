@@ -1,6 +1,6 @@
 # 进阶：JS 脚本
 
-> `requestbaby guide scripts` · 桌面端：用例编辑器「脚本（进阶）」页
+> `codebaby guide scripts` · 桌面端：用例编辑器「脚本（进阶）」页
 
 断言用 `expect`、取值用 `capture` 覆盖不了时才写脚本。沙箱是 QuickJS（ES2020），没有文件与网络的自由访问。
 
@@ -9,7 +9,7 @@
 | `pre` | 请求发出前 | 签名、时间戳、动态请求体 |
 | `post` | 响应后、断言前（capture 之后） | 计算后的值写入 `vars` |
 | `tests` | 断言阶段（expect 之后） | 每条一个 JS 表达式，真值为通过 |
-| 集合 `setup` / `teardown` | 进入 / 离开集合 | 造数清数（`requestbaby guide setup`） |
+| 集合 `setup` / `teardown` | 进入 / 离开集合 | 造数清数（`codebaby guide setup`） |
 
 ```json case
 {
@@ -42,4 +42,4 @@ log(任何值)                                       -v 时输出（secret 自�
 - `求值为 false`：断言不成立 —— 业务问题，对照报告里的响应快照
 - `执行错误: TypeError … of null（访问了 null/undefined 的 'x' 字段）`：路径写错 —— 改用 `res.json('a.b')`，或改写成 expect（字段不存在会直接说明）
 
-`tests` / `post` 里能逐字段表达的部分，`requestbaby fmt --fix` 会改写成 expect / capture；一条断言是一大段程序时 validate 提示 `long-js-test`。
+`tests` / `post` 里能逐字段表达的部分，`codebaby fmt --fix` 会改写成 expect / capture；一条断言是一大段程序时 validate 提示 `long-js-test`。

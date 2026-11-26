@@ -1,8 +1,8 @@
 {
   "$schema": "http://json-schema.org/draft-07/schema#",
-  "$id": "https://requestbaby.dev/schema/project.schema.json",
-  "title": "requestbaby 项目配置",
-  "description": "requestbaby.json：项目根配置——全局变量、默认环境、超时与命名流程。",
+  "$id": "https://raw.githubusercontent.com/zhizuzhefu/codebaby/main/docs/schema/project.schema.json",
+  "title": "codebaby 项目配置",
+  "description": "codebaby.json：项目根配置——全局变量、默认环境、超时与命名流程。",
   "type": "object",
   "additionalProperties": false,
   "properties": {
@@ -30,7 +30,7 @@
     "timeoutMs": { "type": "integer", "minimum": 1, "description": "默认请求超时毫秒" },
     "workflows": {
       "type": "object",
-      "description": "命名流程：多阶段编排，runtime vars 跨阶段自动传递（requestbaby workflow <name>）",
+      "description": "命名流程：多阶段编排，runtime vars 跨阶段自动传递（codebaby workflow <name>）",
       "additionalProperties": {
         "type": "object",
         "additionalProperties": false,
@@ -116,16 +116,16 @@
       "properties": {
         "browser": {
           "type": "string",
-          "description": "浏览器可执行文件（缺省自动查找本机 Chrome / Edge / Chromium）；环境变量 REQUESTBABY_BROWSER 优先"
+          "description": "浏览器可执行文件（缺省自动查找本机 Chrome / Edge / Chromium）；环境变量 CODEBABY_BROWSER 优先"
         },
         "endpoint": {
           "type": "string",
           "pattern": "^(https?://|wss?://)?[^\\s/?#]+(:[0-9]+)?([/?#]\\S*)?$",
-          "description": "远程浏览器（Docker / 云浏览器 / 另一台机器上开了调试端口的 Chrome）：http://主机:9222 或 ws(s)://…；环境变量 REQUESTBABY_BROWSER_URL 优先。配了就不启动本机浏览器"
+          "description": "远程浏览器（Docker / 云浏览器 / 另一台机器上开了调试端口的 Chrome）：http://主机:9222 或 ws(s)://…；环境变量 CODEBABY_BROWSER_URL 优先。配了就不启动本机浏览器"
         },
         "headed": {
           "type": "boolean",
-          "description": "显示浏览器窗口（缺省无界面运行；--headed / REQUESTBABY_HEADED=1 临时打开）"
+          "description": "显示浏览器窗口（缺省无界面运行；--headed / CODEBABY_HEADED=1 临时打开）"
         },
         "viewport": {
           "type": "object",
@@ -148,7 +148,7 @@
       "additionalProperties": false,
       "description": "Mac 桌面应用用例的设置（需要安装 agent-desktop）",
       "properties": {
-        "agentDesktop": { "type": "string", "description": "agent-desktop 路径（缺省 PATH 与常见安装位置；环境变量 REQUESTBABY_AGENT_DESKTOP 优先）" },
+        "agentDesktop": { "type": "string", "description": "agent-desktop 路径（缺省 PATH 与常见安装位置；环境变量 CODEBABY_AGENT_DESKTOP 优先）" },
         "headed": {
           "type": "boolean",
           "description": "允许真实鼠标：按屏幕文字（ocr）定位的点击需要它——会移动鼠标、把应用窗口带到最前，运行期间不要动鼠标。缺省关闭；只读操作（识别、断言、取值）不受影响"
@@ -167,7 +167,7 @@
         "languages": {
           "type": "array",
           "items": { "type": "string" },
-          "description": "识别语言（缺省 [\"zh-Hans\", \"en-US\"]）：如 zh-Hant / ja-JP / ko-KR；requestbaby doctor 列出本机支持的语言"
+          "description": "识别语言（缺省 [\"zh-Hans\", \"en-US\"]）：如 zh-Hant / ja-JP / ko-KR；codebaby doctor 列出本机支持的语言"
         }
       }
     },

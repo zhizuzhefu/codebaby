@@ -39,7 +39,7 @@ CURRENT=$(awk -F'"' '/^\[workspace.package\]/{s=1} s && /^version/{print $2; exi
 [[ "$CURRENT" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "✘ 无法从 Cargo.toml 读取版本号（得到「${CURRENT}」）" >&2; exit 1; }
 VERSION="$CURRENT"   # 下面按策略可能被改成新版本
 TAG="v$VERSION"
-DMG="build/mac/requestbaby-$VERSION.dmg"
+DMG="build/mac/codebaby-$VERSION.dmg"
 # 命令行包的目标平台（每个 2 个附件：tar.gz + .sha256），与 core::update::target() 的取值一致；加上 DMG 的 2 个附件
 CLI_TARGETS=(aarch64-apple-darwin x86_64-apple-darwin)
 EXPECTED_ASSETS=$(( (${#CLI_TARGETS[@]} + 1) * 2 ))
@@ -78,7 +78,7 @@ elif [[ -n "$LATEST" ]] && [[ "$(vmax "$CURRENT" "$LATEST")" == "$LATEST" ]]; th
   VERSION="$(bump_patch "$LATEST")"
 fi
 TAG="v$VERSION"
-DMG="build/mac/requestbaby-$VERSION.dmg"
+DMG="build/mac/codebaby-$VERSION.dmg"
 git rev-parse -q --verify "refs/tags/$TAG" >/dev/null && fail "标签 $TAG 已存在（不复用版本号）"
 gh release view "$TAG" >/dev/null 2>&1 && fail "GitHub 上已有 $TAG 的 Release（不复用版本号）"
 
@@ -117,8 +117,8 @@ if [[ "$VERSION" != "$CURRENT" ]]; then
 fi
 
 echo "==> 测试与 clippy"
-cargo test --workspace --locked
-cargo clippy --workspace --all-targets --locked -- -D warnings
+nice -n 10 cargo test --workspace --locked
+nice -n 10 cargo clippy --workspace --all-targets --locked -- -D warnings
 
 echo "==> 构建 DMG（签名 + 公证，几分钟）"
 scripts/build-mac-release.sh
@@ -128,10 +128,10 @@ scripts/build-mac-release.sh
 echo "==> 打包命令行（macOS）"
 ASSETS=("$DMG" "$DMG.sha256")
 for t in "${CLI_TARGETS[@]}"; do
-  BIN="$TARGET_DIR/$t/release/requestbaby"
+  BIN="$TARGET_DIR/$t/release/codebaby"
   [[ -x "$BIN" ]] || fail "没有 $BIN"
-  PKG="build/mac/requestbaby-$t.tar.gz"
-  tar -czf "$PKG" -C "$(dirname "$BIN")" requestbaby
+  PKG="build/mac/codebaby-$t.tar.gz"
+  tar -czf "$PKG" -C "$(dirname "$BIN")" codebaby
   ( cd build/mac && shasum -a 256 "$(basename "$PKG")" > "$(basename "$PKG").sha256" )
   ASSETS+=("$PKG" "$PKG.sha256")
 done
@@ -141,7 +141,7 @@ echo "==> 创建 Release 草稿并上传全部附件"
 gh release create "$TAG" "${ASSETS[@]}" --draft --title "$TAG" --generate-notes
 
 echo "==> 推送标签 ${TAG}"
-git tag -a "$TAG" -m "requestbaby $VERSION"
+git tag -a "$TAG" -m "codebaby $VERSION"
 git push origin "$TAG"
 
 N=$(gh release view "$TAG" --json assets --jq '.assets | length')

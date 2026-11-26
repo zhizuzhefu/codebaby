@@ -1,8 +1,8 @@
 {
   "$schema": "http://json-schema.org/draft-07/schema#",
-  "$id": "https://requestbaby.dev/schema/case.schema.json",
-  "title": "requestbaby 用例配置",
-  "description": "单个验收用例：HTTP / gRPC / WebSocket 接口，或 Web / Android / Mac 桌面界面。由 AI 生成或人工编写，requestbaby validate 可校验。",
+  "$id": "https://raw.githubusercontent.com/zhizuzhefu/codebaby/main/docs/schema/case.schema.json",
+  "title": "codebaby 用例配置",
+  "description": "单个验收用例：HTTP / gRPC / WebSocket 接口，或 Web / Android / Mac 桌面界面。由 AI 生成或人工编写，codebaby validate 可校验。",
   "type": "object",
   "additionalProperties": false,
   "required": [],
@@ -167,7 +167,7 @@
           "items": { "type": "integer", "minimum": 100, "maximum": 599 }
         }
       ],
-      "description": "旧写法：期望状态码。新用例请写 expect.status（requestbaby fmt --fix 自动迁移）"
+      "description": "旧写法：期望状态码。新用例请写 expect.status（codebaby fmt --fix 自动迁移）"
     }
   },
   "definitions": {
@@ -277,7 +277,7 @@
         "timeoutMs": {
           "type": "integer",
           "minimum": 1,
-          "description": "单请求超时毫秒，缺省用 requestbaby.json 的 timeoutMs"
+          "description": "单请求超时毫秒，缺省用 codebaby.json 的 timeoutMs"
         },
         "retry": {
           "type": "integer",
@@ -335,7 +335,7 @@
         },
         "method": {
           "type": "string",
-          "description": "完整方法名：包.服务/方法，如 user.v1.UserService/GetUser（requestbaby grpc list 列出全部）"
+          "description": "完整方法名：包.服务/方法，如 user.v1.UserService/GetUser（codebaby grpc list 列出全部）"
         },
         "message": {
           "description": "请求消息：protobuf 的 JSON 写法，字段名用 .proto 里的名字（lowerCamelCase 也接受）；int64 写数字或字符串都行；数字变量写 \"{{id:number}}\"。不写 = 空消息"
@@ -595,7 +595,7 @@
         },
         "break": { "const": true, "description": "跳出最近的一层 repeat（通常写在 if 的 then 里：发现目标、通知完就结束监控）" },
         "notify": {
-          "description": "发一条通知（监控发现目标、失败时告警）：弹本机通知、追加到 .requestbaby/alerts.log，配了 webhook 就以 {\"text\": \"…\"} POST 过去。写通知文字，或 {\"message\": \"…\", \"webhook\": \"https://…\"}；不写 webhook 用 requestbaby.json 的 notify.webhook。不运行任何命令；optional: true 则发送失败时跳过",
+          "description": "发一条通知（监控发现目标、失败时告警）：弹本机通知、追加到 .codebaby/alerts.log，配了 webhook 就以 {\"text\": \"…\"} POST 过去。写通知文字，或 {\"message\": \"…\", \"webhook\": \"https://…\"}；不写 webhook 用 codebaby.json 的 notify.webhook。不运行任何命令；optional: true 则发送失败时跳过",
           "oneOf": [
             { "type": "string" },
             {

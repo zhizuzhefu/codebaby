@@ -3,16 +3,16 @@
 help:
 	@echo "make test          运行全部测试"
 	@echo "make lint          clippy（-D warnings）"
-	@echo "make mac-release   构建签名 + 公证的 requestbaby.app 与 DMG（build/mac/）"
+	@echo "make mac-release   构建签名 + 公证的 codebaby.app 与 DMG（build/mac/）"
 	@echo "make mac-app       只构建签名的 .app（不公证、不出 DMG，本机自用）"
 	@echo "make release       发版：测试 → 本机签名公证 DMG → GitHub Release（见 docs/RELEASING.md）"
-	@echo "make install-mac   安装 build/mac/requestbaby.app 到 /Applications"
+	@echo "make install-mac   安装 build/mac/codebaby.app 到 /Applications"
 
 test:
-	cargo test --workspace
+	nice -n 10 cargo test --workspace
 
 lint:
-	cargo clippy --workspace --all-targets -- -D warnings
+	nice -n 10 cargo clippy --workspace --all-targets -- -D warnings
 
 mac-release:
 	scripts/build-mac-release.sh

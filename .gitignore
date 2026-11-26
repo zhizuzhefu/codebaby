@@ -1,6 +1,6 @@
 /target
 # 运行历史（CLI / Desktop 共享的本地状态，任何项目目录下都不入库）
-.requestbaby/
+.codebaby/
 # macOS 发布产物（scripts/build-mac-release.sh 输出到 build/mac/）：安装包不入仓库
 /build/
 *.dmg

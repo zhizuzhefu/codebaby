@@ -1,6 +1,6 @@
 # 变量进阶
 
-> `requestbaby guide vars` · 日常只需要环境变量 + 捕获变量；本页是其余层级与类型细节
+> `codebaby guide vars` · 日常只需要环境变量 + 捕获变量；本页是其余层级与类型细节
 
 ## 语法
 
@@ -13,7 +13,7 @@
 
 ## 层级（同名时右边覆盖左边）
 
-项目 `requestbaby.json` < 环境 `envs/<环境>.json` < 本机覆盖 `envs/<环境>.local.json` < 集合 `collection.json`（浅 → 深）< 数据驱动行 < 捕获
+项目 `codebaby.json` < 环境 `envs/<环境>.json` < 本机覆盖 `envs/<环境>.local.json` < 集合 `collection.json`（浅 → 深）< 数据驱动行 < 捕获
 
 ## 定义形态
 
@@ -33,14 +33,14 @@
 ## 用命令读写（与桌面端变量面板同一实现）
 
 ```bash
-requestbaby vars                                    # 全项目变量：各层定义 / 捕获 / 引用 / 未定义
-requestbaby vars collections/orders/02-详情.json -e dev   # 某个用例每个变量的最终值、来源，以及解析后的 URL
-requestbaby vars set baseUrl http://localhost:8080 -e dev
-requestbaby vars set token eyJ… -e dev --secret
-requestbaby vars set token eyJ… --local dev --secret    # 只在本机：envs/dev.local.json（自动加入 .gitignore）
-requestbaby vars set apiKey --project --from-env MY_KEY
-requestbaby vars set tenant t1 --collection collections/admin
-requestbaby vars unset tenant --collection collections/admin
+codebaby vars                                    # 全项目变量：各层定义 / 捕获 / 引用 / 未定义
+codebaby vars collections/orders/02-详情.json -e dev   # 某个用例每个变量的最终值、来源，以及解析后的 URL
+codebaby vars set baseUrl http://localhost:8080 -e dev
+codebaby vars set token eyJ… -e dev --secret
+codebaby vars set token eyJ… --local dev --secret    # 只在本机：envs/dev.local.json（自动加入 .gitignore）
+codebaby vars set apiKey --project --from-env MY_KEY
+codebaby vars set tenant t1 --collection collections/admin
+codebaby vars unset tenant --collection collections/admin
 ```
 
 入库的环境文件放占位或 `{"from": "env"}`，各人用 `--local` 填自己的真实值。

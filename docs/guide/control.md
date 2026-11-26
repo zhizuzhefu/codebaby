@@ -1,6 +1,6 @@
 # 循环、条件、随机等待与通知
 
-> `requestbaby guide control` · Web / Android / Mac 桌面的界面步骤通用；桌面端在步骤编辑器的动作下拉里选「重复 / 如果 / 通知」，内容用 JSON 写
+> `codebaby guide control` · Web / Android / Mac 桌面的界面步骤通用；桌面端在步骤编辑器的动作下拉里选「重复 / 如果 / 通知」，内容用 JSON 写
 
 把一次性的验收变成可以一直盯着的监控、轮询、联动。先看一个完整的例子：轮流点 4 个日期，出现「可预约」就截图、通知、结束；页面不对或任何一步出错也通知。
 
@@ -66,7 +66,7 @@
 | `"3s-8s"` `"3-8s"` | 随机区间（含两端；前面没写单位就沿用后面的），只用于 `wait` |
 | `"forever"` | 不限时，只用于 `for`（要停就点停止 / Ctrl-C） |
 
-实际等了多久记在这一步的说明里。旧文件里的毫秒数写法仍然能读，`requestbaby fmt` 会统一改成这里的写法。
+实际等了多久记在这一步的说明里。旧文件里的毫秒数写法仍然能读，`codebaby fmt` 会统一改成这里的写法。
 
 ## 重复：repeat
 
@@ -115,7 +115,7 @@
 监控发现目标、或者出了问题，要让人知道。`notify` 只做三件固定的事：
 
 1. **弹本机通知**（macOS 通知中心；Linux 有 `notify-send` 就用；没有界面的机器自动跳过）
-2. **追加一行到 `.requestbaby/alerts.log`**（带时间，随时 `tail -f`）
+2. **追加一行到 `.codebaby/alerts.log`**（带时间，随时 `tail -f`）
 3. **发到 webhook**（配了才发）：以 `{"text": "通知内容"}` POST，飞书 / 钉钉 / 企业微信 / Slack 的机器人地址直接可用
 
 ```json fragment
@@ -126,7 +126,7 @@
 "notify": { "message": "{{date}} 有号", "webhook": "https://hooks.example.com/x" }
 ```
 
-全项目用同一个 webhook，在 `requestbaby.json` 写一次，步骤里只写文字：
+全项目用同一个 webhook，在 `codebaby.json` 写一次，步骤里只写文字：
 
 ```json project
 {
@@ -163,17 +163,17 @@
 
 ## 长期监控
 
-一个用例就是一个常驻监控：`repeat` 写 `"for": "forever"`（或 `"8h"`），`until` / `if` + `break` 判断到了就 `notify`，`onFail` 兜底失败。在桌面端打开项目、选中用例点运行，要停就点停止；命令行 `requestbaby run` 同理，Ctrl-C 停止。不需要任何外部脚本。
+一个用例就是一个常驻监控：`repeat` 写 `"for": "forever"`（或 `"8h"`），`until` / `if` + `break` 判断到了就 `notify`，`onFail` 兜底失败。在桌面端打开项目、选中用例点运行，要停就点停止；命令行 `codebaby run` 同理，Ctrl-C 停止。不需要任何外部脚本。
 
-每几秒到几分钟一轮、想每轮重新接管页面时，也可以在外面套一层 shell 循环调用 `requestbaby run`，用退出码判断（退出码含义见 `requestbaby guide cli`）：
+每几秒到几分钟一轮、想每轮重新接管页面时，也可以在外面套一层 shell 循环调用 `codebaby run`，用退出码判断（退出码含义见 `codebaby guide cli`）：
 
 ```bash
 while true; do
-  requestbaby run collections/monitor --name 号源监控 || echo "$(date) 有变化" >> alerts.txt
+  codebaby run collections/monitor --name 号源监控 || echo "$(date) 有变化" >> alerts.txt
   sleep $((RANDOM % 6 + 3))
 done
 ```
 
 ### 常驻运行占多少空间
 
-循环里的步骤只在失败时留截图、每轮丢掉上一轮的记录，所以一次常驻运行只留汇总和结束画面，不会越跑越大；运行历史按条数自动裁剪，`requestbaby history clear --keep 20` / `--older-than 7d` 可以手动清。`alerts.log` 只追加不裁剪，每条一行，需要时自己截断。
+循环里的步骤只在失败时留截图、每轮丢掉上一轮的记录，所以一次常驻运行只留汇总和结束画面，不会越跑越大；运行历史按条数自动裁剪，`codebaby history clear --keep 20` / `--older-than 7d` 可以手动清。`alerts.log` 只追加不裁剪，每条一行，需要时自己截断。

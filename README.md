@@ -1,12 +1,12 @@
-# requestbaby
+# codebaby
 
 AI 交付的独立验收层，辅助人对 AI 交付的成果验收。
 
-用 JSON 文件写下「发什么请求、点哪些按钮，应该得到什么结果」，requestbaby 真的去跑一遍，告诉你通过还是失败。接口（HTTP / gRPC / WebSocket）和界面（Web / Android / Mac 桌面应用）都能验收，界面验收的每一步都会截图留证。
+用 JSON 文件写下「发什么请求、点哪些按钮，应该得到什么结果」，codebaby 真的去跑一遍，告诉你通过还是失败。接口（HTTP / gRPC / WebSocket）和界面（Web / Android / Mac 桌面应用）都能验收，界面验收的每一步都会截图留证。
 
 有命令行，也有 macOS 桌面端，两边读写同一个项目目录。
 
-[官网](https://apps.zhizuzhefu.com/requestbaby/) · [下载安装](#下载安装) · [快速上手](#快速上手) · [最新版本](https://github.com/zhizuzhefu/requestbaby/releases/latest)
+[官网](https://apps.zhizuzhefu.com/codebaby/) · [下载安装](#下载安装) · [快速上手](#快速上手) · [最新版本](https://github.com/zhizuzhefu/codebaby/releases/latest)
 
 ![桌面端：左边是用例，中间编辑，右边是每一步的截图，下面是这次运行的结果](docs/images/desktop-web-steps.png)
 
@@ -43,7 +43,7 @@ AI 交付的独立验收层，辅助人对 AI 交付的成果验收。
 **结果与协作**
 
 - 命令行退出码就是结论，方便放进 CI；也可以输出 JSON 或 HTML 报告
-- 一键导出结果给别人：桌面端「导出结果」（⌘E），命令行 `requestbaby export`。默认是全部用例的最新结果，一份 HTML，截图已嵌入，对方用浏览器直接打开；导出前会提示哪些用例没跑过、哪些结果已是旧的。API、Web、Android、Mac 桌面用例可以放进同一个流程，变量在各端之间传递，报告是一个整体：每个用例标出所属的端，多端混合时有按真实先后排列的时间线，失败现场（页面结构、控制台、网络请求、logcat）直接嵌在里面
+- 一键导出结果给别人：桌面端「导出结果」（⌘E），命令行 `codebaby export`。默认是全部用例的最新结果，一份 HTML，截图已嵌入，对方用浏览器直接打开；导出前会提示哪些用例没跑过、哪些结果已是旧的。API、Web、Android、Mac 桌面用例可以放进同一个流程，变量在各端之间传递，报告是一个整体：每个用例标出所属的端，多端混合时有按真实先后排列的时间线，失败现场（页面结构、控制台、网络请求、logcat）直接嵌在里面
 - 保留运行历史，记录每次运行对应的代码提交；同一个提交上时过时不过的用例会标成「不稳定」
 - 桌面端可以可视化地编辑用例、看响应和截图，每个操作都有对应的命令
 - 所有对外连接可以统一走代理（socks5 / http），也可以一键关掉
@@ -54,13 +54,13 @@ AI 交付的独立验收层，辅助人对 AI 交付的成果验收。
 
 只想日常调接口也可以：桌面端用表单构造请求（任意方法、查询参数、请求头；Body 支持 JSON、表单、form-data 文件上传、raw），发送后看状态码、耗时、响应体、响应头和等价的 cURL；环境变量、token 传递、Cookie、集合、批量运行都有，不用先学 JSON。
 
-| Postman | requestbaby |
+| Postman | codebaby |
 |---------|-------------|
 | Collection / Folder | 集合：`collections/` 下的目录，一个用例一个 JSON 文件 |
 | Environment / Globals | 环境（dev / test / prod）与变量，写法同样是 `{{变量}}` |
 | Tests 里的断言 | 「断言」页：状态码、响应头、响应体任意字段 |
 | Pre-request / Tests 脚本 | 「脚本（进阶）」页：JS 脚本，API 与 `pm.*` 不同 |
-| Collection Runner / Newman | 「运行全部」，命令行 `requestbaby run` / `verify` |
+| Collection Runner / Newman | 「运行全部」，命令行 `codebaby run` / `verify` |
 | Import | 导入 cURL、Postman、OpenAPI / Swagger |
 | Workspace 同步 | 用例是普通文件，用 git 共享和评审 |
 
@@ -76,41 +76,43 @@ AI 交付的独立验收层，辅助人对 AI 交付的成果验收。
 
 ## 下载安装
 
-所有安装包都在 [Releases](https://github.com/zhizuzhefu/requestbaby/releases/latest) 页面。
+在 [Releases](https://github.com/zhizuzhefu/codebaby/releases/latest) 下载安装包。文件名以该版本的附件为准，历史版本沿用发布时的命名。下表展示 `codebaby` 安装包的命名方式。
 
 | 你要装的 | 下载 | 说明 |
 |----------|------|------|
-| macOS 桌面端 | `requestbaby-<版本>.dmg` | 已签名并通过 Apple 公证，macOS 12 以上 |
-| 命令行，macOS（Apple 芯片） | `requestbaby-aarch64-apple-darwin.tar.gz` | |
-| 命令行，macOS（Intel） | `requestbaby-x86_64-apple-darwin.tar.gz` | |
+| macOS 桌面端 | `codebaby-<版本>.dmg` | 已签名并通过 Apple 公证，macOS 12 以上 |
+| 命令行，macOS（Apple 芯片） | `codebaby-aarch64-apple-darwin.tar.gz` | |
+| 命令行，macOS（Intel） | `codebaby-x86_64-apple-darwin.tar.gz` | |
 
 每个安装包旁边有同名的 `.sha256` 文件，可以用来校验下载是否完整。目前只提供 macOS 版（桌面端与命令行）。
 
 ### 桌面端
 
-打开 DMG，把 requestbaby 拖进「应用程序」。桌面端自带命令行：在菜单里选「安装命令行工具」，终端里就能直接用 `requestbaby` 命令。
+打开 DMG，把 codebaby 拖进「应用程序」。桌面端自带命令行：在菜单里选「安装命令行工具」，终端里就能直接用 `codebaby` 命令。
 
 ### 命令行
 
-以 macOS Apple 芯片为例，其他平台换成对应的文件名：
+在 Releases 下载适合你电脑的压缩包和同名校验文件，再进入下载目录。下面以 Apple 芯片 Mac 的 `codebaby` 安装包为例。
 
 ```bash
-curl -LO https://github.com/zhizuzhefu/requestbaby/releases/latest/download/requestbaby-aarch64-apple-darwin.tar.gz
-tar -xzf requestbaby-aarch64-apple-darwin.tar.gz
-sudo mv requestbaby /usr/local/bin/
-requestbaby --version
+shasum -a 256 -c codebaby-aarch64-apple-darwin.tar.gz.sha256
+tar -xzf codebaby-aarch64-apple-darwin.tar.gz
+sudo mv codebaby /usr/local/bin/
+codebaby --version
 ```
 
 ### 升级
 
-桌面端会自动更新：启动时和运行期间每 6 小时在后台检查，发现新版本就自动下载并完整校验（SHA256、签名、团队、公证、能运行），退出时自动安装；手动「检查更新」下载完成后只有一个选项「安装并更新」（右下角状态栏的「安装并更新」也是点一下就装）。任何一步失败都保留当前版本。命令行运行 `requestbaby upgrade`：独立安装的会下载、校验后替换自己，在 App 里的命令行走同一套自动更新；加 `--check` 只检查不安装。
+从更名前的版本迁移时，请先手动安装 `codebaby`，再更新项目配置、运行历史目录及 CI 命令。Mac 桌面用例需要给 `codebaby.app` 重新授权。详见[迁移说明](docs/RELEASING.md#从更名前的版本迁移)。
+
+桌面端会自动更新：启动时和运行期间每 6 小时在后台检查，发现新版本就自动下载并完整校验（SHA256、签名、团队、公证、能运行），退出时自动安装；手动「检查更新」下载完成后只有一个选项「安装并更新」（右下角状态栏的「安装并更新」也是点一下就装）。任何一步失败都保留当前版本。命令行运行 `codebaby upgrade`：独立安装的会下载、校验后替换自己，在 App 里的命令行走同一套自动更新；加 `--check` 只检查不安装。
 
 ### 从源码构建
 
 需要 Rust（rustup）和 cmake：
 
 ```bash
-cargo install --locked --path crates/requestbaby-cli       # 命令行
+cargo install --locked --path crates/codebaby-cli       # 命令行
 make mac-app && make install-mac                            # macOS 桌面端，装到 /Applications
 ```
 
@@ -118,22 +120,22 @@ make mac-app && make install-mac                            # macOS 桌面端，
 
 - Web 用例需要本机装有 Chrome、Edge 或 Chromium（或者连接远程浏览器）
 - Android 用例需要 [adb](https://developer.android.com/tools/releases/platform-tools)，以及一台开着调试的设备或模拟器
-- Mac 桌面用例需要 `npm install -g agent-desktop`，并给运行 requestbaby 的程序（终端 / requestbaby.app）开启「辅助功能」（截图还需要「屏幕录制」）权限
+- Mac 桌面用例需要 `npm install -g agent-desktop`，并给运行 codebaby 的程序（终端 / codebaby.app）开启「辅助功能」（截图还需要「屏幕录制」）权限
 
-`requestbaby doctor` 会检查这些是否就绪。
+`codebaby doctor` 会检查这些是否就绪。
 
 ## 快速上手
 
 ```bash
-requestbaby init myapi --base-url http://localhost:8080     # 生成项目：dev / prod 环境、示例用例；被测服务地址写进 dev
-cd myapi                                                    # 地址以后要改：requestbaby vars set baseUrl <地址> -e dev
-requestbaby new case collections/orders 创建订单 -m post    # 新建一个用例
-requestbaby send collections/orders/01-创建订单.json --suggest   # 发一次，看真实响应，并给出断言建议
-requestbaby run                                             # 跑全部用例
-requestbaby open                                            # 在桌面端打开这个项目
+codebaby init myapi --base-url http://localhost:8080     # 生成项目：dev / prod 环境、示例用例；被测服务地址写进 dev
+cd myapi                                                    # 地址以后要改：codebaby vars set baseUrl <地址> -e dev
+codebaby new case collections/orders 创建订单 -m post    # 新建一个用例
+codebaby send collections/orders/01-创建订单.json --suggest   # 发一次，看真实响应，并给出断言建议
+codebaby run                                             # 跑全部用例
+codebaby open                                            # 在桌面端打开这个项目
 ```
 
-已有接口的话：`requestbaby new case <目录> --curl "curl …"` 可以把浏览器里复制的 cURL 变成用例，`requestbaby import openapi.json` 可以导入 OpenAPI / Swagger / Postman 文件。
+已有接口的话：`codebaby new case <目录> --curl "curl …"` 可以把浏览器里复制的 cURL 变成用例，`codebaby import openapi.json` 可以导入 OpenAPI / Swagger / Postman 文件。
 
 ## 一个用例长什么样
 
@@ -179,14 +181,14 @@ requestbaby open                                            # 在桌面端打开
 }
 ```
 
-运行后，每一步都有一张截图，保存在 `.requestbaby/runs/` 下；加上 `--report html` 会得到一份带截图时间线的单文件报告。Android 用例把 `web` 换成 `android`，写应用包名和操作步骤即可；Mac 桌面应用换成 `desktop`，写应用名称（如 `TextEdit`）。
+运行后，每一步都有一张截图，保存在 `.codebaby/runs/` 下；加上 `--report html` 会得到一份带截图时间线的单文件报告。Android 用例把 `web` 换成 `android`，写应用包名和操作步骤即可；Mac 桌面应用换成 `desktop`，写应用名称（如 `TextEdit`）。
 
 ## 放进 CI
 
-`requestbaby verify --plan` 先查看执行计划。用 `--workflow` 选定验收流程，可重复用 `--require-case` 指定必验文件。运行后，报告列出必验覆盖和未验原因。退出码 0 表示必验通过，1 表示用例失败，2 表示验收不完整。
+`codebaby verify --plan` 先查看执行计划。用 `--workflow` 选定验收流程，可重复用 `--require-case` 指定必验文件。运行后，报告列出必验覆盖和未验原因。退出码 0 表示必验通过，1 表示用例失败，2 表示验收不完整。
 
 ```yaml
-- run: requestbaby verify --workflow smoke -e ci --report json > verify.json
+- run: codebaby verify --workflow smoke -e ci --report json > verify.json
 ```
 
 被测服务需要由 CI 先启动。
@@ -196,22 +198,22 @@ requestbaby open                                            # 在桌面端打开
 `--report junit` 把结果写成 JUnit XML 到标准输出（`run`、`workflow`、`verify` 都支持），GitLab、Jenkins、GitHub Actions 的测试面板直接读：断言不成立是 `failure`，连不上服务 / 界面步骤出错是 `error`，跳过是 `skipped`，一个目录一个 testsuite。
 
 ```bash
-requestbaby run --report junit > junit.xml        # 退出码照常：0 通过 / 1 有用例失败 / 2 无法完成
+codebaby run --report junit > junit.xml        # 退出码照常：0 通过 / 1 有用例失败 / 2 无法完成
 ```
 
 ### Linux 上用
 
-目前不提供 Linux 预编译包，Linux 上从源码构建：`cargo install --locked --path crates/requestbaby-cli`（需要 Rust 和 cmake；只构建命令行，不含桌面端）。源码层面支持 Linux，但还没有在真实的 Linux 机器上验证过，遇到问题请到 [Issues](https://github.com/zhizuzhefu/requestbaby/issues) 反馈。Linux 上接口（HTTP / gRPC / WebSocket）、Web（本机 Chrome / Chromium）和 Android（adb）用例理论上都能跑，屏幕文字识别（`ocr`）和 Mac 桌面应用用例只在 macOS 上可用。
+目前不提供 Linux 预编译包，Linux 上从源码构建：`cargo install --locked --path crates/codebaby-cli`（需要 Rust 和 cmake；只构建命令行，不含桌面端）。源码层面支持 Linux，但还没有在真实的 Linux 机器上验证过，遇到问题请到 [Issues](https://github.com/zhizuzhefu/codebaby/issues) 反馈。Linux 上接口（HTTP / gRPC / WebSocket）、Web（本机 Chrome / Chromium）和 Android（adb）用例理论上都能跑，屏幕文字识别（`ocr`）和 Mac 桌面应用用例只在 macOS 上可用。
 
 ## 和 AI 配合
 
-让 AI 写用例的话，先让它读 `requestbaby guide`，那是一页写法速查，读完就能写出能通过校验的用例。桌面端右上角「⋯」菜单里有「复制用例写法速查」，可以直接贴进对话。`requestbaby init` 生成的 `AGENTS.md` 和 `CLAUDE.md` 也写好了这条约定，Claude Code、Codex 等工具在项目目录里会自动读到。
+让 AI 写用例的话，先让它读 `codebaby guide`，那是一页写法速查，读完就能写出能通过校验的用例。桌面端右上角「⋯」菜单里有「复制用例写法速查」，可以直接贴进对话。`codebaby init` 生成的 `AGENTS.md` 和 `CLAUDE.md` 也写好了这条约定，Claude Code、Codex 等工具在项目目录里会自动读到。
 
-AI 写完之后，`requestbaby validate` 会检查用例并给出写法建议，`requestbaby fmt --fix` 可以一键改写。
+AI 写完之后，`codebaby validate` 会检查用例并给出写法建议，`codebaby fmt --fix` 可以一键改写。
 
 ## 文档
 
-文档随程序一起安装，版本始终和你装的一致：`requestbaby guide <主题>`。同样的内容在 [docs/guide](docs/guide/)：
+文档随程序一起安装，版本始终和你装的一致：`codebaby guide <主题>`。同样的内容在 [docs/guide](docs/guide/)：
 
 | 想了解 | 主题 |
 |--------|------|
@@ -222,7 +224,7 @@ AI 写完之后，`requestbaby validate` 会检查用例并给出写法建议，
 | gRPC / WebSocket | [grpc](docs/guide/grpc.md)、[ws](docs/guide/ws.md) |
 | Web / Android / Mac 桌面界面验收 | [web](docs/guide/web.md)、[android](docs/guide/android.md)、[desktop](docs/guide/desktop.md) |
 | 代理 | [proxy](docs/guide/proxy.md) |
-| 全部命令 | [cli](docs/guide/cli.md)，或 `requestbaby --help` |
+| 全部命令 | [cli](docs/guide/cli.md)，或 `codebaby --help` |
 
 ## 参与开发
 
@@ -231,7 +233,7 @@ cargo test --workspace
 cargo clippy --workspace --all-targets -- -D warnings
 ```
 
-项目结构见 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)。发现问题或有建议，欢迎提 [Issue](https://github.com/zhizuzhefu/requestbaby/issues)。
+项目结构见 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)。发现问题或有建议，欢迎提 [Issue](https://github.com/zhizuzhefu/codebaby/issues)。
 
 ## 许可
 
